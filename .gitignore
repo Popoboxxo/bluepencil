@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+*.tsbuildinfo
+
+# test artefacts
+coverage/
+playwright-report/
+test-results/
+
+# local notes (never commit review data)
+*.bluepencil.json
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/
