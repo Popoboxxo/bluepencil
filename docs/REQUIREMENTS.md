@@ -129,13 +129,26 @@
 | FR-11.3 | `prefers-reduced-motion` respected; contrast of all layer surfaces meets WCAG AA | P1 | M6 | G | Audit report; no animation when reduced motion is set |
 | FR-11.4 | Screen-reader-friendly semantics (roles, labels, live region for save feedback) | P1 | M6 | G | Notes list and composer are usable with a screen reader |
 
+## FR-12 Runtime lifecycle & host variety  *(driven by D8)*
+
+| ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
+|---|---|---|---|---|---|
+| FR-12.1 | **Runtime activation**: `enable()`, `disable()`, `setEnabled(fn)` change the layer's presence without a reload | P0 | M1 | N | Disable removes bar, panel, composer, markers and styles; enable brings them back with the same store |
+| FR-12.2 | **Teardown is complete and idempotent**: 100 enable/disable cycles leave no extra DOM nodes, listeners, timers or observers | P0 | M1 | N | DOM node count, listener count and heap after cycles equal the starting state (measured) |
+| FR-12.3 | **Mount scope**: `mount(target?)` mounts globally (`document`) or inside a given container; several instances coexist without cross-talk | P1 | M2 | N | Two instances with different adapters on one page keep separate note sets and UIs |
+| FR-12.4 | **Shadow DOM support**: click capture and anchoring work across shadow roots (`composedPath()`, `getRootNode()`); the stored path encodes the shadow boundary | P0 | M2 | N | Note created on an element inside a shadow root resolves after reload |
+| FR-12.5 | **Web-component packaging**: a custom-element build (`<bluepencil-notes>` or equivalent) plus attribute/event mapping, so the layer can be loaded as a resource in hosts like Home Assistant | P1 | M3 | N | Element loads from a single ES module resource, opens the panel, stores notes through the configured adapter |
+| FR-12.6 | **No host interference**: listeners work in the capture phase and never call `stopPropagation()` unless an annotation mode is active; original behaviour is restored on teardown | P0 | M1 | N | Host's own click handlers fire normally with the layer enabled but idle |
+| FR-12.7 | **Documented host variety**: worked examples for at least a static page, a framework SPA, a micro-frontend/web-component host and a Home Assistant custom card | P1 | M3 | N | Each example in `examples/` runs and is covered by an E2E smoke test |
+| FR-12.8 | **Config-driven identity** (D3): `identity` accepts a hook, `"prompt"` or `"anonymous"`; unset falls back to `"prompt"` | P0 | M1 | N | All three modes verified in the fixture app |
+
 ---
 
 ## NFR — non-functional
 
 | ID | Requirement | Prio | Ms | Acceptance criteria |
 |---|---|---|---|---|
-| NFR-1 | **Zero footprint when disabled**: no DOM, no fetch, no listener, no timer | P0 | M1 | Bundle loaded but unused → no network requests, no nodes, no measurable CPU |
+| NFR-1 | **Zero footprint when disabled**: no DOM, no fetch, no listener, no timer — **both** when never enabled and after a runtime `disable()` | P0 | M1 | Bundle loaded but unused / after disable → no network requests, no nodes, no measurable CPU |
 | NFR-2 | No polling. Data is fetched on demand (open/refresh/write) | P0 | M1 | Idle page produces no repeated requests over 10 minutes |
 | NFR-3 | Core bundle small enough to embed casually (target ≤ 30 kB min+gzip, excluding adapters) | P1 | M1 | Build report shows size; CI fails on regression beyond budget |
 | NFR-4 | No runtime dependencies (peer deps only for framework wrappers) | P0 | M1 | `dependencies` empty in the core package |
@@ -149,6 +162,8 @@
 | NFR-12 | Versioning: semver, changelog per release, one release per milestone | P1 | M1+ | Tag + changelog present per release |
 | NFR-13 | No secrets in the repository or in stored notes; documented "no personal data" policy for debug use | P0 | M1 | Secret scan in CI; policy section in README |
 | NFR-14 | Observability: a debug flag writes to `console.debug` only; no user-visible errors on failure | P2 | M2 | Adapter failure shows one inline message, never a broken page |
+| NFR-15 | **Runtime parity**: every guarantee (footprint, no interference, determinism) holds identically after enable/disable cycles, not only on first load | P0 | M1 | Test matrix: N cycles × (footprint, host events, export determinism) all pass |
+| NFR-16 | **Host-agnostic packaging**: consumable three ways — bundled dependency (ESM), standalone ES module resource (no build step, e.g. Home Assistant), single-file IIFE/bookmarklet | P0 | M3 | All three consume the same build in CI fixtures |
 
 ---
 
@@ -160,15 +175,24 @@
 | **G** (gap) | Missing in the prototype — the reason a library exists at all | FR-1.1, 1.10, FR-2.2, 2.4–2.6, FR-3.4–3.5, FR-6.1–6.2, FR-7.3, FR-9.1, 9.4, FR-10.1–10.3, NFR-3, 6, 11 |
 | **N** (product need) | Driven by the admin debug-mode requirement of a downstream ALM product | FR-5.x (all), FR-8.2–8.5, FR-9.2, FR-10.4, FR-6.6 |
 
-## Open questions (to decide before M1 closes)
+## Decisions (resolved)
 
-1. **Distribution shape**: one package with subpath exports, or `@bluepencil/core` +
-   `@bluepencil/react` + `@bluepencil/server`? (Recommendation: single package, subpaths,
-   framework wrapper as optional peer.)
-2. **Marker rendering**: injected DOM sibling vs. absolutely positioned overlay vs. CSS
-   pseudo-element — trade-off between host-CSS interference and simplicity?
-3. **Default author identity**: ask the host (`getUser()` hook) or a free-text field?
-4. **Done-note default**: hidden for everyone, or configurable default per host?
-5. **Retention**: does the library ever delete data on its own, or only on explicit action?
-6. **Naming in code**: `bluepencil` as the global and the `data-bluepencil` hook, or a shorter
-   hook (`data-bp`)? (Recommendation: `data-bluepencil` for clarity, `window.bluepencil` global.)
+| # | Decision | Outcome |
+|---|---|---|
+| D1 | Package shape | **One package** with subpath exports (`bluepencil/adapters/http`, `bluepencil/react`). Split into scoped packages only if the server part later drags dependencies. |
+| D2 | Marker rendering | **Overlay layer** that tracks element geometry; host DOM stays untouched. Sibling-injection fallback documented for hosts where tracking breaks (virtualised lists, transformed containers). |
+| D3 | Author identity | **Config-driven, three modes**: `identity: { getUser }` (host auth), `identity: "prompt"` (free text field, persisted locally), `identity: "anonymous"`. Fallback when nothing is configured: `"prompt"`. |
+| D4 | Default visibility of done notes | **Configurable per host** (`defaultShowDone`, default `false`). |
+| D5 | Self-deletion | **Optional retention exists, off by default — and only in the server package.** The browser library never deletes anything on its own. |
+| D6 | DOM hook for anchors | **`data-bluepencil`**, with `data-testid` honoured as an equal second hook. |
+| D7 | Retention defaults | Configurable; defaults 90 days (done) / 180 days (all). Low priority — this is a review/debug layer, not a data store. |
+| D8 | Primary use | **A library that can be activated and deactivated at runtime inside arbitrary products** — from a simple website to a complex web tool to a Home Assistant custom card/panel. Drives FR-12. |
+
+### Still open (before/while M1)
+
+1. **Web-component naming** for the custom-element build (`<bluepencil-notes>`? `<bp-layer>`?).
+2. **Home Assistant delivery**: ship the integration in this repository
+   (`examples/home-assistant/`, a frontend resource + custom card) or as a separate HACS
+   repository that depends on the npm package?
+3. **Multiple instances**: do we need cross-instance aggregation (one review session spanning
+   several mounted instances), or is instance-local storage sufficient for v1?

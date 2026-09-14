@@ -29,7 +29,8 @@ comments in another, bugs in the tracker, and screenshots pasted into a chat.
 
 ## 2. What bluepencil is
 
-A **review layer for arbitrary web applications**:
+A **review layer for arbitrary web applications** — a library a product carries with it and
+switches on when needed (at runtime, per role), not a separate service:
 
 1. It attaches to a running page (embedded as a library, or loaded into a third-party page
    as a bookmarklet).
@@ -98,6 +99,14 @@ live in the browser (localStorage) and can be exported as a file — no server r
 **UC-8 — Requirements traceability.**
 A note can be linked to an external ticket (or, in an ALM system, to a requirement ID), so the
 review result becomes part of the audit trail instead of a chat log.
+
+**UC-9 — Switching it on inside a product, at runtime.**
+The layer is a dependency of the product, not a separate tool: an admin (or a support engineer
+during a session) switches it on, reviews the running system — a static marketing page, a
+complex web tool, or a dashboard built from web components — and switches it off again. No
+reload, no build, no leftover DOM, no data left behind. This is the primary intended use: one
+review mechanism across very different products, from a simple website to a Home Assistant
+custom card/panel.
 
 ## 5. Core concepts
 
@@ -189,6 +198,11 @@ element-anchored intent. That gap is bluepencil.
 | **Self-hosted sidecar** | small server serves the page *and* the API | JSON on disk + Markdown export | presentations, static sites, team reviews |
 | **Hosted API** | library + your own endpoints | your database | products with existing auth and tenancy |
 | **Agent-coupled** | as above + MCP tool group | as above | AI agents read/close notes as part of a workflow |
+| **Runtime toggle** (cross-cutting) | dependency of the product, switched on/off at runtime by the host | host-defined | the same mechanism in different products, without a reload |
+
+Runtime activation is not a separate mode but a property of every mode: `enable()` / `disable()`
+must be complete and repeatable, and `enabled()` is re-evaluated on every activation, so a role
+change takes effect without a page load (see FR-12.x).
 
 ## 9. Agent collaboration model (the reason this exists)
 
@@ -237,9 +251,9 @@ Rules that keep this honest:
 | Milestone | Content | Exit criterion |
 |---|---|---|
 | **M0 — Concept** (this repo) | concept, requirements, architecture | reviewed and merged |
-| **M1 — Core** | types, anchor resolution, state capture, in-memory + `localStorage` adapters, overlay UI (text/design modes), Markdown/JSON export | annotate any page, reload, export — no server |
+| **M1 — Core** | types, anchor resolution, state capture, in-memory + `localStorage` adapters, overlay UI (text/design modes), Markdown/JSON export, **runtime `enable()`/`disable()` with complete teardown** | annotate any page, reload, export — no server; 100 toggles leave no residue |
 | **M2 — Server sidecar** | small reference server (API + static hosting), session handling, purge/retention | a full review round on a real page |
-| **M3 — Distribution** | ESM + IIFE builds, bookmarklet generator, docs site/demo fixture app | "drag to your bookmarks bar" works |
+| **M3 — Distribution** | ESM + IIFE + **custom-element** builds, bookmarklet generator, docs site/demo fixture app, host-variety examples (static, SPA, web-component host, Home Assistant card) | "drag to your bookmarks bar" works; the element loads in a host without a build step |
 | **M4 — Agent interface** | stable schema, MCP tool group, agent protocol (implement/feedback/decision) | an agent closes a review round end to end |
 | **M5 — Product integration** | host adapter for an ALM tool (admin debug mode, RBAC, audit) | notes created and purged inside a real product |
 | **M6 — Polish** | i18n (at least DE/EN), a11y audit, dark mode, print/PDF export | passes keyboard-only + screen-reader smoke test |

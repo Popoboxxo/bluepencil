@@ -51,7 +51,10 @@ unambiguous, ask for a decision where it is not, and report back in the same thr
 ## Non-negotiables
 
 * **Zero layout impact** when disabled — no payload, no listeners, no polling.
-* **Never enabled for normal end users.** The host decides via `enabled()` (admin role, flag).
+* **Never enabled for normal end users.** The host decides via `enabled()` (admin role, flag) —
+  and that decision is re-checked on every runtime activation.
+* **Switchable at runtime.** `enable()` / `disable()` work in a running product; disabling leaves
+  no DOM, no listeners, no data behind.
 * **The anchor survives a text edit** — otherwise the notes are worthless after the first revision.
 * **Agent-readable by design**: the Markdown export *is* the interface.
 * **No lock-in**: no hosted service, no account, self-hostable in a few lines.

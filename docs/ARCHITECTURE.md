@@ -32,12 +32,14 @@ bluepencil/
 │  │  └─ styles.css        # token-driven, prefix .bp-, no global resets
 │  ├─ i18n/                # en.ts, de.ts (strings only)
 │  ├─ react/               # optional wrapper (peer dependency)
-│  └─ index.ts             # public API: init(), destroy(), getInstance()
+│  ├─ element/             # custom-element build (<bluepencil-notes>) for hosts w/o a bundler
+│  └─ index.ts             # public API: init(), mount(), enable(), disable(), destroy()
 ├─ server/                 # reference self-hosted server (sidecar mode)
 ├─ bookmarklet/            # loader generator + usage docs
 ├─ examples/
 │  ├─ vanilla/             # plain HTML fixture app (all FR groups)
-│  └─ react/               # React fixture
+│  ├─ react/               # React fixture
+│  └─ home-assistant/      # custom card/panel loading the element build as a resource (FR-12.5/12.7)
 ├─ tests/
 │  ├─ unit/                # model, anchor, adapters, export (vitest)
 │  └─ e2e/                 # Playwright against examples/vanilla
@@ -58,21 +60,31 @@ import { init } from "bluepencil";
 import { httpAdapter } from "bluepencil/adapters/http";
 
 const bp = init({
-  enabled: () => user.roles.includes("admin") && import.meta.env.MODE !== "production",
-  adapter: httpAdapter({ endpoint: "/api/v1/bluepencil", headers: () => authHeaders() }),
-  getUser: () => ({ id: user.id, name: user.name }),
-  getRoute: () => location.hash || location.pathname,     // SPA-aware
+  // D8: the layer can be switched on and off at runtime, inside any product
+  enabled: () => me.roles.includes("admin") && flags.uiNotes,   // evaluated on every enable()
+  mount: document.body,                    // or a container / card element (multi-instance safe)
+  adapter: httpAdapter({ endpoint: "/api/v1/bluepencil", headers: authHeaders }),
+  identity: { getUser: () => ({ id: me.id, name: me.name }) },   // D3: hook | "prompt" | "anonymous"
+  getRoute: () => router.currentRoute.value.fullPath,           // SPA-aware
   canAnnotate: (el) => !el.closest("[data-bp-ignore]"),
+  markerStrategy: "overlay",               // D2: "overlay" (default) | "sibling"
+  anchorHooks: ["data-bluepencil", "data-testid"],               // D6
   language: "de",
   theme: { accent: "var(--color-primary)", surface: "var(--color-surface)" },
-  defaultShowDone: false,
+  defaultShowDone: false,                  // D4
+  retention: null,                         // D5: never deletes in the browser build
   onError: (err) => console.debug("[bluepencil]", err),
 });
 
-bp.open();                 // show the layer programmatically
-bp.export({ format: "markdown" });   // returns a string
-await bp.destroy();        // full teardown: nodes, listeners, styles
+bp.enable();               // runtime activation (idempotent)
+bp.disable();              // full teardown: nodes, listeners, styles, observers
+bp.export({ format: "markdown" });
+await bp.destroy();        // final cleanup; the instance can be discarded
 ```
+
+`enable()` / `disable()` are the D8 core: a product can hand the layer to an admin for one
+session and take it away again without reloading, and repeated cycles must leave no residue
+(FR-12.2, NFR-15).
 
 Everything the UI does is also available headlessly through `bp.store` and the export
 functions, so an integration can render the notes in its own UI (FR-10.4).
@@ -90,7 +102,7 @@ export type MessageKind = "note" | "decision_request" | "decision" | "feedback" 
 
 export interface Anchor {
   hook?: string;        // value of data-bluepencil / data-testid      (FR-2.1)
-  selector?: string;    // CSS path fallback (nth-of-type based)
+  selector?: string;    // CSS path fallback; shadow boundaries as " >> " (FR-12.4)
   quote?: string;       // text excerpt — survives rewording
   route?: string;       // page/SPA route at capture time              (FR-2.2)
   orphaned?: boolean;   // set when resolution fails at read time      (FR-2.4)
@@ -191,6 +203,50 @@ getUser:()=>({name:'reviewer'}),getRoute:()=>location.pathname});document.head.a
   limitation with the workaround (self-hosted mode or extension) (NFR-6).
 * No `eval`, no inline handlers.
 
+## 6b. Runtime lifecycle, shadow DOM, multi-instance
+
+**Lifecycle contract.** `enable()` attaches, `disable()` detaches — completely:
+
+* DOM: one host container for the layer (overlay + panel + composer + legend), removed on disable.
+* Listeners: attached on enable, removed on disable; capture-phase only, and `stopPropagation()`
+  is called *exclusively* while an annotation mode is active (FR-12.6).
+* Observers/timers: `ResizeObserver`/scroll listeners for marker geometry, nothing on a timer
+  (NFR-2); all disconnected on disable.
+* Styles: one `<style>` node, injected once per document, removed when the last instance goes.
+* Idempotence: `enable()` twice, `disable()` twice, N cycles — same footprint as before
+  (FR-12.2, NFR-15).
+
+**Mount scope and instances.** `mount` may be `document`/`body` or any container (a card, a
+panel, a dialog). Each instance keeps its own store, adapter, namespace and UI ids
+(`bp-<instanceId>-…`), so two instances on one page never mix. Instance-local storage keys are
+namespaced (`bluepencil:<host>:<instance>:v1`).
+
+**Shadow DOM.** Hosts built from web components (dashboard cards, design systems, Home
+Assistant) put the annotatable elements inside shadow roots. Therefore:
+
+* clicks are evaluated on `event.composedPath()`, not `event.target`;
+* the anchor path encodes shadow boundaries with `>>` (`bp-card >> div.value >> span.unit`),
+  resolved segment by segment via `element.shadowRoot`;
+* `data-*` hooks work inside shadow roots unchanged — which is why the hook is the primary
+  anchor (FR-2.1);
+* a *closed* shadow root cannot be resolved: the note is stored with the hook/quote and flagged
+  as *degraded* rather than silently failing (FR-2.4).
+
+## 6c. Packaging for very different hosts (FR-12.5, NFR-16)
+
+| Consumer | Artifact | Notes |
+|---|---|---|
+| App with a bundler | ESM `bluepencil` (+ `bluepencil/react`) | tree-shaken, adapters as subpaths |
+| Host without a build step (Home Assistant resource, static page, CMS) | single-file ES module (`bluepencil.element.js`) registering `<bluepencil-notes>` | attributes map to config, events out: `bp-note-created`, `bp-export`, `bp-enabled` |
+| Third-party page, no deploy | IIFE + bookmarklet | `localStorage` adapter, export to file |
+| Own backend | reference server package | serves page + API, JSON store, retention off by default |
+
+The custom element is a thin wrapper around the same core — no second implementation. For
+Home Assistant this is the integration path: load the module as a frontend resource, drop the
+element into a custom card or panel, and gate it on an admin check inside the card
+(FR-10.4 pattern). Whether that ships here or as a separate HACS integration is still open
+(REQUIREMENTS § Still open).
+
 ## 7. Theming and host CSS safety
 
 * All classes are prefixed `bp-`; styles live in a single stylesheet injected once.
@@ -247,13 +303,23 @@ Everything the prototype proved is a `P`-marked requirement; everything it lacke
 gap that this architecture addresses through adapters, a published schema, packaging,
 host hooks and the MCP/agent interface.
 
+## 10b. Resolved decisions (2026-09-14)
+
+D1 one package (subpath exports) · D2 overlay markers with sibling fallback · D3 config-driven
+identity (`getUser` / `"prompt"` / `"anonymous"`, fallback `"prompt"`) · D4 `defaultShowDone`
+configurable, default `false` · D5 retention only in the server package, off by default ·
+D6 `data-bluepencil` plus `data-testid` · D7 retention defaults 90/180 days, configurable ·
+D8 **runtime activation in arbitrary products** — which is why this document now carries
+§6b (lifecycle, shadow DOM, instances) and §6c (packaging for four consumer types).
+
 ## 11. Release plan
 
 * **M1** — `0.1.0`: core + UI + memory/localStorage adapters + Markdown/JSON export + fixture app
   + unit/E2E tests. Exit: annotate any page, reload, export, no server involved.
 * **M2** — `0.2.0`: HTTP adapter + reference server + sessions + bulk/session deletion +
   deterministic exports.
-* **M3** — `0.3.0`: IIFE build, bookmarklet, React wrapper, theming docs, size guard.
+* **M3** — `0.3.0`: IIFE build, **custom-element build**, bookmarklet, React wrapper, theming
+  docs, size guard, host-variety examples (static, SPA, web-component/HA card).
 * **M4** — `0.4.0`: MCP tool group + protocol doc + retention option.
 * **M5** — `0.5.0`: product integration guide (RBAC, audit, purge) with a worked example.
 * **M6** — `1.0.0`: i18n (en/de), a11y audit, docs site, API freeze (semver commitment).
