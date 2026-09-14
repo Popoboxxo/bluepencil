@@ -187,6 +187,21 @@ need to read and write note sets without any UI.
 | FR-15.4 | Data and CLI packages are **DOM-free** and have no runtime dependencies | P0 | M2 | N | Node-only install works; `dependencies` empty |
 | FR-15.5 | The MCP tool group is a thin wrapper over this API (no separate logic) | P1 | M4 | N | MCP and CLI behave identically for the same input |
 
+## FR-16 MCP interface — required for the final tool
+
+The final tool must be usable by agents directly, not only through the HTTP API and the Markdown
+export. The MCP interface is therefore **not optional** (Daniel, 2026-09-14).
+
+| ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
+|---|---|---|---|---|---|
+| FR-16.1 | MCP server exposing the note set — tools: `list_notes`, `get_note`, `create_note`, `reply`, `set_status`, `set_intent`, `export_bundle`, `import_bundle` | P0 | M4 | N | An MCP client can list open notes, answer one and mark it done, using the same model and validators as the UI |
+| FR-16.2 | **Read-only by default**; write tools need an explicit opt-in per session | P0 | M4 | N | With default settings the client can read but every write tool returns a clear refusal |
+| FR-16.3 | A session is bound to **one app and one environment**; cross-environment access is refused (ties NFR-18) | P0 | M4 | N | A `dev`-bound session cannot list or write `live` notes |
+| FR-16.4 | Agent writes record `source=agent` plus the MCP client name and session id | P0 | M4 | N | Origin visible in export and UI; human writes stay distinguishable |
+| FR-16.5 | Notes are exposed as **resources** too (Markdown + JSON), so a host can read without tools | P1 | M4 | N | Resource returns the same content as `GET /api/comments.md` |
+| FR-16.6 | Prompts/templates for the loop (“work off the open notes”, “summarise decisions needed”) | P2 | M4 | N | Prompt produces a correct work list with no additional context |
+| FR-16.7 | The MCP server is a thin wrapper over `bluepencil/data` — no separate logic (FR-15.5) | P0 | M4 | N | Same merge/validation results via CLI and via MCP for the same input |
+
 ---
 
 ## NFR — non-functional
@@ -237,6 +252,7 @@ need to read and write note sets without any UI.
 | D8 | Primary use | **A library that can be activated and deactivated at runtime inside arbitrary products** — from a simple website to a complex web tool to a Home Assistant custom card/panel. Drives FR-12. |
 | D9 | Developer systems | During debugging the layer **reads and writes**: tooling (tests, build, agent) can create and update notes in the running system via the headless API. Drives FR-13. |
 | D10 | Live systems & exchange | Integration into live systems is admin-only; note sets travel via **portable export/import bundles**. The read/write logic lives in a **headless data library + CLI** (`bluepencil/data`, `bluepencil/cli`) that the UI and server reuse. Drives FR-14 and FR-15. |
+| D11 | Agent access | The final tool needs an **MCP interface** (not optional): agents read, write, answer and move bundles over MCP. Drives FR-16. |
 
 ### Still open (before/while M1)
 

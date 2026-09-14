@@ -55,6 +55,10 @@ unambiguous, ask for a decision where it is not, and report back in the same thr
 build script or agent can drop notes into the running app (with their origin attached), while a
 human reads them in the UI. In a live system it is admin-only and invisible to everyone else.
 
+**Be readable by agents.** An **MCP interface** is a required part of the final tool (not a
+nice-to-have): an agent can list open notes, answer one, mark it done, and move bundles —
+read-only by default, writes on explicit opt-in, always bound to one app *and* one environment.
+
 **Let notes travel.** Sets of notes move between environments as portable bundles —
 `schema`-versioned JSON with an environment tag, importable with `merge` / `upsert` /
 `replace-session`, a dry run that reports conflicts instead of overwriting, and a deliberate
