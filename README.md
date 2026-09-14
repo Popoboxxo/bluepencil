@@ -36,6 +36,7 @@ a running application instead of a screenshot.
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module layout, data model, storage adapters, HTTP contract, bookmarklet, test strategy |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | Normative rules for human + agent collaboration (implement / feedback / decision requests) |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | Integration modes, host hooks, theming, security notes, admin debug mode |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) §8 | Environment tagging, bundle exchange rules, promotion between dev and live |
 
 ## What it will be, in one paragraph
 
@@ -48,6 +49,19 @@ swappable transport adapter (in-memory, `localStorage`, file, HTTP API, MCP). No
 a **thread** of human and agent messages — so an AI agent can read the set, implement what is
 unambiguous, ask for a decision where it is not, and report back in the same thread.
 
+## Two more things it must do
+
+**Work where the code runs.** On a developer system the layer reads *and* writes: a test runner,
+build script or agent can drop notes into the running app (with their origin attached), while a
+human reads them in the UI. In a live system it is admin-only and invisible to everyone else.
+
+**Let notes travel.** Sets of notes move between environments as portable bundles —
+`schema`-versioned JSON with an environment tag, importable with `merge` / `upsert` /
+`replace-session`, a dry run that reports conflicts instead of overwriting, and a deliberate
+*promotion* path from `dev` to `live` and back. The reading and writing logic lives in a
+DOM-free data library with a CLI (`bluepencil/data`, `bluepencil/cli`) so CI, scripts and agents
+use exactly the same data and validators as the UI.
+
 ## Non-negotiables
 
 * **Zero layout impact** when disabled — no payload, no listeners, no polling.
@@ -56,7 +70,8 @@ unambiguous, ask for a decision where it is not, and report back in the same thr
 * **Switchable at runtime.** `enable()` / `disable()` work in a running product; disabling leaves
   no DOM, no listeners, no data behind.
 * **The anchor survives a text edit** — otherwise the notes are worthless after the first revision.
-* **Agent-readable by design**: the Markdown export *is* the interface.
+* **Agent-readable by design**: the Markdown export *is* the interface; the headless data
+  library lets agents and CI read and write the same note sets without a browser.
 * **No lock-in**: no hosted service, no account, self-hostable in a few lines.
 
 ## License

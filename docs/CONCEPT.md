@@ -108,6 +108,19 @@ reload, no build, no leftover DOM, no data left behind. This is the primary inte
 review mechanism across very different products, from a simple website to a Home Assistant
 custom card/panel.
 
+**UC-10 — Debugging on a developer system, both directions.**
+While debugging, the layer is not only an input form: the tooling around it *writes* notes into
+the running system (a failing test, a stack trace, a build hint) and *reads* the ones a human
+left there. During a debug session the same list holds machine findings and human
+observations — and an agent reads both. Machine notes carry their origin, so nobody confuses
+"the test runner noticed this" with "a human decided this".
+
+**UC-11 — Notes travel between environments.**
+A review is prepared on `dev`, exported as a bundle, imported into `staging`, refined on `live`
+by an admin during a support session, exported again and merged back into the development
+backlog. Anchors, threads and origins survive the trip; the environment tag changes, the history
+does not.
+
 ## 5. Core concepts
 
 **Note** — the unit of feedback. Fields: `id`, `author` (+ `author_type`), `type`
@@ -136,6 +149,25 @@ purged as a unit.
 
 **Export** — Markdown (grouped by route/page, with the thread and a top section listing
 *open decisions* and *feedback-only* items) and JSON (full fidelity, for tooling).
+
+## 5b. How notes travel (environments and exchange)
+
+Notes are created where the code runs and are exchanged as **bundles** — one plain,
+schema-versioned JSON file.
+
+* **Environment tag** per note and per bundle (`dev`, `staging`, `live`) plus an app/build
+  reference. Bundles only import into a matching environment unless explicitly overridden —
+  so a live review never silently pollutes a dev store.
+* **Export/import is a first-class feature**, not a side effect of a database: bookmarklet
+  exports a file, the server exposes upload/download, the CLI works offline in a pipeline.
+* **Import is explicit and non-destructive**: modes `merge` (idempotent default), `upsert`,
+  `replace-session`; a dry run reports added/updated/skipped/conflicts before anything is
+  written, and conflicts are listed instead of overwritten.
+* **Promotion** (dev → live, live → dev) is a deliberate admin action that keeps ids, threads
+  and origins and only rewrites the environment tag.
+* **Headless by design**: the reading and writing logic lives in a DOM-free data library with a
+  CLI, so CI jobs, migration scripts, agents — and the MCP interface — work with the same data
+  as the UI, using the same validators.
 
 ## 6. Interaction model
 
@@ -199,6 +231,7 @@ element-anchored intent. That gap is bluepencil.
 | **Hosted API** | library + your own endpoints | your database | products with existing auth and tenancy |
 | **Agent-coupled** | as above + MCP tool group | as above | AI agents read/close notes as part of a workflow |
 | **Runtime toggle** (cross-cutting) | dependency of the product, switched on/off at runtime by the host | host-defined | the same mechanism in different products, without a reload |
+| **Headless** (no UI) | library/CLI in scripts, CI and agents | file / any adapter | debug tooling writes and reads notes; bundles move between environments |
 
 Runtime activation is not a separate mode but a property of every mode: `enable()` / `disable()`
 must be complete and repeatable, and `enabled()` is re-evaluated on every activation, so a role
@@ -252,7 +285,7 @@ Rules that keep this honest:
 |---|---|---|
 | **M0 — Concept** (this repo) | concept, requirements, architecture | reviewed and merged |
 | **M1 — Core** | types, anchor resolution, state capture, in-memory + `localStorage` adapters, overlay UI (text/design modes), Markdown/JSON export, **runtime `enable()`/`disable()` with complete teardown** | annotate any page, reload, export — no server; 100 toggles leave no residue |
-| **M2 — Server sidecar** | small reference server (API + static hosting), session handling, purge/retention | a full review round on a real page |
+| **M2 — Server sidecar & exchange** | reference server (API + static hosting), sessions, purge; **headless data library + CLI**, bundle export/import with merge/dry-run/conflict reporting, environment tagging, write API for dev tooling | a full review round on a real page; a bundle travels dev → live → dev without losing a note |
 | **M3 — Distribution** | ESM + IIFE + **custom-element** builds, bookmarklet generator, docs site/demo fixture app, host-variety examples (static, SPA, web-component host, Home Assistant card) | "drag to your bookmarks bar" works; the element loads in a host without a build step |
 | **M4 — Agent interface** | stable schema, MCP tool group, agent protocol (implement/feedback/decision) | an agent closes a review round end to end |
 | **M5 — Product integration** | host adapter for an ALM tool (admin debug mode, RBAC, audit) | notes created and purged inside a real product |

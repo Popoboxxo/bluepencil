@@ -85,6 +85,8 @@ A note may be set to `done` only when **all** of the following hold:
 
 ## 7. Reading order for an agent session
 
+0. Know the environment you are in and the environment of the data you are reading — an
+   import that mixes them is a defect, not a shortcut.
 1. Fetch the export (`markdown` for reading, `json` for tooling).
 2. The export opens with the exception sections: **open decisions** and **feedback only** —
    read them **first**; they constrain everything else.
@@ -92,7 +94,22 @@ A note may be set to `done` only when **all** of the following hold:
 4. After each batch: reply in the affected notes, set `done`, then re-export to confirm the
    new state (self-check).
 
-## 8. Human rules (the other half)
+## 8. Environments and exchange (FR-14)
+
+* Notes and bundles are **tagged with an environment** (`dev`, `staging`, `live`). Never import
+  across environments by accident: the import refuses on mismatch unless an operator passes the
+  override deliberately.
+* **Import is never destructive by default** (`merge`). A conflict — same note id, divergent
+  content — is a message to a human, not something to resolve silently. Agents must not resolve
+  conflicts on their own: report them.
+* **Promotion** of a set (dev → live, or back) is an admin action. Keep the thread intact; only
+  the environment tag changes.
+* Machine-written notes (`source: tool:*`, `agent`) must stay distinguishable from human notes.
+  Never rewrite a machine note into a human one, or vice versa.
+* An agent working on imported notes follows §2–§4 to the letter: implement unambiguous
+  `intent=implement`, answer `intent=feedback` without changing anything, ask when unsure.
+
+## 9. Human rules (the other half)
 
 * Use `intent=feedback` when you want an opinion, not a change. That is the whole point of
   the switch — it is not a weakness.

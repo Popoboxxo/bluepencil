@@ -142,6 +142,51 @@
 | FR-12.7 | **Documented host variety**: worked examples for at least a static page, a framework SPA, a micro-frontend/web-component host and a Home Assistant custom card | P1 | M3 | N | Each example in `examples/` runs and is covered by an E2E smoke test |
 | FR-12.8 | **Config-driven identity** (D3): `identity` accepts a hook, `"prompt"` or `"anonymous"`; unset falls back to `"prompt"` | P0 | M1 | N | All three modes verified in the fixture app |
 
+## FR-13 Developer systems: read *and* write during debugging
+
+Debugging happens where the code runs. On a developer system the layer must not only display
+notes — the surrounding tooling (test runner, build script, dev server, an agent) must be able
+to **write notes into the running system and read them back**.
+
+| ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
+|---|---|---|---|---|---|
+| FR-13.1 | **Bidirectional during debugging**: the layer reads notes from the running system and writes new/updated notes back, including status and thread messages | P0 | M1 | N | A test runner creates a note programmatically; the running UI shows it; a human reply in the UI is visible to the tool on its next read |
+| FR-13.2 | **Headless write API**: notes can be created/updated without any UI (same model, same validation) | P0 | M1 | N | Note created by a script (no DOM) appears in the UI and in the export |
+| FR-13.3 | Every note records its **origin/source**: `ui:human`, `agent`, `tool:test-runner`, `tool:build`, `cli:import` | P0 | M1 | N | Source visible in list, export and MCP output; affects nothing else |
+| FR-13.4 | Optional **auto-attach in development**: on a dev system the layer can enable itself without a manual click | P2 | M2 | N | With the flag set the layer is present after load; off in production builds by default |
+| FR-13.5 | Dev notes can carry debug context: stack trace, failing test name, log excerpt, commit SHA | P1 | M2 | N | Fields present in schema and shown collapsed in the UI |
+| FR-13.6 | Notes can reference a source location (`file:line`) in addition to a DOM anchor | P1 | M2 | N | Clicking a note with a file reference reveals it as text (no editor integration required) |
+
+## FR-14 Live systems: integration and exchange via import/export
+
+The same mechanism must work in a live system — admin-only, invisible to end users — and note
+sets must **travel** between environments through portable export/import.
+
+| ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
+|---|---|---|---|---|---|
+| FR-14.1 | Every note and every bundle carries an **environment tag** (`dev`, `staging`, `live`) plus build reference | P0 | M2 | N | Bundles and notes can be filtered by environment; mismatches are visible |
+| FR-14.2 | **Export bundle**: one schema-versioned JSON file containing sessions, notes, threads, anchors, context and metadata (exported_at, exported_by, environment, app/build, schema) | P0 | M2 | N | File validates against the published schema; contains everything needed for a full import |
+| FR-14.3 | **Import with modes** — `merge` (default, idempotent), `upsert` (update changed notes), `replace-session` | P0 | M2 | N | Importing the same bundle twice changes nothing the second time |
+| FR-14.4 | **Import never silently overwrites**: dry-run reports `added` / `updated` / `skipped` / `conflicts`; conflicts are listed, resolution is explicit | P0 | M2 | N | A conflicting note is reported, not overwritten; the original thread survives |
+| FR-14.5 | **Round-trip fidelity**: export → import into an empty store → identical set (canonical form) | P0 | M2 | N | Byte-identical canonical JSON after round-trip |
+| FR-14.6 | In a live system the layer is admin-only and invisible to end users; import/export is an explicit, audited admin action | P0 | M2 | N | Non-admin sees nothing; every import writes an audit entry with counts and actor |
+| FR-14.7 | Import/export works in **all deployment modes**: bookmarklet (file download/upload), server (upload/download endpoint), CLI (offline) | P0 | M2 | N | Each mode verified in the fixture/example setups |
+| FR-14.8 | Notes can be **promoted** deliberately between environments (dev → live, live → dev) without losing anchors, threads or origin | P1 | M3 | N | Promoted bundle keeps ids, threads and sources; environment tag is updated, history preserved |
+| FR-14.9 | Bundle size and content are inspectable before import (list of sessions, counts, environments) | P2 | M3 | N | `inspect` prints a summary without writing anything |
+
+## FR-15 Headless data library and CLI  *(the "extra library" for reading/writing the data)*
+
+Not every consumer has a browser: CI jobs, migration scripts, agents, and the dev/live exchange
+need to read and write note sets without any UI.
+
+| ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
+|---|---|---|---|---|---|
+| FR-15.1 | `bluepencil/data` — headless API for note sets: parse, validate, filter, merge, canonicalise, migrate, export (no DOM access) | P0 | M2 | N | Runs in plain Node without a DOM shim; same validators as the UI |
+| FR-15.2 | `bluepencil/cli` — `bluepencil inspect \| validate \| merge \| export \| import` with `--file`, `--mode`, `--dry-run`, `--json` | P0 | M2 | N | Commands usable in a shell pipeline; exit codes meaningful for CI |
+| FR-15.3 | **Single source of truth**: UI, server, CLI and MCP use the same schema, validators and merge logic — no second implementation | P0 | M2 | N | A schema change breaks exactly one place; conformance tests shared |
+| FR-15.4 | Data and CLI packages are **DOM-free** and have no runtime dependencies | P0 | M2 | N | Node-only install works; `dependencies` empty |
+| FR-15.5 | The MCP tool group is a thin wrapper over this API (no separate logic) | P1 | M4 | N | MCP and CLI behave identically for the same input |
+
 ---
 
 ## NFR — non-functional
@@ -164,6 +209,9 @@
 | NFR-14 | Observability: a debug flag writes to `console.debug` only; no user-visible errors on failure | P2 | M2 | Adapter failure shows one inline message, never a broken page |
 | NFR-15 | **Runtime parity**: every guarantee (footprint, no interference, determinism) holds identically after enable/disable cycles, not only on first load | P0 | M1 | Test matrix: N cycles × (footprint, host events, export determinism) all pass |
 | NFR-16 | **Host-agnostic packaging**: consumable three ways — bundled dependency (ESM), standalone ES module resource (no build step, e.g. Home Assistant), single-file IIFE/bookmarklet | P0 | M3 | All three consume the same build in CI fixtures |
+| NFR-17 | **Canonical, diffable bundles**: deterministic serialization (stable key and list order), so bundles can be committed and hashed | P0 | M2 | Two exports of the same set are byte-identical; a one-note change produces a one-hunk diff |
+| NFR-18 | **Environment isolation by default**: an import never mixes environments unless explicitly asked (`--allow-env-mismatch`) | P0 | M2 | Importing a `live` bundle into a `dev` store is refused by default and explains why |
+| NFR-19 | **Interoperability without the tool**: bundles are plain, documented JSON that any script can read; no proprietary encoding, no binary blobs | P0 | M2 | A 20-line script parses and filters a bundle using only the schema doc |
 
 ---
 
@@ -187,9 +235,14 @@
 | D6 | DOM hook for anchors | **`data-bluepencil`**, with `data-testid` honoured as an equal second hook. |
 | D7 | Retention defaults | Configurable; defaults 90 days (done) / 180 days (all). Low priority — this is a review/debug layer, not a data store. |
 | D8 | Primary use | **A library that can be activated and deactivated at runtime inside arbitrary products** — from a simple website to a complex web tool to a Home Assistant custom card/panel. Drives FR-12. |
+| D9 | Developer systems | During debugging the layer **reads and writes**: tooling (tests, build, agent) can create and update notes in the running system via the headless API. Drives FR-13. |
+| D10 | Live systems & exchange | Integration into live systems is admin-only; note sets travel via **portable export/import bundles**. The read/write logic lives in a **headless data library + CLI** (`bluepencil/data`, `bluepencil/cli`) that the UI and server reuse. Drives FR-14 and FR-15. |
 
 ### Still open (before/while M1)
 
+0. **File extension for export bundles**: `.bluepencil.json` is the proposal (self-describing,
+   still plain JSON); a shorter `.bpnotes` would need its own tooling everywhere. Recommendation:
+   `.bluepencil.json`.
 1. **Web-component naming** for the custom-element build (`<bluepencil-notes>`? `<bp-layer>`?).
 2. **Home Assistant delivery**: ship the integration in this repository
    (`examples/home-assistant/`, a frontend resource + custom card) or as a separate HACS

@@ -19,6 +19,13 @@ bluepencil/
 │  │  │  ├─ markdown.ts    # agent-facing export, deterministic ordering
 │  │  │  └─ json.ts        # schema-versioned full export/import
 │  │  └─ protocol.ts       # intent/status/thread rules (agent collaboration)
+│  ├─ data/                # HEADLESS (no DOM): schema, validate, merge, canonicalise,
+│  │  │                    # migrate, bundle read/write — used by UI, server, CLI, MCP
+│  │  ├─ schema.ts         #   types + JSON schema + migration table
+│  │  ├─ bundle.ts         #   export/import a portable bundle (FR-14.2)
+│  │  ├─ merge.ts          #   merge/upsert/replace-session + conflict report (FR-14.3/14.4)
+│  │  └─ canonical.ts      #   deterministic serialization (NFR-17)
+│  ├─ cli/                 # `bluepencil inspect|validate|merge|export|import` (FR-15.2)
 │  ├─ adapters/
 │  │  ├─ memory.ts         # ephemeral
 │  │  ├─ local-storage.ts  # survives reload, bookmarklet default
@@ -39,7 +46,8 @@ bluepencil/
 ├─ examples/
 │  ├─ vanilla/             # plain HTML fixture app (all FR groups)
 │  ├─ react/               # React fixture
-│  └─ home-assistant/      # custom card/panel loading the element build as a resource (FR-12.5/12.7)
+│  ├─ home-assistant/      # custom card/panel loading the element build as a resource (FR-12.5/12.7)
+│  └─ round-trip/          # dev → bundle → live → bundle → dev exchange (FR-14.5/14.8)
 ├─ tests/
 │  ├─ unit/                # model, anchor, adapters, export (vitest)
 │  └─ e2e/                 # Playwright against examples/vanilla
@@ -85,6 +93,30 @@ await bp.destroy();        // final cleanup; the instance can be discarded
 `enable()` / `disable()` are the D8 core: a product can hand the layer to an admin for one
 session and take it away again without reloading, and repeated cycles must leave no residue
 (FR-12.2, NFR-15).
+
+### Headless use (dev tooling, CI, agents) — FR-13.2, FR-15.x
+
+```ts
+import { createStore, createNote, toMarkdown, mergeBundles } from "bluepencil/data";
+
+// A test runner or build script writes a note into the same store the UI reads:
+const store = createStore({ adapter: "localStorage" });     // or httpAdapter / memory
+await store.create(createNote({
+  type: "text",
+  body: "Test `checkout.spec.ts` failed at this element",
+  source: "tool:test-runner",
+  anchor: { hook: "checkout-submit" },
+  debug: { test: "checkout.spec.ts", stack: "…", commit: "abc1234" },
+}));
+```
+
+```bash
+# CLI: exchange and inspection without any UI (FR-15.2)
+bluepencil export --adapter http --endpoint … --env live --out live.bluepencil.json
+bluepencil inspect live.bluepencil.json
+bluepencil merge dev.bluepencil.json live.bluepencil.json --dry-run --json
+bluepencil import live.bluepencil.json --adapter http --endpoint … --mode merge
+```
 
 Everything the UI does is also available headlessly through `bp.store` and the export
 functions, so an integration can render the notes in its own UI (FR-10.4).
@@ -203,6 +235,57 @@ getUser:()=>({name:'reviewer'}),getRoute:()=>location.pathname});document.head.a
   limitation with the workaround (self-hosted mode or extension) (NFR-6).
 * No `eval`, no inline handlers.
 
+## 5b. Bundle format and exchange (FR-14)
+
+A **bundle** is one plain JSON file — self-describing, deterministic, diffable:
+
+```jsonc
+{
+  "kind": "bluepencil.bundle",
+  "schemaVersion": 1,
+  "exportedAt": "2026-09-14T18:20:00+02:00",
+  "exportedBy": "daniel@dev",
+  "environment": "dev",                    // dev | staging | live   (FR-14.1)
+  "app": { "name": "my-web-tool", "buildRef": "abc1234" },
+  "sessions": [
+    { "ref": "review-2026-09-14", "label": "Pre-release review", "createdAt": "…" }
+  ],
+  "notes": [ /* Note[] — anchors, context, threads, sources, debug info */ ]
+}
+```
+
+Merge semantics (FR-14.3/14.4) — always idempotent, never silent:
+
+| Mode | Behaviour |
+|---|---|
+| `merge` (default) | Add notes whose `id` is unknown; skip known ids. Running it twice changes nothing. |
+| `upsert` | Same, but updates known notes when their content changed; the incoming and existing threads are **concatenated** (append-only), never replaced. |
+| `replace-session` | Removes the notes of a session present in the bundle, then adds the bundle's version of that session. |
+
+Every import (except dry-run) reports `{ added, updated, skipped, conflicts[] }`. Conflicts are
+notes with the same `id` but divergent content: they are **listed**, and the write is refused
+unless `--on-conflict=keep-incoming|keep-existing` is given explicitly.
+
+Environment rules (NFR-18): the bundle's `environment` must match the target's, otherwise the
+import stops with an explanation; overriding requires `--allow-env-mismatch`. Promotion between
+environments (FR-14.8) is therefore a deliberate act, and the note keeps its full thread and
+origin while the environment tag is rewritten.
+
+## 5c. Headless data library and CLI (FR-15)
+
+`bluepencil/data` is a DOM-free package with the entire note logic (schema, validation, merge,
+canonicalisation, migration, bundle I/O). The UI, the reference server, the CLI and the MCP tool
+group are all thin layers over it — one implementation, one set of validators (FR-15.3).
+
+```
+src/data/   schema.ts  bundle.ts  merge.ts  canonical.ts  migrate.ts   # no DOM, no deps
+src/cli/    bin: bluepencil  inspect | validate | merge | export | import
+```
+
+Guarantees: no runtime dependencies (FR-15.4), runs in plain Node (NFR-… FR-15.4), canonical
+output for diffing and hashing (NFR-17), and bundles readable by a 20-line script without the
+library (NFR-19).
+
 ## 6b. Runtime lifecycle, shadow DOM, multi-instance
 
 **Lifecycle contract.** `enable()` attaches, `disable()` detaches — completely:
@@ -317,10 +400,13 @@ D8 **runtime activation in arbitrary products** — which is why this document n
 * **M1** — `0.1.0`: core + UI + memory/localStorage adapters + Markdown/JSON export + fixture app
   + unit/E2E tests. Exit: annotate any page, reload, export, no server involved.
 * **M2** — `0.2.0`: HTTP adapter + reference server + sessions + bulk/session deletion +
-  deterministic exports.
+  deterministic exports + **headless data library and CLI**, **bundle export/import with
+  merge/dry-run/conflict reporting**, environment tagging, dev-system write API (FR-13.1–13.3,
+  FR-14.1–14.7, FR-15.1–15.4).
 * **M3** — `0.3.0`: IIFE build, **custom-element build**, bookmarklet, React wrapper, theming
   docs, size guard, host-variety examples (static, SPA, web-component/HA card).
-* **M4** — `0.4.0`: MCP tool group + protocol doc + retention option.
+* **M4** — `0.4.0`: MCP tool group (thin wrapper over `bluepencil/data`) + protocol doc +
+  retention option.
 * **M5** — `0.5.0`: product integration guide (RBAC, audit, purge) with a worked example.
 * **M6** — `1.0.0`: i18n (en/de), a11y audit, docs site, API freeze (semver commitment).
 

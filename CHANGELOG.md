@@ -38,4 +38,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
   custom-element build and Home Assistant example in the planned layout.
 - `docs/CONCEPT.md` UC-9 (switching the layer on inside a product at runtime).
 
+### Added (second review round)
+- **FR-13** dev systems: the layer reads *and* writes during debugging — headless write API,
+  note origin/source (`ui:human`, `agent`, `tool:test-runner`, …), optional dev auto-attach,
+  debug context (stack trace, failing test, commit) and optional `file:line` references.
+- **FR-14** live systems and exchange: environment tagging (`dev`/`staging`/`live`), portable
+  export bundles, import with `merge`/`upsert`/`replace-session`, dry-run with
+  added/updated/skipped/conflicts, round-trip fidelity, admin-only + audited in live systems,
+  deliberate promotion between environments.
+- **FR-15** headless data library and CLI (`bluepencil/data`, `bluepencil/cli`): read, write,
+  merge, validate and inspect note sets without a browser; single source of truth for UI,
+  server, CLI and MCP.
+- **NFR-17** canonical diffable bundles · **NFR-18** environment isolation by default ·
+  **NFR-19** interoperability without the tool.
+- `docs/ARCHITECTURE.md` §5b (bundle format, merge semantics, environment rules) and §5c
+  (headless library and CLI); planned `src/data/`, `src/cli/`, `examples/round-trip/`.
+- `docs/CONCEPT.md` UC-10 (debugging with tool-written notes), UC-11 (notes travel between
+  environments) and §5b “How notes travel”.
+- `docs/PROTOCOL.md` §8: environment and exchange rules for humans and agents.
+- Decisions D9 (dev systems read/write) and D10 (live integration + headless exchange library)
+  recorded.
+
 Nothing is implemented yet; this is the concept and requirements baseline for milestone M1.
