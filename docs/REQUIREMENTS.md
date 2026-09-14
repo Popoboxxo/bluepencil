@@ -29,6 +29,7 @@
 
 | ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
 |---|---|---|---|---|---|
+| FR-1.9 | **Verweise bleiben bedienbar**: Links im kommentierbaren Inhalt werden in *jedem* Kommentarmodus durchgereicht (Ausnahmeliste `a[href]`, Formularfelder, `[data-bp-ignore]`); der Composer öffnet dann nicht | P0 | M1 | P | Bei aktivem Modus folgt ein Klick auf einen Link dem Ziel und öffnet keinen Composer; ein Klick auf den umgebenden Text öffnet ihn wie gewohnt |
 | FR-2.1 | Resolution order: host hook (`data-bluepencil`, `data-testid`) → stored CSS path → text quote | P0 | M1 | P | Removing the hook falls back to the path; rewording falls back to the quote |
 | FR-2.2 | The note stores route/path and (if present) the SPA route at capture time | P0 | M1 | G | Two notes on the same selector on different routes stay distinct |
 | FR-2.3 | Each anchor is resolved *before* save so invalid anchors cannot be stored | P0 | M1 | P | Saving a note whose element vanished is rejected with feedback |
@@ -138,7 +139,7 @@
 | FR-12.3 | **Mount scope**: `mount(target?)` mounts globally (`document`) or inside a given container; several instances coexist without cross-talk | P1 | M2 | N | Two instances with different adapters on one page keep separate note sets and UIs |
 | FR-12.4 | **Shadow DOM support**: click capture and anchoring work across shadow roots (`composedPath()`, `getRootNode()`); the stored path encodes the shadow boundary | P0 | M2 | N | Note created on an element inside a shadow root resolves after reload |
 | FR-12.5 | **Web-component packaging**: a custom-element build (`<bluepencil-notes>` or equivalent) plus attribute/event mapping, so the layer can be loaded as a resource in hosts like Home Assistant | P1 | M3 | N | Element loads from a single ES module resource, opens the panel, stores notes through the configured adapter |
-| FR-12.6 | **No host interference**: listeners work in the capture phase and never call `stopPropagation()` unless an annotation mode is active; original behaviour is restored on teardown | P0 | M1 | N | Host's own click handlers fire normally with the layer enabled but idle |
+| FR-12.6 | **No host interference**: listeners work in the capture phase and never call `stopPropagation()` unless an annotation mode is active; interactive elements (`a[href]`, form fields, `[data-bp-ignore]`) are passed through even then; original behaviour is restored on teardown | P0 | M1 | N | Host's own click handlers fire normally with the layer enabled but idle; links and fields stay operable while a mode is active (FR-1.9) |
 | FR-12.7 | **Documented host variety**: worked examples for at least a static page, a framework SPA, a micro-frontend/web-component host and a Home Assistant custom card | P1 | M3 | N | Each example in `examples/` runs and is covered by an E2E smoke test |
 | FR-12.8 | **Config-driven identity** (D3): `identity` accepts a hook, `"prompt"` or `"anonymous"`; unset falls back to `"prompt"` | P0 | M1 | N | All three modes verified in the fixture app |
 
