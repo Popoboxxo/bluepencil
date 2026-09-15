@@ -1,0 +1,91 @@
+{
+  "name": "bluepencil",
+  "version": "0.1.0",
+  "description": "Annotate any web app — text and design notes, anchored to the element, readable by humans and agents.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "main": "./dist/bluepencil.js",
+  "module": "./dist/bluepencil.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/bluepencil.js"
+    },
+    "./data": {
+      "types": "./dist/types/data/index.d.ts",
+      "import": "./dist/data.js"
+    },
+    "./adapters/memory": {
+      "types": "./dist/types/adapters/memory.d.ts",
+      "import": "./dist/adapters/memory.js"
+    },
+    "./adapters/local-storage": {
+      "types": "./dist/types/adapters/local-storage.d.ts",
+      "import": "./dist/adapters/local-storage.js"
+    },
+    "./adapters/file": {
+      "types": "./dist/types/adapters/file.d.ts",
+      "import": "./dist/adapters/file.js"
+    },
+    "./adapters/http": {
+      "types": "./dist/types/adapters/http.d.ts",
+      "import": "./dist/adapters/http.js"
+    },
+    "./adapters/mcp": {
+      "types": "./dist/types/adapters/mcp.d.ts",
+      "import": "./dist/adapters/mcp.js"
+    },
+    "./i18n/en": {
+      "types": "./dist/types/i18n/en.d.ts",
+      "import": "./dist/i18n/en.js"
+    },
+    "./i18n/de": {
+      "types": "./dist/types/i18n/de.d.ts",
+      "import": "./dist/i18n/de.js"
+    },
+    "./element": {
+      "types": "./dist/types/element/index.d.ts",
+      "import": "./dist/bluepencil.element.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "bluepencil": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "size": "node scripts/size-guard.mjs",
+    "verify": "npm run typecheck && npm run test && npm run build && npm run size"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "esbuild": "^0.24.2",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "keywords": [
+    "annotation",
+    "review",
+    "feedback",
+    "design-review",
+    "agents",
+    "mcp"
+  ]
+}
