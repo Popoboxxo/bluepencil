@@ -1,0 +1,229 @@
+agent-meta-version: 1.2.0-beta.2
+_comment: 'Projekt-Config fuer bluepencil (Projekt-Eigentuemer). Framework-Configs
+  liegen im Submodul .agent-meta/config/ und werden hier nicht editiert. Nach Aenderungen:
+  sync.py erneut laufen lassen.'
+provider-isolation: disabled
+ai-providers:
+- Claude
+- Opencode
+dod-preset: standard
+rules-preset: lazy
+knowledge-engine:
+  enabled: false
+platforms:
+- agent-meta
+roles:
+- orchestrator
+- developer
+- junior-developer
+- senior-developer
+- principal-developer
+- planner
+- concept-architect
+- concept-specifier
+- concept-reviewer
+- requirements
+- documenter
+- git
+- release
+- meta-feedback
+- feedback
+- ideation
+- bug-feature-analyzer
+- code-reviewer
+- tester
+- test-executor
+- e2e-tester
+- validator
+- explorer
+- api-specialist
+- frontend-component-engineer
+- ui-ux-designer
+- design-system-architect
+- accessibility-specialist
+- dependency-auditor
+- technical-writer
+- performance-optimizer
+- refactoring-specialist
+- prompt-engineer
+- agent-meta-manager
+- agent-meta-scout
+- devops-engineer
+- log-analyzer
+- effort-estimator
+project:
+  name: bluepencil
+  prefix: bp
+  short: bluepencil
+hooks:
+  dod-push-check:
+    enabled: true
+provider-options:
+  Claude: {}
+  Opencode: {}
+external-skills:
+  awesome-claude-code:
+    enabled: false
+max-parallel-agents: 4
+model-inherit-main-chat:
+  Opencode: true
+orchestrator:
+  enabled: true
+  strict: true
+  direct-dispatch-enabled: true
+  unknown-fallback:
+    meta-feedback: true
+    main-chat: true
+    ask-user: false
+  native-extensions:
+    enabled: true
+  handoff:
+    protocol: a2a-v1
+  mode: strict
+repo_containment:
+  enabled: true
+  tmp-sink:
+    enabled: true
+    path: .tmp
+    gitignore: true
+    cleanup: manual
+gitignore:
+  local: true
+  generated: false
+  settings: false
+speech-mode: short
+variables:
+  PROJECT_NAME: bluepencil
+  PROJECT_DESCRIPTION: 'Framework-agnostische Review-Schicht fuer beliebige Web-Apps:
+    Annotieren von Inhalt und Design, verankert am Element, lesbar von Menschen und
+    Agenten.'
+  PROJECT_GOAL: Eine kleine, dependency-freie TypeScript-Bibliothek (Overlay + Headless-Datenlayer
+    + CLI + MCP), mit der ein Reviewer jede Web-App annotieren und die Notizen an
+    einen Entwickler oder einen Agenten uebergeben kann.
+  PLATFORM: TypeScript-Bibliothek (Browser + Node, kein Runtime-Dependency)
+  RUNTIME: Node >= 20, aktuelle Evergreen-Browser
+  LANGUAGE: TypeScript, CSS, Markdown, JSON
+  PROJECT_LANGUAGES: TypeScript, CSS, Markdown, JSON
+  COMMUNICATION_LANGUAGE: Deutsch
+  USER_INPUT_LANGUAGE: Deutsch
+  DOCS_LANGUAGE: Englisch
+  INTERNAL_DOCS_LANGUAGE: Deutsch
+  CODE_LANGUAGE: Englisch
+  AGENT_META_REPO: Popoboxxo/agent-meta
+  GIT_PLATFORM: GitHub
+  GIT_REMOTE_URL: https://github.com/Popoboxxo/bluepencil
+  GIT_MAIN_BRANCH: main
+  BUILD_COMMAND: npm run build
+  TEST_COMMAND: npm test
+  TEST_COMMANDS: npm run typecheck && npm run test
+  DEV_COMMANDS: |
+    npm run dev          # esbuild watch + Fixture-Server
+    npm run typecheck
+    npm run test
+    npm run build
+  DEV_STACK_START: npm run dev
+  DEV_STACK_RELOAD: automatisch via esbuild watch
+  PROJECT_CONTEXT: bluepencil ist eine Bibliothek, die in fremde Web-Apps injiziert
+    wird. Der gesamte Note-Logik-Bestand (Schema, Validierung, Merge, Kanonisierung,
+    Migration, Bundle-I/O) lebt headless in src/data und wird von UI, CLI, Referenz-Server
+    und MCP gemeinsam genutzt - es gibt genau eine Implementierung. Alle Anforderungen
+    sind in docs/REQUIREMENTS.md mit FR-/NFR-IDs dokumentiert; docs/PROTOCOL.md ist
+    normativ fuer die Mensch-Agent-Zusammenarbeit.
+  PROJECT_STRUCTURE: |
+    src/
+      core/       # model, store, anchor, capture, protocol, export/ (UI-unabhaengig, DOM nur in anchor/capture)
+      data/       # HEADLESS: schema, validate, canonical, bundle, merge, migrate (kein DOM)
+      cli/        # bluepencil inspect|validate|merge|export|import
+      adapters/   # memory, local-storage, file, http
+      ui/         # layer, composer, panel, legend, styles.css
+      i18n/       # en, de
+      mcp/        # MCP-Server (thin wrapper ueber src/data)
+      index.ts    # oeffentliche API: init(), mount(), enable(), disable(), destroy()
+    server/       # Referenz-Server (Sidecar-Modus)
+    examples/     # vanilla, react, home-assistant, round-trip
+    tests/        # unit (vitest), e2e (Playwright)
+    docs/         # CONCEPT, REQUIREMENTS, ARCHITECTURE, PROTOCOL, INTEGRATION
+  ENTRY_POINT_PATTERN: src/index.ts (Bibliothek) / src/cli/bin.ts (CLI) / src/mcp/server.ts
+    (MCP)
+  KEY_PATTERNS: |
+    - Keine Runtime-Dependencies im Kern (NFR-4); Dev-Dependencies nur fuer Build/Test
+    - Alle UI-Klassen mit Prefix bp-, Styles nur ueber CSS-Custom-Properties (--bp-*)
+    - enable()/disable() muessen vollstaendig und idempotent sein (FR-12.1/12.2, NFR-15)
+    - Nutzertexte immer als Text rendern, nie als HTML (FR-9.3)
+    - Keine Netzwerkaufrufe ausser zum host-konfigurierten Adapter (FR-9.4, NFR-7)
+    - Kanonische, stabile Serialisierung fuer diffbare Bundles (NFR-17)
+  ARCHITECTURE: |
+    src/core/    model.ts store.ts anchor.ts capture.ts protocol.ts export/{markdown,json}.ts
+    src/data/    schema.ts validate.ts canonical.ts bundle.ts merge.ts migrate.ts
+    src/adapters/ memory.ts local-storage.ts file.ts http.ts
+    src/ui/      layer.ts composer.ts panel.ts legend.ts styles.css
+    tests/unit/  vitest (jsdom)   tests/e2e/  Playwright gegen examples/vanilla
+    Entscheidungen D1-D11: siehe docs/REQUIREMENTS.md "Decisions (resolved)"
+  CODE_CONVENTIONS: |
+    - TypeScript strict, ESM, keine Default-Exports im Kern
+    - Dateinamen snake_case-frei: kebab-case fuer Dateien, camelCase fuer Symbole
+    - Oeffentliche Typen in src/core/model.ts, alles andere importiert von dort
+    - Tests neben der Sache: tests/unit/<modul>.test.ts
+    - Dokumentation und Code-Kommentare auf Englisch (externe Doku), Kommunikation auf Deutsch
+  EXTRA_DONTS: |
+    - KEINE Runtime-Dependency hinzufuegen (Core muss dependency-frei bleiben)
+    - KEIN zweiter Implementierungspfad fuer Validierung/Merge (FR-15.3)
+    - KEINE globalen CSS-Resets und kein ungeprefixtes Styling
+    - KEINE Aenderungen an generierten Provider-Ordnern (.claude/, .opencode/) von Hand
+    - KEIN stopPropagation im Leerlauf - nur bei aktivem Annotationsmodus (FR-12.6)
+  CODE_QUALITY_RULES: |
+    - npm run typecheck muss fehlerfrei sein
+    - npm test (vitest) muss gruen sein; neue Logik braucht Unit-Tests
+    - Bundle-Budget pruefen (NFR-3: <= 30 kB min+gzip Kern)
+    - Oeffentliche API-Aenderungen in CHANGELOG.md dokumentieren
+  TESTER_SNIPPETS_PATH: ''
+  DEVELOPER_SNIPPETS_PATH: ''
+  BUILD_COMMANDS: npm run build
+  REQ_CATEGORIES: |
+    - Capture & Anchoring (FR-1.x, FR-2.x)
+    - Note-Modell & Protokoll (FR-3.x, FR-5.x, PROTOCOL.md)
+    - UI, Filter & A11y (FR-4.x, FR-11.x)
+    - Adapter, Export & Bundles (FR-6.x, FR-7.x, FR-14.x)
+    - Headless/CLI/MCP (FR-13.x, FR-15.x, FR-16.x)
+  SERVICE_NAME: (kein Service)
+  CONTAINER_NAME: (kein Container)
+  PRIMARY_PORT: ''
+  EXTRA_PORTS: ''
+  DOCKER_STACKS_OVERVIEW: (kein Docker-Stack)
+  EXTRA_VOLUMES: ''
+  EXTRA_VOLUME_DEFINITIONS: ''
+  EXTRA_ENV_VARS: ''
+  EXTRA_STARTUP_INFO: ''
+  HOST_LAN_IP: ''
+  BUILD_OUTPUT: dist/ (ESM, IIFE, custom-element, CLI, MCP)
+  ARTIFACT_ZIP_CMD: ''
+  ARTIFACT_TAR_CMD: ''
+  GH_ASSETS: ''
+  REQUIRED_BINARIES_SECTION: Node >= 20, npm; Playwright-Browser nur fuer E2E.
+  BINARY_INSTALL_STEPS: |
+    npm ci
+    npx playwright install chromium   # nur fuer E2E
+  ORCHESTRATOR_STRICT: true
+  UNKNOWN_FALLBACK_META_FEEDBACK: true
+  UNKNOWN_FALLBACK_MAIN_CHAT: true
+  UNKNOWN_FALLBACK_ASK_USER: false
+  REQUIRED_BINARY_NAMES: (keine)
+  BUILD_SYSTEM_NOTES: esbuild fuer Bundles, tsc nur fuer Typen und .d.ts.
+  VERSION_DIST_BEHAVIOUR: 'Release: 1. package.json + VERSION, 2. CHANGELOG.md, 3.
+    git tag vX.Y.Z, 4. Push mit Release-Sektion. Ein Release pro Milestone (docs/ARCHITECTURE.md
+    §11).'
+  SE_MIN_DEPTH: 2
+  SE_MAX_DEPTH: 6
+  SE_MAX_CELLS: 20
+  SE_MAX_CRITIC_ITERATIONS: 3
+  SE_MAX_PARALLEL_CELLS: 4
+  SE_BASE_DIR: SE
+  PIPELINE_DETAILS_DIR: .meta-config/pipeline-details
+# The active tier preset mapped against config/tier-presets.yaml. Adjusts model selection globally. Use se-focus: true instead of the deprecated '(SE)' suffix variants.
+tier-preset: Normal
+# When true, SE roles (se-architect, se-critic, se-developer, etc.) are upgraded one tier before preset mapping is applied. Replaces the deprecated '(SE)' suffix in tier-preset names.
+se-focus: false
+# When true, sync.py injects a debug block into every generated agent. Active agents announce themselves ([Agent: <name>]), log every delegation (→ Delegiere an: ...), and confirm completion (✓ [Agent: <name>] fertig). Default: false — no change to any agent file.
+debug-mode: false
+# Allow sync.py to write files containing detected secrets to committed (non-gitignored) paths. Default: false — sync aborts with an error when a secret is detected in a committed file. Set to true only when you deliberately commit secret-looking values (e.g. static demo tokens). NOT recommended for production projects.
+allow-committed-secrets: false

@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [],
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/dod-push-check.sh"
+          }
+        ],
+        "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/orchestrator-guard.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/repo-containment.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
