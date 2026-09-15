@@ -1,35 +1,72 @@
 /**
  * MCP tool implementations (FR-16.1–16.7).
  *
- * These are **thin wrappers** over the headless data library and the store — no separate
- * merge, validation or canonicalisation logic (FR-15.3/16.7). The same functions back the CLI,
- * so `bluepencil merge` and `import_bundle` behave identically.
+ * These are **thin wrappers** over the headless data library and the store — no separate merge,
+ * validation or canonicalisation logic (FR-15.3/16.7, F5/M2): ordering comes from
+ * `core/protocol.ts`, filtering from `core/adapter.ts`, merge and validation from `src/data`.
+ * The same functions back the UI and the CLI, so `bluepencil merge` and `import_bundle` behave
+ * identically for the same input.
  *
  * Safety model:
  *  - **read-only by default**: every write tool returns a clear refusal unless the session was
  *    started with an explicit opt-in (FR-16.2);
- *  - a session is bound to **one store, one app and one environment**; anything that would
- *    touch another environment is refused (FR-16.3/NFR-18);
- *  - agent writes carry `source=agent` plus the MCP client name and session id (FR-16.4).
+ *  - a session is bound to **one store, one app and one environment** (FR-16.3/NFR-18): every list
+ *    is filtered to `context.environment`, every read by id compares the note's environment with
+ *    the binding and refuses a note of another environment — naming both — and every write does the
+ *    same, so a `dev`-bound session can neither see nor mutate a `live` note;
+ *  - agent writes carry `source=agent` plus the MCP client name and session id (FR-16.4);
+ *  - **a write is only success once it is on disk**: after every mutation the store is reloaded and
+ *    the backing medium is read back through {@link McpPersistence.readPersisted}, because a failing
+ *    adapter degrades to memory instead of throwing (NFR-8) and would otherwise report a change it
+ *    never persisted (F7);
+ *  - an **import applies the full merged note** — identity, timestamps, thread, debug, all of it —
+ *    through {@link McpPersistence.replaceAll}, never a partial patch (F5/F6/FR-14.3), and a
+ *    conflicting import is refused unless the caller resolved it with `on_conflict`, exactly like
+ *    the CLI (F10);
+ *  - enumerated arguments are validated against the documented sets (F12b) — the JSON schema is a
+ *    description for the client, not a validator on the server.
  */
-import { canonicalNote, canonicalBundle } from "../data/canonical";
+import { canonicalBundle, canonicalNote, serializeCanonical } from "../data/canonical";
 import { createBundle, inspectBundle, parseBundle, bundleToJson, type BundleSummary } from "../data/bundle";
 import { mergeNotes, type MergeMode, type MergeResult } from "../data/merge";
 import { validateNote } from "../data/schema";
+import { excludeDone, filterNotes, isRecord, type Adapter } from "../core/adapter";
+import { createFileAdapter, type FileAdapterIo } from "../adapters/file";
+import { parseNoteSet, serializeNoteSet } from "../adapters/memory";
+import { sortForReview, summarize } from "../core/protocol";
 import type { Store } from "../core/store";
 import {
   BluepencilValidationError,
+  MESSAGE_KINDS,
+  NOTE_INTENTS,
+  NOTE_STATUSES,
+  NOTE_TYPES,
   createMessage,
-  isNoteIntent,
-  isNoteStatus,
   systemClock,
   type Anchor,
   type Environment,
+  type MessageKind,
   type Note,
   type NoteFilter,
+  type NoteIntent,
   type NoteStatus,
-  type NoteType,
 } from "../core/model";
+
+/** Merge modes the tool accepts (FR-14.3) — the schema and the validator share this list. */
+export const MERGE_MODES = ["merge", "upsert", "replace-session"] as const;
+/** Conflict policies the tool accepts (FR-14.4) — the schema and the validator share this list. */
+export const CONFLICT_POLICIES = ["fail", "keep-incoming", "keep-existing"] as const;
+/** Output formats of `list_notes` and `export_bundle`. */
+export const FORMATS = ["json", "markdown"] as const;
+/**
+ * Message kinds this server may append. `decision` is missing on purpose: a decision is a human
+ * act (PROTOCOL §6.1), so the tool never advertises it and refuses it explicitly.
+ */
+export const AGENT_MESSAGE_KINDS: readonly MessageKind[] = MESSAGE_KINDS.filter(
+  (kind) => kind !== "decision",
+);
+
+export type ConflictPolicy = (typeof CONFLICT_POLICIES)[number];
 
 export interface ToolContext {
   store: Store;
@@ -41,6 +78,76 @@ export interface ToolContext {
   clientName: string;
   sessionId: string;
   now?: () => string;
+  /** Host hooks the frozen `Store`/`Adapter` contracts cannot express (F5/F6/F7). */
+  persistence: McpPersistence;
+}
+
+/** Host I/O of the session's store file; `read()` returns `null` while the file does not exist. */
+export interface StoreFileIo {
+  read(): Promise<string | null>;
+  write(text: string): Promise<void>;
+}
+
+/**
+ * What the MCP layer needs from its host beyond the frozen `Store` contract.
+ *
+ * `Store.create`/`update` derive `createdAt`, `updatedAt` and `schemaVersion` from the call site
+ * (`createNote`, `applyPatch`) and cannot carry an existing thread, so the frozen contract cannot
+ * express "this note, exactly". An import must be able to (FR-14.3/F5/F6): the incoming note
+ * arrives with its identity, its timestamps, its refs, its thread and its debug payload.
+ * `replaceAll` is that one missing capability and nothing more — it writes the whole set through
+ * the adapter's **own** codec, so the stored file keeps exactly one format (FR-6.5/FR-15.3).
+ *
+ * The two read-back hooks exist because a failed write is invisible otherwise: the JSON adapter
+ * degrades to memory and keeps the change there (NFR-8), so only the medium itself can tell
+ * whether the change arrived (F7).
+ */
+export interface McpPersistence {
+  /** Replaces the persisted set with exactly these notes (canonical form, NFR-17). */
+  replaceAll(notes: readonly Note[]): Promise<void>;
+  /** Reads the set back from the backing medium; throws when it is unreadable. */
+  readPersisted(): Promise<Note[]>;
+  /** The underlying I/O error of the last failed write, or `null` after a successful one (F7). */
+  lastWriteError(): unknown;
+}
+
+/**
+ * Builds the store adapter and the persistence hooks of one session (F5/F6/F7).
+ *
+ * The host supplies only the medium (a file, a string in a test); everything else is the adapter's
+ * own read-modify-write engine, so there is no second implementation of the stored shape.
+ */
+export function createStorePersistence(io: StoreFileIo): {
+  adapter: Adapter;
+  persistence: McpPersistence;
+} {
+  let lastWriteError: unknown = null;
+
+  /** Every write of this session goes through here, so a failure is remembered, never swallowed. */
+  const write = async (text: string): Promise<void> => {
+    try {
+      await io.write(text);
+      lastWriteError = null;
+    } catch (error) {
+      lastWriteError = error;
+      throw error;
+    }
+  };
+
+  const fileIo: FileAdapterIo = { read: () => io.read(), write: (text) => write(text) };
+
+  return {
+    adapter: createFileAdapter(fileIo),
+    persistence: {
+      async replaceAll(notes: readonly Note[]): Promise<void> {
+        // Canonical form: the stored blob has the same shape an export produces (NFR-17), and every
+        // field of the note survives — this is the point of the whole capability (F5/F6).
+        await write(serializeNoteSet(notes.map((note) => canonicalNote(note))));
+      },
+      readPersisted: async (): Promise<Note[]> => parseNoteSet(await io.read()),
+      lastWriteError: (): unknown => lastWriteError,
+    },
+  };
 }
 
 export interface ToolDefinition {
@@ -68,18 +175,19 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "list_notes",
     description:
       "List the notes of this session's store, newest review order (open decisions first, then " +
-      "feedback-only, then the rest). Done notes are hidden unless include_done is true.",
+      "feedback-only, then the rest). Only notes of the session's environment are returned; done " +
+      "notes are hidden unless include_done is true.",
     write: false,
     inputSchema: {
       type: "object",
       properties: {
-        status: { type: "string", enum: ["open", "done", "needs_decision"] },
-        intent: { type: "string", enum: ["implement", "feedback"] },
-        type: { type: "string", enum: ["text", "design"] },
+        status: { type: "string", enum: [...NOTE_STATUSES] },
+        intent: { type: "string", enum: [...NOTE_INTENTS] },
+        type: { type: "string", enum: [...NOTE_TYPES] },
         route: { type: "string" },
         session: { type: "string" },
         include_done: { type: "boolean", default: false },
-        format: { type: "string", enum: ["json", "markdown"], default: "json" },
+        format: { type: "string", enum: [...FORMATS], default: "json" },
       },
     },
   },
@@ -96,15 +204,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "create_note",
     description:
-      "Create a note in the bound store (source=agent). Anchors may use a host hook " +
+      "Create a note in the bound store and environment (source=agent). Anchors may use a host hook " +
       "(data-bluepencil/data-testid), a CSS path or a text quote.",
     write: true,
     inputSchema: {
       type: "object",
       properties: {
         body: { type: "string" },
-        type: { type: "string", enum: ["text", "design"], default: "text" },
-        intent: { type: "string", enum: ["implement", "feedback"], default: "implement" },
+        type: { type: "string", enum: [...NOTE_TYPES], default: "text" },
+        intent: { type: "string", enum: [...NOTE_INTENTS], default: "implement" },
         hook: { type: "string" },
         selector: { type: "string" },
         quote: { type: "string" },
@@ -127,11 +235,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         id: { type: "string" },
         text: { type: "string" },
-        kind: {
-          type: "string",
-          enum: ["reply", "feedback", "decision_request", "decision", "note"],
-          default: "reply",
-        },
+        kind: { type: "string", enum: [...AGENT_MESSAGE_KINDS], default: "reply" },
         set_done: { type: "boolean", default: false },
       },
       required: ["id", "text"],
@@ -147,7 +251,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       type: "object",
       properties: {
         id: { type: "string" },
-        status: { type: "string", enum: ["open", "done", "needs_decision"] },
+        status: { type: "string", enum: [...NOTE_STATUSES] },
       },
       required: ["id", "status"],
     },
@@ -160,7 +264,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       type: "object",
       properties: {
         id: { type: "string" },
-        intent: { type: "string", enum: ["implement", "feedback"] },
+        intent: { type: "string", enum: [...NOTE_INTENTS] },
       },
       required: ["id", "intent"],
     },
@@ -174,7 +278,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     inputSchema: {
       type: "object",
       properties: {
-        format: { type: "string", enum: ["json", "markdown"], default: "markdown" },
+        format: { type: "string", enum: [...FORMATS], default: "markdown" },
         include_done: { type: "boolean", default: true },
       },
     },
@@ -193,16 +297,17 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "import_bundle",
     description:
       "Import a bundle with mode merge (idempotent, default), upsert or replace-session. Conflicts " +
-      "are reported and never resolved silently; an environment mismatch is refused unless " +
-      "allow_env_mismatch is set.",
+      "are reported and never resolved silently — the import is refused unless on_conflict says " +
+      "which side wins (F10, same rule as `bluepencil merge`); an environment mismatch is refused " +
+      "unless allow_env_mismatch is set.",
     write: true,
     inputSchema: {
       type: "object",
       properties: {
         bundle: { type: ["string", "object"] },
-        mode: { type: "string", enum: ["merge", "upsert", "replace-session"], default: "merge" },
+        mode: { type: "string", enum: [...MERGE_MODES], default: "merge" },
         dry_run: { type: "boolean", default: true },
-        on_conflict: { type: "string", enum: ["fail", "keep-incoming", "keep-existing"] },
+        on_conflict: { type: "string", enum: [...CONFLICT_POLICIES] },
         allow_env_mismatch: { type: "boolean", default: false },
       },
       required: ["bundle"],
@@ -218,6 +323,10 @@ export function errorResponse(message: string): ToolResponse {
   return { content: [{ type: "text", text: `error: ${message}` }], isError: true };
 }
 
+/* ------------------------------------------------------------------------------------------------
+ * Argument handling
+ * ---------------------------------------------------------------------------------------------- */
+
 function requireWrite(context: ToolContext): ToolResponse | null {
   return context.allowWrite ? null : errorResponse(READ_ONLY_NOTE);
 }
@@ -230,27 +339,253 @@ function agentAuthor(context: ToolContext): string {
   return `${context.clientName} (mcp:${context.sessionId})`;
 }
 
-function toFilter(args: Record<string, unknown>): NoteFilter {
-  const filter: NoteFilter = {};
-  if (isNoteStatus(args.status)) filter.status = args.status;
-  if (isNoteIntent(args.intent)) filter.intent = args.intent;
-  if (typeof args.type === "string") filter.type = args.type as NoteType;
-  if (typeof args.route === "string") filter.route = args.route;
-  if (typeof args.session === "string") filter.session = args.session;
-  return filter;
+function errorText(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return error === undefined || error === null ? "unknown error" : String(error);
 }
 
-/** Ordering shared with the UI and the Markdown export (FR-4.6). */
-export function sortForReview(notes: Note[]): Note[] {
-  const rank: Record<NoteStatus, number> = { needs_decision: 0, open: 1, done: 3 };
-  return [...notes].sort((a, b) => {
-    const aRank = a.intent === "feedback" ? 1 : rank[a.status];
-    const bRank = b.intent === "feedback" ? 1 : rank[b.status];
-    if (aRank !== bRank) return aRank - bRank;
-    if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? -1 : 1;
-    return a.id < b.id ? -1 : 1;
-  });
+/** A value, or the reason it is not one of the allowed values (F12b: schema is not validation). */
+interface EnumArgument<T extends string> {
+  value: T | undefined;
+  issue: string | null;
 }
+
+/** Reads an enumerated argument; absent is `undefined` without an issue, anything else is checked. */
+function readEnumArgument<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  name: string,
+): EnumArgument<T> {
+  if (value === undefined || value === null) {
+    return { value: undefined, issue: null };
+  }
+  if (typeof value === "string" && (allowed as readonly string[]).includes(value)) {
+    return { value: value as T, issue: null };
+  }
+  return {
+    value: undefined,
+    issue: `${name} must be one of ${allowed.join(", ")} (got ${JSON.stringify(value)})`,
+  };
+}
+
+/**
+ * The filter of `list_notes`. The session's environment is **always** part of it: a filter without
+ * the binding is how a `dev` session ended up listing `live` notes (F8/B2, FR-16.3/NFR-18).
+ */
+function toFilter(context: ToolContext, args: Record<string, unknown>): { filter: NoteFilter } | { issue: string } {
+  const status = readEnumArgument(args.status, NOTE_STATUSES, "status");
+  if (status.issue) return { issue: status.issue };
+  const intent = readEnumArgument(args.intent, NOTE_INTENTS, "intent");
+  if (intent.issue) return { issue: intent.issue };
+  const type = readEnumArgument(args.type, NOTE_TYPES, "type");
+  if (type.issue) return { issue: type.issue };
+
+  return {
+    filter: {
+      environment: context.environment,
+      ...(status.value !== undefined ? { status: status.value } : {}),
+      ...(intent.value !== undefined ? { intent: intent.value } : {}),
+      ...(type.value !== undefined ? { type: type.value } : {}),
+      ...(typeof args.route === "string" ? { route: args.route } : {}),
+      ...(typeof args.session === "string" ? { session: args.session } : {}),
+    },
+  };
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * Environment binding (FR-16.3, NFR-18) — the read path is guarded exactly like the write path
+ * ---------------------------------------------------------------------------------------------- */
+
+/** A note that passed the environment guard, or the refusal to return instead. */
+type NoteLookup = { note: Note } | { refusal: ToolResponse };
+
+/**
+ * Refuses a note of another environment, naming both environments and the rule. Applied to reads as
+ * well as writes: `get_note` on a `live` note from a `dev`-bound session is the same violation as
+ * appending to it (FR-16.3/NFR-18).
+ */
+function environmentRefusal(context: ToolContext, note: Note, action: string): ToolResponse | null {
+  if (note.environment === context.environment) {
+    return null;
+  }
+  return errorResponse(
+    `note ${note.id} belongs to environment "${note.environment}" but this session is bound to ` +
+      `"${context.environment}": ${action} is refused (FR-16.3 — a session may only read and write ` +
+      `notes of its own environment)`,
+  );
+}
+
+/**
+ * Loads one note through the store's adapter (not through the store's optimistic memory, which can
+ * lag behind a change made outside `create`/`update` — F5) and applies the environment guard.
+ */
+async function loadBoundNote(context: ToolContext, id: string, action: string): Promise<NoteLookup> {
+  const notes = await context.store.list();
+  const note = notes.find((candidate) => candidate.id === id);
+  if (!note) {
+    return { refusal: errorResponse(`note ${id} not found`) };
+  }
+  const refusal = environmentRefusal(context, note, action);
+  return refusal ? { refusal } : { note };
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * Persistence confirmation (F7)
+ * ---------------------------------------------------------------------------------------------- */
+
+/** Fields compared when a write is confirmed — every field of the model, nothing left out (F5/F6). */
+const COMPARED_FIELDS = [
+  "id",
+  "schemaVersion",
+  "createdAt",
+  "updatedAt",
+  "sessionRef",
+  "type",
+  "intent",
+  "status",
+  "body",
+  "author",
+  "authorType",
+  "anchor",
+  "context",
+  "messages",
+  "source",
+  "environment",
+  "ticketRef",
+  "debug",
+] as const;
+
+/** Names of the fields in which two notes differ — the diagnostic text of a failed write. */
+function noteDivergences(expected: Note, actual: Note): string[] {
+  const left = canonicalNote(expected);
+  const right = canonicalNote(actual);
+  return COMPARED_FIELDS.filter(
+    (field) => serializeCanonical(left[field]) !== serializeCanonical(right[field]),
+  );
+}
+
+/**
+ * Compares the set a write *should* have produced with the set that is actually persisted and
+ * returns one issue per divergence (F5/F6/F7). Pure, so it is unit-tested without a process.
+ */
+export function compareNoteSets(expected: readonly Note[], persisted: readonly Note[]): string[] {
+  const issues: string[] = [];
+  const byId = new Map(persisted.map((note) => [note.id, note]));
+  for (const note of expected) {
+    const actual = byId.get(note.id);
+    if (!actual) {
+      issues.push(`note ${note.id} is missing from the persisted set`);
+      continue;
+    }
+    const diverging = noteDivergences(note, actual);
+    if (diverging.length > 0) {
+      issues.push(`note ${note.id} was persisted differently (${diverging.join(", ")})`);
+    }
+  }
+  const expectedIds = new Set(expected.map((note) => note.id));
+  for (const note of persisted) {
+    if (!expectedIds.has(note.id)) {
+      issues.push(`note ${note.id} is still in the persisted set`);
+    }
+  }
+  return issues;
+}
+
+/** The isError result of a write that never reached the medium, naming the underlying error. */
+function notPersisted(context: ToolContext, action: string, reason: string): ToolResponse {
+  const cause = context.persistence.lastWriteError();
+  const detail =
+    cause === null || cause === undefined || reason.includes(errorText(cause))
+      ? ""
+      : ` (underlying error: ${errorText(cause)})`;
+  return errorResponse(`${action} did not persist — the store was not changed: ${reason}${detail}`);
+}
+
+/**
+ * Runs a mutation and turns a rejection into the "did not persist" answer (F7). A failing write
+ * reaches the tool in one of two ways — the adapter rejects the mutation (file/http) or it keeps
+ * the change in memory only (the `degrade` policy of the localStorage path) — and both must end in
+ * the same, actionable answer instead of a bare I/O message or, worse, a reported success.
+ */
+async function attemptWrite<T>(
+  context: ToolContext,
+  action: string,
+  mutate: () => Promise<T>,
+): Promise<{ value: T } | { failure: ToolResponse }> {
+  try {
+    return { value: await mutate() };
+  } catch (error) {
+    return { failure: notPersisted(context, action, errorText(error)) };
+  }
+}
+
+/**
+ * Confirms a mutation really reached the backing medium (F7): the store is reloaded from the
+ * adapter and the persisted set is read back from the medium itself. Returns `null` when the write
+ * is on disk, an isError response otherwise — a change that only lives in the adapter's fallback
+ * memory is never reported as a success.
+ */
+async function confirmWrite(
+  context: ToolContext,
+  action: string,
+  expected: readonly Note[],
+): Promise<ToolResponse | null> {
+  try {
+    await context.store.reload();
+    const persisted = await context.persistence.readPersisted();
+    const issues = compareNoteSets(expected, persisted);
+    return issues.length === 0 ? null : notPersisted(context, action, issues.join("; "));
+  } catch (error) {
+    return notPersisted(context, action, errorText(error));
+  }
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * Startup validation (F9)
+ * ---------------------------------------------------------------------------------------------- */
+
+/** The note entries of a stored blob (`{ version, notes }`) or of a bare note array. */
+function storedNoteEntries(text: string): unknown[] {
+  const parsed = JSON.parse(text) as unknown;
+  if (Array.isArray(parsed)) {
+    return parsed;
+  }
+  return isRecord(parsed) && Array.isArray(parsed.notes) ? parsed.notes : [];
+}
+
+/**
+ * Validates a store file before the server starts serving (F9). Returns `null` when the file is a
+ * valid note set — or `null` for `text === null`, the documented empty start — and the reason
+ * otherwise, so that a corrupt file can never be served as "no notes": a client cannot tell those
+ * two apart, and "my notes are gone" is the worst possible answer to a typo.
+ *
+ * The shape check reuses the adapter's own codec (FR-6.5); the field check reuses the shared note
+ * schema (FR-15.3).
+ */
+export function validateStoredNoteSet(text: string | null): string | null {
+  if (text === null) {
+    return null;
+  }
+  try {
+    parseNoteSet(text);
+  } catch (error) {
+    return error instanceof BluepencilValidationError ? error.issues.join("; ") : errorText(error);
+  }
+  const entries = storedNoteEntries(text);
+  for (const [index, entry] of entries.entries()) {
+    const issues = validateNote(entry);
+    if (issues.length > 0) {
+      return `notes[${index}]: ${issues.join("; ")}`;
+    }
+  }
+  return null;
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * Tools
+ * ---------------------------------------------------------------------------------------------- */
 
 export async function callTool(
   context: ToolContext,
@@ -264,15 +599,22 @@ export async function callTool(
 
   switch (name) {
     case "list_notes": {
+      const built = toFilter(context, args);
+      if ("issue" in built) {
+        return errorResponse(built.issue);
+      }
+      const format = readEnumArgument(args.format, FORMATS, "format");
+      if (format.issue) {
+        return errorResponse(format.issue);
+      }
       const includeDone = args.include_done === true;
-      const notes = await context.store.list(toFilter(args));
-      const selected = includeDone ? notes : notes.filter((note) => note.status !== "done");
-      const ordered = sortForReview(selected);
-      if (args.format === "markdown") {
-        const lines = ordered.map(
-          (note) =>
-            `- [${note.status}/${note.intent}] ${note.anchor.route ?? "-"} ${note.anchor.hook ?? note.anchor.selector ?? "-"}: ${note.body.split("\n")[0] ?? ""}`,
-        );
+      // One read path for every list: the shared filter (FR-15.3) including the session's
+      // environment (FR-16.3), the shared done-rule and the shared review order (M2/FR-16.7).
+      const all = await context.store.list();
+      const matching = filterNotes(all, built.filter);
+      const ordered = sortForReview(includeDone ? matching : excludeDone(matching));
+      if (format.value === "markdown") {
+        const lines = ordered.map((note) => `- ${summarize(note)}`);
         return {
           content: [
             {
@@ -295,17 +637,24 @@ export async function callTool(
     }
 
     case "get_note": {
-      const id = String(args.id ?? "");
-      const note = await context.store.get(id);
-      if (!note) {
-        return errorResponse(`note ${id} not found`);
+      const lookup = await loadBoundNote(context, String(args.id ?? ""), "reading the note");
+      if ("refusal" in lookup) {
+        return lookup.refusal;
       }
-      return jsonResponse(canonicalNote(note));
+      return jsonResponse(canonicalNote(lookup.note));
     }
 
     case "create_note": {
       const refusal = requireWrite(context);
       if (refusal) return refusal;
+      const type = readEnumArgument(args.type, NOTE_TYPES, "type");
+      if (type.issue) {
+        return errorResponse(type.issue);
+      }
+      const intent = readEnumArgument(args.intent, NOTE_INTENTS, "intent");
+      if (intent.issue) {
+        return errorResponse(intent.issue);
+      }
       const body = String(args.body ?? "").trim();
       if (body === "") {
         return errorResponse("body must not be empty");
@@ -318,90 +667,118 @@ export async function callTool(
       if (!anchor.hook && !anchor.selector && !anchor.quote) {
         return errorResponse("an anchor needs at least one of hook, selector or quote");
       }
-      try {
-        const note = await context.store.create({
-          type: (args.type as NoteType) ?? "text",
+      const before = await context.store.list();
+      const attempt = await attemptWrite(context, "create_note", () =>
+        context.store.create({
+          type: type.value ?? "text",
           body,
           anchor,
-          intent: isNoteIntent(args.intent) ? args.intent : "implement",
+          intent: intent.value ?? "implement",
           author: agentAuthor(context),
           authorType: "agent",
           source: "agent",
+          // The note is born in the session's environment, never in another one (FR-16.3).
           environment: context.environment,
           ...(typeof args.session === "string" ? { sessionRef: args.session } : {}),
           ...(typeof args.ticket_ref === "string" ? { ticketRef: args.ticket_ref } : {}),
-        });
-        return jsonResponse({ created: canonicalNote(note) });
-      } catch (error) {
-        return errorResponse(error instanceof Error ? error.message : String(error));
-      }
+        }),
+      );
+      if ("failure" in attempt) return attempt.failure;
+      const created = attempt.value;
+      const failure = await confirmWrite(context, `create_note ${created.id}`, [...before, created]);
+      if (failure) return failure;
+      return jsonResponse({ created: canonicalNote(created) });
     }
 
     case "reply": {
       const refusal = requireWrite(context);
       if (refusal) return refusal;
       const id = String(args.id ?? "");
-      const note = await context.store.get(id);
-      if (!note) {
-        return errorResponse(`note ${id} not found`);
-      }
-      const kind = (args.kind as string) ?? "reply";
-      if (kind === "decision") {
+      if (args.kind === "decision") {
         return errorResponse(
           "a decision must come from a human (PROTOCOL §6.1) — use kind=decision_request and let the human answer",
         );
+      }
+      const kind = readEnumArgument(args.kind, AGENT_MESSAGE_KINDS, "kind");
+      if (kind.issue) {
+        return errorResponse(kind.issue);
       }
       const text = String(args.text ?? "");
       if (text.trim() === "") {
         return errorResponse("text must not be empty");
       }
-      const ts = nowIso(context);
-      const message = createMessage({
-        text,
-        kind: kind as "reply" | "feedback" | "decision_request" | "note",
-        author: agentAuthor(context),
-        authorType: "agent",
-        now: ts,
-      });
-      const updated = await context.store.addMessage(id, message);
-      let final = updated;
-      if (kind === "decision_request") {
-        final = await context.store.setStatus(id, "needs_decision");
-      } else if (args.set_done === true) {
-        if (final.intent === "feedback") {
-          return errorResponse(
-            "intent=feedback notes are not set to done by an agent (PROTOCOL §4.5/§6.2)",
-          );
+      const lookup = await loadBoundNote(context, id, "replying to the note");
+      if ("refusal" in lookup) {
+        return lookup.refusal;
+      }
+      const note = lookup.note;
+      const messageKind: MessageKind = kind.value ?? "reply";
+      // Every refusal comes before the first write: an answer that is not allowed must not append a
+      // message either (PROTOCOL §4.5/§6.2/§6.3).
+      if (messageKind !== "decision_request" && args.set_done === true) {
+        if (note.intent === "feedback") {
+          return errorResponse("intent=feedback notes are not set to done by an agent (PROTOCOL §4.5/§6.2)");
         }
-        if (final.status === "needs_decision") {
+        if (note.status === "needs_decision") {
           return errorResponse("refusing to mark a pending decision as done (PROTOCOL §6.3)");
         }
-        final = await context.store.setStatus(id, "done");
       }
-      return jsonResponse({ note: canonicalNote(final) });
+      const before = await context.store.list();
+      const attempt = await attemptWrite(context, `reply to ${id}`, async () => {
+        const message = createMessage({
+          text,
+          kind: messageKind,
+          author: agentAuthor(context),
+          authorType: "agent",
+          now: nowIso(context),
+        });
+        let updated = await context.store.addMessage(id, message);
+        if (messageKind === "decision_request") {
+          updated = await context.store.setStatus(id, "needs_decision");
+        } else if (args.set_done === true) {
+          updated = await context.store.setStatus(id, "done");
+        }
+        return updated;
+      });
+      if ("failure" in attempt) return attempt.failure;
+      const updated = attempt.value;
+      const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
+      const failure = await confirmWrite(context, `reply to ${id}`, expected);
+      if (failure) return failure;
+      return jsonResponse({ note: canonicalNote(updated) });
     }
 
     case "set_status": {
       const refusal = requireWrite(context);
       if (refusal) return refusal;
       const id = String(args.id ?? "");
-      const status = args.status;
-      if (!isNoteStatus(status)) {
-        return errorResponse(`status must be one of open, done, needs_decision`);
+      const status = readEnumArgument(args.status, NOTE_STATUSES, "status");
+      if (status.issue) {
+        return errorResponse(status.issue);
       }
-      const note = await context.store.get(id);
-      if (!note) {
-        return errorResponse(`note ${id} not found`);
+      const wanted: NoteStatus | undefined = status.value;
+      if (wanted === undefined) {
+        return errorResponse(`status must be one of ${NOTE_STATUSES.join(", ")}`);
       }
-      if (status === "done") {
-        if (note.status === "needs_decision") {
+      const lookup = await loadBoundNote(context, id, "setting the status");
+      if ("refusal" in lookup) {
+        return lookup.refusal;
+      }
+      if (wanted === "done") {
+        if (lookup.note.status === "needs_decision") {
           return errorResponse("refusing to mark a pending decision as done (PROTOCOL §6.3)");
         }
-        if (note.intent === "feedback") {
+        if (lookup.note.intent === "feedback") {
           return errorResponse("intent=feedback notes are decided by the human (PROTOCOL §6.2)");
         }
       }
-      const updated = await context.store.setStatus(id, status);
+      const before = await context.store.list();
+      const attempt = await attemptWrite(context, `set_status on ${id}`, () => context.store.setStatus(id, wanted));
+      if ("failure" in attempt) return attempt.failure;
+      const updated = attempt.value;
+      const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
+      const failure = await confirmWrite(context, `set_status on ${id}`, expected);
+      if (failure) return failure;
       return jsonResponse({ note: canonicalNote(updated) });
     }
 
@@ -409,22 +786,37 @@ export async function callTool(
       const refusal = requireWrite(context);
       if (refusal) return refusal;
       const id = String(args.id ?? "");
-      if (!isNoteIntent(args.intent)) {
-        return errorResponse("intent must be implement or feedback");
+      const intent = readEnumArgument(args.intent, NOTE_INTENTS, "intent");
+      if (intent.issue) {
+        return errorResponse(intent.issue);
       }
-      const note = await context.store.get(id);
-      if (!note) {
-        return errorResponse(`note ${id} not found`);
+      const wanted: NoteIntent | undefined = intent.value;
+      if (wanted === undefined) {
+        return errorResponse(`intent must be one of ${NOTE_INTENTS.join(", ")}`);
       }
-      const updated = await context.store.setIntent(id, args.intent);
+      const lookup = await loadBoundNote(context, id, "changing the intent");
+      if ("refusal" in lookup) {
+        return lookup.refusal;
+      }
+      const before = await context.store.list();
+      const attempt = await attemptWrite(context, `set_intent on ${id}`, () => context.store.setIntent(id, wanted));
+      if ("failure" in attempt) return attempt.failure;
+      const updated = attempt.value;
+      const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
+      const failure = await confirmWrite(context, `set_intent on ${id}`, expected);
+      if (failure) return failure;
       return jsonResponse({ note: canonicalNote(updated) });
     }
 
     case "export_bundle": {
+      const format = readEnumArgument(args.format, FORMATS, "format");
+      if (format.issue) {
+        return errorResponse(format.issue);
+      }
       const includeDone = args.include_done !== false;
-      const notes = await context.store.list();
-      const selected = includeDone ? notes : notes.filter((note) => note.status !== "done");
-      if (args.format === "json") {
+      const scoped = filterNotes(await context.store.list(), { environment: context.environment });
+      const selected = includeDone ? scoped : excludeDone(scoped);
+      if (format.value === "json") {
         const bundle = createBundle(selected, {
           environment: context.environment,
           exportedBy: agentAuthor(context),
@@ -452,79 +844,114 @@ export async function callTool(
     case "import_bundle": {
       const refusal = requireWrite(context);
       if (refusal) return refusal;
+
+      // F12b: a bogus enum value must never be echoed back and treated as the default. Both values
+      // are validated before the bundle is even looked at, so a bad call names the allowed set
+      // instead of failing for an unrelated reason.
+      const mode = readEnumArgument(args.mode, MERGE_MODES, "mode");
+      if (mode.issue) {
+        return errorResponse(mode.issue);
+      }
+      const onConflict = readEnumArgument(args.on_conflict, CONFLICT_POLICIES, "on_conflict");
+      if (onConflict.issue) {
+        return errorResponse(onConflict.issue);
+      }
       const parsed = parseBundleInput(args.bundle);
       if (typeof parsed === "string") {
         return errorResponse(parsed);
       }
       const bundle = parsed;
+
+      const policy: ConflictPolicy | undefined =
+        onConflict.value === "keep-incoming" || onConflict.value === "keep-existing"
+          ? onConflict.value
+          : undefined;
+      const modeValue: MergeMode = mode.value ?? "merge";
+      const dryRun = args.dry_run !== false;
+
       if (bundle.environment !== context.environment && args.allow_env_mismatch !== true) {
         return errorResponse(
           `bundle is tagged "${bundle.environment}" but this session is bound to "${context.environment}" ` +
             `— pass allow_env_mismatch to override deliberately (NFR-18)`,
         );
       }
+
       const existing = await context.store.list();
-      const mode = (args.mode as MergeMode) ?? "merge";
-      const dryRun = args.dry_run !== false;
       let result: MergeResult;
       try {
         result = mergeNotes(existing, bundle.notes, {
-          mode,
+          mode: modeValue,
           dryRun,
           allowEnvMismatch: args.allow_env_mismatch === true,
           targetEnvironment: context.environment,
-          ...(typeof args.on_conflict === "string"
-            ? { onConflict: args.on_conflict as "fail" | "keep-incoming" | "keep-existing" }
-            : {}),
+          ...(policy !== undefined ? { onConflict: policy } : {}),
         });
       } catch (error) {
-        return errorResponse(error instanceof Error ? error.message : String(error));
+        return errorResponse(errorText(error));
       }
 
-      if (!dryRun) {
-        // Apply the merge result through the store so the adapter persists it (single write path).
-        const existingIds = new Set(existing.map((note) => note.id));
-        const keepIds = new Set(result.notes.map((note) => note.id));
-        for (const note of existing) {
-          if (!keepIds.has(note.id)) {
-            await context.store.remove(note.id);
-          }
-        }
-        for (const note of result.notes) {
-          if (!existingIds.has(note.id)) {
-            const { id, createdAt, updatedAt, ...draft } = note;
-            try {
-              const created = await context.store.create({
-                ...draft,
-                id,
-                now: updatedAt,
-                messages: note.messages,
-              });
-              if (created.createdAt !== createdAt || created.updatedAt !== updatedAt) {
-                await context.store.update(created.id, {});
-              }
-            } catch (error) {
-              return errorResponse(error instanceof Error ? error.message : String(error));
-            }
-          } else if (validateNote(note).length === 0) {
-            await context.store.update(note.id, {
-              status: note.status,
-              intent: note.intent,
-              body: note.body,
-            });
-          }
-        }
-      }
-
-      return jsonResponse({
-        mode,
+      const report = {
+        mode: modeValue,
         dry_run: dryRun,
         added: result.added,
         updated: result.updated,
         skipped: result.skipped,
         removed: result.removed,
         conflicts: result.conflicts,
-      });
+      };
+
+      // F10, CLI parity: `bluepencil merge` reports the conflicts and exits 2 without writing. An
+      // unresolved conflict is therefore an error here too — and nothing is persisted either way,
+      // because `dry_run` is the default.
+      if (result.conflicts.length > 0 && policy === undefined) {
+        return jsonResponse(
+          {
+            ...report,
+            refused:
+              "unresolved conflict(s) — nothing was written; pass on_conflict keep-incoming or keep-existing to resolve them",
+          },
+          true,
+        );
+      }
+
+      const resolution =
+        policy !== undefined && result.conflicts.length > 0
+          ? { conflicts_resolved: result.conflicts.length, resolution: policy }
+          : {};
+
+      if (dryRun) {
+        return jsonResponse({ ...report, ...resolution });
+      }
+
+      // Write nothing when there is nothing to write: an idempotent import leaves the store file
+      // untouched, so an unchanged note keeps its bytes as well as its fields (F6, NFR-10).
+      if (result.added + result.updated + result.removed === 0) {
+        return jsonResponse({ ...report, ...resolution, written: false });
+      }
+
+      try {
+        // Removals go through the store (it owns the authoritative set); everything else is one
+        // whole-set write of the exact merged notes — full notes, never partial patches (F5/F6).
+        const keepIds = new Set(result.notes.map((note) => note.id));
+        for (const note of existing) {
+          if (!keepIds.has(note.id)) {
+            await context.store.remove(note.id);
+          }
+        }
+      } catch (error) {
+        return notPersisted(context, `import of ${result.notes.length} note(s)`, errorText(error));
+      }
+      const attempt = await attemptWrite(context, `import of ${result.notes.length} note(s)`, () =>
+        context.persistence.replaceAll(result.notes),
+      );
+      if ("failure" in attempt) return attempt.failure;
+      const failure = await confirmWrite(
+        context,
+        `import of ${result.notes.length} note(s)`,
+        result.notes,
+      );
+      if (failure) return failure;
+      return jsonResponse({ ...report, ...resolution, written: true });
     }
 
     default:
@@ -554,7 +981,7 @@ function parseBundleInput(input: unknown): ReturnType<typeof parseBundle> | stri
     if (error instanceof BluepencilValidationError) {
       return error.issues.join("; ");
     }
-    return error instanceof Error ? error.message : String(error);
+    return errorText(error);
   }
 }
 
@@ -563,7 +990,9 @@ export async function readResource(
   context: ToolContext,
   uri: string,
 ): Promise<{ uri: string; mimeType: string; text: string } | null> {
-  const notes = await context.store.list();
+  // Resources obey the same environment binding as the tools (FR-16.3): a resource must never be
+  // the side door that hands a host another environment's notes.
+  const notes = filterNotes(await context.store.list(), { environment: context.environment });
   switch (uri) {
     case "bluepencil://notes": {
       const { toMarkdown } = await import("../core/export/markdown");
