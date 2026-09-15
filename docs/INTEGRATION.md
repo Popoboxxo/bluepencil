@@ -27,19 +27,21 @@ const bp = init({
     endpoint: "/api/v1/bluepencil",
     headers: () => ({ Authorization: `Bearer ${getToken()}` }),
   }),
-  getUser: () => ({ id: currentUser.id, name: currentUser.displayName }),
+  identity: { getUser: () => ({ id: currentUser.id, name: currentUser.displayName }) },
   getRoute: () => location.pathname + location.search,
   language: navigator.language.startsWith("de") ? "de" : "en",
 });
 ```
 
-The reference server expects the contract in [ARCHITECTURE.md §5](ARCHITECTURE.md#5-http-contract-reference-server);
-any backend implementing those seven endpoints works.
+The adapter speaks the contract in [ARCHITECTURE.md §5](ARCHITECTURE.md#5-http-contract-reference-server)
+(list, create, update, thread message, bulk delete, sessions, health — the endpoints are listed in
+`src/adapters/http.ts`). That contract is written down but has **no reference implementation yet**:
+the `server/` package is an M2 deliverable (§5). Any backend that implements the endpoints works today.
 
 ## 3. Embedded, local only
 
 ```ts
-init({ adapter: "localStorage", getUser: () => ({ name: "Daniel" }) });
+init({ adapter: "localStorage", identity: { getUser: () => ({ name: "Daniel" }) } });
 ```
 
 Notes survive reloads in that browser, can be exported to a file, and are removed when the
@@ -47,19 +49,24 @@ user clears site data. Good for a single reviewer; not for a team.
 
 ## 4. Bookmarklet (no deploy)
 
-1. Host the IIFE build somewhere reachable (`https://your-host/bluepencil.js`).
+1. Host the IIFE build somewhere reachable (`https://your-host/bluepencil.iife.js`).
 2. Put the loader (see [ARCHITECTURE.md §6](ARCHITECTURE.md#6-bookmarklet)) in a bookmark.
 3. Click it on any page → the layer attaches, notes go to `localStorage`, export writes a file.
 
 Limits worth knowing: strict `script-src` CSP blocks external loaders (use the self-hosted mode
 or a browser extension instead), and nothing is shared between browsers.
 
-## 5. Self-hosted sidecar
+## 5. Self-hosted sidecar (M2 — planned, not in this repository yet)
 
-The `server/` package serves a static site **and** the API on one port, with the note store as
-a JSON file plus a generated Markdown mirror. Deploy as a container behind your usual proxy;
-make sure the port is actually published (a listening process inside a container is not
-automatically reachable from the network).
+The planned `server/` package serves a static site **and** the API on one port, with the note store
+as a JSON file plus a generated Markdown mirror. It is an **M2 deliverable** and does not exist in
+this branch: the HTTP contract of ARCHITECTURE §5 is documented but has no reference implementation.
+What exists today is the client side (`src/adapters/http.ts`) and, for local rounds, the
+dependency-free example server (`scripts/serve-example.mjs`) together with a file or `localStorage`
+adapter.
+
+When it lands: deploy it as a container behind your usual proxy, and make sure the port is actually
+published (a listening process inside a container is not automatically reachable from the network).
 
 ## 6. Admin debug mode in a product (FR-10.4)
 
@@ -69,7 +76,7 @@ This is the pattern the library was designed around.
 init({
   enabled: () => me.roles.includes("admin") && featureFlag("uiDebugNotes"),
   adapter: httpAdapter({ endpoint: "/api/v1/debug-notes", headers: authHeaders }),
-  getUser: () => ({ id: me.id, name: me.email }),
+  identity: { getUser: () => ({ id: me.id, name: me.email }) },
   getRoute: () => router.currentRoute.value.fullPath,
   defaultShowDone: false,
 });
@@ -83,8 +90,12 @@ Host-side checklist:
    impossible.
 3. **Audit every deletion** with actor, filter and count (FR-8.5).
 4. **Purge by session** after a debug round, and offer retention (done notes older than N days).
-5. **Expose an agent interface** (MCP tool group: list / create / update / export /
-   bulk-delete) so an agent can work the notes off — see [PROTOCOL.md](PROTOCOL.md).
+5. **Expose an agent interface** so an agent can work the notes off — see [PROTOCOL.md](PROTOCOL.md).
+   What exists in M1 is the MCP server (`dist/mcp.js`): read-only by default with `list_notes`,
+   `get_note`, `export_bundle` and `inspect_bundle`; `create_note`, `reply`, `set_status`,
+   `set_intent` and `import_bundle` only in a session started with `--allow-write`. There is no
+   bulk-delete tool — filtered deletion is M2 (FR-8.2). Registration and environment binding are in
+   [HERMES.md](HERMES.md).
 6. **Never load the layer for end users**: build-time flag *and* the role gate. Prove it with a
    test that asserts the layer is absent when the flag is off.
 
@@ -92,12 +103,12 @@ Host-side checklist:
 
 | Hook | Purpose | Default |
 |---|---|---|
-| `enabled()` | Decide whether the layer exists at all | `() => false` (fail closed) |
+| `enabled()` | Decide whether the layer exists at all; re-evaluated on every `enable()` | unset → the host's `init()` call is the opt-in; pass `() => false` to fail closed |
 | `adapter` | Where notes live | `memory` |
-| `getUser()` | Author identity | anonymous |
-| `getRoute()` | SPA-aware route for anchoring | `location.pathname` |
+| `identity` | Author identity: `{ getUser() }`, `"prompt"` (author field in the settings surface) or `"anonymous"` (D3) | `"prompt"`; a note is written as `anonymous` when no name is entered |
+| `getRoute()` | SPA-aware route stored on the anchor | unset → no route is stored |
 | `canAnnotate(el)` | Which elements may be annotated | all except layer internals |
-| `language` | UI language | `navigator.language` |
+| `language` | UI language (`en`, `de`; region/separator agnostic, anything else → `en`) | `en` |
 | `theme` | Token overrides (`accent`, `surface`, `ink`, …) | neutral defaults |
 | `defaultShowDone` | Start with done notes visible | `false` |
 | `onError(err)` | Error reporting | `console.debug` |

@@ -1,0 +1,14 @@
+{
+  "subagent_depth": 3,
+  "mcp": {
+    "viz-logger": {
+      "type": "local",
+      "enabled": true,
+      "command": [
+        "python",
+        "scripts/viz-logger.py",
+        "--mcp"
+      ]
+    }
+  }
+}

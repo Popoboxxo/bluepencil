@@ -29,13 +29,13 @@
 
 | ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
 |---|---|---|---|---|---|
-| FR-1.9 | **Verweise bleiben bedienbar**: Links im kommentierbaren Inhalt werden in *jedem* Kommentarmodus durchgereicht (Ausnahmeliste `a[href]`, Formularfelder, `[data-bp-ignore]`); der Composer öffnet dann nicht | P0 | M1 | P | Bei aktivem Modus folgt ein Klick auf einen Link dem Ziel und öffnet keinen Composer; ein Klick auf den umgebenden Text öffnet ihn wie gewohnt |
 | FR-2.1 | Resolution order: host hook (`data-bluepencil`, `data-testid`) → stored CSS path → text quote | P0 | M1 | P | Removing the hook falls back to the path; rewording falls back to the quote |
 | FR-2.2 | The note stores route/path and (if present) the SPA route at capture time | P0 | M1 | G | Two notes on the same selector on different routes stay distinct |
 | FR-2.3 | Each anchor is resolved *before* save so invalid anchors cannot be stored | P0 | M1 | P | Saving a note whose element vanished is rejected with feedback |
 | FR-2.4 | Unresolvable notes appear as **orphaned** in the list, never silently dropped | P0 | M1 | G | Element removed → note shown with "orphaned" marker and a jump-not-possible hint |
 | FR-2.5 | A build/app reference is stored per note; stale references are flaggable | P1 | M2 | G | Notes from an older build can be filtered/marked |
 | FR-2.6 | Anchors are stable across re-render of a list (key-based hooks preferred) | P1 | M2 | G | Note on list item 3 still resolves after the list is reordered by insertion |
+| FR-2.7 | **Verweise bleiben bedienbar**: Links im kommentierbaren Inhalt werden in *jedem* Kommentarmodus durchgereicht (Ausnahmeliste `a[href]`, Formularfelder, `[data-bp-ignore]`); der Composer öffnet dann nicht | P0 | M1 | P | Bei aktivem Modus folgt ein Klick auf einen Link dem Ziel und öffnet keinen Composer; ein Klick auf den umgebenden Text öffnet ihn wie gewohnt |
 
 ## FR-3 Note model
 
@@ -46,6 +46,12 @@
 | FR-3.3 | Notes carry an append-only **thread** of messages with `author_type` (`human`/`agent`) and `kind` (`note`/`decision_request`/`decision`/`feedback`/`reply`) | P0 | M1 | P | Agent and human replies appear in order, each with author and timestamp |
 | FR-3.4 | Notes can be grouped into a **session** and exported/purged per session | P1 | M2 | G | Purge removes exactly the session's notes, count reported |
 | FR-3.5 | The schema is versioned and documented; migrations from older data are defined | P0 | M1 | G | A v1 file loads in a v2 build; migration is documented and tested |
+
+> **Field names as implemented:** the note JSON uses camelCase — `createdAt`, `updatedAt`,
+> `authorType`, `sessionRef`, `schemaVersion`, `messages` (the thread) — and `quote` / `route` sit on
+> the anchor (`anchor.quote`, `anchor.route`); `context` is `null` for text notes. Names are declared in
+> `src/core/model.ts`, so every acceptance criterion above is checked by literal key name in the
+> exported JSON.
 
 ## FR-4 Presentation
 
@@ -139,7 +145,7 @@
 | FR-12.3 | **Mount scope**: `mount(target?)` mounts globally (`document`) or inside a given container; several instances coexist without cross-talk | P1 | M2 | N | Two instances with different adapters on one page keep separate note sets and UIs |
 | FR-12.4 | **Shadow DOM support**: click capture and anchoring work across shadow roots (`composedPath()`, `getRootNode()`); the stored path encodes the shadow boundary | P0 | M2 | N | Note created on an element inside a shadow root resolves after reload |
 | FR-12.5 | **Web-component packaging**: a custom-element build (`<bluepencil-notes>` or equivalent) plus attribute/event mapping, so the layer can be loaded as a resource in hosts like Home Assistant | P1 | M3 | N | Element loads from a single ES module resource, opens the panel, stores notes through the configured adapter |
-| FR-12.6 | **No host interference**: listeners work in the capture phase and never call `stopPropagation()` unless an annotation mode is active; interactive elements (`a[href]`, form fields, `[data-bp-ignore]`) are passed through even then; original behaviour is restored on teardown | P0 | M1 | N | Host's own click handlers fire normally with the layer enabled but idle; links and fields stay operable while a mode is active (FR-1.9) |
+| FR-12.6 | **No host interference**: listeners work in the capture phase and never call `stopPropagation()` unless an annotation mode is active; interactive elements (`a[href]`, form fields, `[data-bp-ignore]`) are passed through even then; original behaviour is restored on teardown | P0 | M1 | N | Host's own click handlers fire normally with the layer enabled but idle; links and fields stay operable while a mode is active (FR-2.7) |
 | FR-12.7 | **Documented host variety**: worked examples for at least a static page, a framework SPA, a micro-frontend/web-component host and a Home Assistant custom card | P1 | M3 | N | Each example in `examples/` runs and is covered by an E2E smoke test |
 | FR-12.8 | **Config-driven identity** (D3): `identity` accepts a hook, `"prompt"` or `"anonymous"`; unset falls back to `"prompt"` | P0 | M1 | N | All three modes verified in the fixture app |
 
@@ -235,7 +241,7 @@ export. The MCP interface is therefore **not optional** (Daniel, 2026-09-14).
 
 | Origin | Meaning | Requirement groups |
 |---|---|---|
-| **P** (prototype) | Behaviour already proven in the reference implementation — must be preserved 1:1 | FR-1.2–1.5, 1.8–1.9, FR-2.1, 2.3, FR-3.1–3.3, FR-4.1–4.7, FR-6.3–6.5, FR-7.1–7.2, 7.4, FR-8.1 |
+| **P** (prototype) | Behaviour already proven in the reference implementation — must be preserved 1:1 | FR-1.2–1.5, 1.8–1.9, FR-2.1, 2.3, 2.7, FR-3.1–3.3, FR-4.1–4.7, FR-6.3–6.5, FR-7.1–7.2, 7.4, FR-8.1 |
 | **G** (gap) | Missing in the prototype — the reason a library exists at all | FR-1.1, 1.10, FR-2.2, 2.4–2.6, FR-3.4–3.5, FR-6.1–6.2, FR-7.3, FR-9.1, 9.4, FR-10.1–10.3, NFR-3, 6, 11 |
 | **N** (product need) | Driven by the admin debug-mode requirement of a downstream ALM product | FR-5.x (all), FR-8.2–8.5, FR-9.2, FR-10.4, FR-6.6 |
 

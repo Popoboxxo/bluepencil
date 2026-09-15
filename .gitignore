@@ -12,8 +12,31 @@ test-results/
 
 # local notes (never commit review data)
 *.bluepencil.json
+# …except the fixture seed bundle, which is part of the example
+!examples/vanilla/data/seed.bluepencil.json
 
 # editors / os
 .DS_Store
 .idea/
 .vscode/
+
+# --- agent-meta managed (do not edit) ---
+*.sync-backup-*
+.claude/agent-memory-local/
+.claude/pending-tasks.md
+.claude/progress/
+.claude/settings.local.json
+.mcp.json
+.meta-config/env.ps1
+.meta-config/env.sh
+.meta-config/env.unset.ps1
+.meta-config/env.unset.sh
+.meta-config/secrets.local.yaml
+.opencode/mcp.local.json
+.opencode/pending-tasks.md
+.opencode/settings.local.json
+.tmp/
+AGENTS.personal.md
+CLAUDE.personal.md
+sync.log
+# --- end agent-meta managed ---
