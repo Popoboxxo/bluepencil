@@ -129,6 +129,7 @@ export const en = {
   "panel.message.feedback": "assessment",
   "panel.message.reply": "reply",
   "panel.error.action": "The action could not be saved.",
+  "panel.error.export": "The export failed — nothing was downloaded.",
 
   /* -- settings (FR-4.5) --------------------------------------------------- */
   "settings.title": "Settings",

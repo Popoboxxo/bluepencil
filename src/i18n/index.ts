@@ -5,6 +5,11 @@
  * normalisation (`de-AT` -> `de`, unknown -> `en`) and a `t(key, vars)` helper. Every
  * user-visible string of `src/ui/*` goes through this module — no literals in the UI.
  *
+ * Lookup never throws (NFR-14): a key is resolved against the table, then against English, then
+ * rendered as the key itself. A shipped `de` table is complete by type (`Messages`), so this
+ * chain only matters for a host-supplied table (`createTranslator(language, table)`) and for an
+ * unknown key — neither of which may raise inside `applyTranslations` on the host page.
+ *
  * Three ways to translate:
  *  - `t(key, vars)`               — one-off, English by default;
  *  - `createTranslator(language)` — language-bound translator used by the layer;
@@ -65,10 +70,27 @@ export function interpolate(template: string, vars?: Vars): string {
   });
 }
 
+/**
+ * One key against one table, with the documented fallback chain: the table, then English, then the
+ * key itself. Never `undefined`, never a `TypeError` — a language table that lacks a key still
+ * renders the English string (FR-11.1, NFR-14).
+ */
+function lookup(table: Partial<Messages>, key: MessageKey): string {
+  const translated = table[key];
+  if (typeof translated === "string") return translated;
+  const fallback = messages[DEFAULT_LANGUAGE][key];
+  return typeof fallback === "string" ? fallback : key;
+}
+
 /** Translate one key in one language; `en` is the default language. */
-export function translate(language: Language, key: MessageKey, vars?: Vars): string {
-  const table = messages[language] ?? messages[DEFAULT_LANGUAGE];
-  return interpolate(table[key], vars);
+export function translate(
+  language: Language,
+  key: MessageKey,
+  vars?: Vars,
+  table?: Partial<Messages>,
+): string {
+  const resolved = table ?? messages[language] ?? messages[DEFAULT_LANGUAGE];
+  return interpolate(lookup(resolved, key), vars);
 }
 
 /**
@@ -85,12 +107,16 @@ export interface Translator {
   t: Translate;
 }
 
-/** Build a translator for a raw language tag; unknown tags resolve to English. */
-export function createTranslator(language?: string | null): Translator {
+/**
+ * Build a translator for a raw language tag; unknown tags resolve to English.
+ * `table` is the escape hatch for a host-supplied table (possibly partial): a missing key falls
+ * back to the English string, an unknown key renders as the key itself — never a `TypeError`.
+ */
+export function createTranslator(language?: string | null, table?: Partial<Messages>): Translator {
   const resolved = normalizeLanguage(language);
   return {
     language: resolved,
-    t: (key, vars) => translate(resolved, key, vars),
+    t: (key, vars) => translate(resolved, key, vars, table),
   };
 }
 

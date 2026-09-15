@@ -13,6 +13,9 @@
  *      read first (FR-5.6, docs/PROTOCOL.md §7). A section is omitted when it would be empty.
  *   2. `## Notes by route` with one `### Route: <route>` heading per anchor route (FR-7.1).
  *
+ * `includeDone: false` uses the shared done-narrowing of `src/core/adapter.ts` (`excludeDone`), so
+ * the export, the bar and the list narrow the same way (FR-15.3, FR-4.3/4.8).
+ *
  * Ordering inside every section: FR-4.6 priority (needs_decision, feedback, open, done), then
  * creation time, then id. Routes are sorted by code unit, the no-route group comes last.
  * Nothing but the caller-supplied `generatedAt` is time dependent, so two exports of an
@@ -20,6 +23,7 @@
  */
 
 import type { Note } from "../model";
+import { excludeDone } from "../adapter";
 import { exceptionNotes, sortForReview } from "../protocol";
 
 export interface MarkdownOptions {
@@ -360,7 +364,7 @@ function groupByRoute(notes: Note[], noRouteKey: string): Map<string, Note[]> {
 export function toMarkdown(notes: Note[], options: MarkdownOptions = {}): string {
   const s = STRINGS[options.language === "de" ? "de" : "en"];
   const includeDone = options.includeDone !== false;
-  const included = includeDone ? [...notes] : notes.filter((note) => note.status !== "done");
+  const included = includeDone ? [...notes] : excludeDone([...notes]);
 
   const exceptions = exceptionNotes(included);
   const exceptionIds = new Set<string>([...exceptions.decisions, ...exceptions.feedback].map((note) => note.id));

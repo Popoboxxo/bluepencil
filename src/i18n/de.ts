@@ -127,6 +127,7 @@ export const de: Messages = {
   "panel.message.feedback": "Einschätzung",
   "panel.message.reply": "Antwort",
   "panel.error.action": "Die Aktion konnte nicht gespeichert werden.",
+  "panel.error.export": "Der Export ist fehlgeschlagen – es wurde nichts heruntergeladen.",
 
   /* -- settings (FR-4.5) --------------------------------------------------- */
   "settings.title": "Einstellungen",

@@ -11,6 +11,7 @@ import {
   findQuote,
   hookValue,
   resolveAnchor,
+  resolveAnchorDetailed,
   resolvePath,
 } from "../../src/core/anchor";
 import { BluepencilValidationError, type Anchor } from "../../src/core/model";
@@ -230,6 +231,43 @@ describe("resolveAnchor", () => {
     expect(anchor.degraded).toBe("span:nth-of-type(1)");
     anchor.orphaned = true;
     expect(anchor.orphaned).toBe(true);
+  });
+
+  it("never mutates the anchor it is given (no hidden side effect on a note)", () => {
+    mount(`<div id="host"></div>`);
+    const closed = byId("host").attachShadow({ mode: "closed" });
+    closed.innerHTML = `<span class="secret">hidden</span>`;
+
+    // The stored anchor of a note is the caller's data: resolution must not write into it.
+    const anchor: Anchor = { selector: "div#host:nth-of-type(1) >> span:nth-of-type(1)" };
+    const before = JSON.stringify(anchor);
+
+    expect(resolveAnchor(anchor)).toBeNull();
+    expect(resolveAnchorDetailed(anchor)).toEqual({
+      element: null,
+      degraded: "span:nth-of-type(1)",
+    });
+    expect(JSON.stringify(anchor)).toBe(before);
+    expect(anchor.degraded).toBeUndefined();
+    expect(anchor.orphaned).toBeUndefined();
+  });
+
+  it("reports the degradation of a failed boundary through resolveAnchorDetailed (§6b)", () => {
+    mount(`<main id="host"><p>Save changes</p></main>`);
+    const paragraph = first("p");
+    const closed = byId("host").attachShadow({ mode: "closed" });
+    closed.innerHTML = `<span>closed content</span>`;
+
+    // hook and quote resolve the element, while the (blocked) path still reports the degradation
+    const resolved = resolveAnchorDetailed({
+      selector: "main#host:nth-of-type(1) >> span:nth-of-type(1)",
+      quote: "Save changes",
+    });
+    expect(resolved.element).toBe(paragraph);
+    expect(resolved.degraded).toBe("span:nth-of-type(1)");
+
+    expect(resolveAnchorDetailed({ hook: "unit" })).toEqual({ element: null });
+    expect(resolveAnchorDetailed(null as unknown as Anchor)).toEqual({ element: null });
   });
 });
 

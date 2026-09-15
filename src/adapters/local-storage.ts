@@ -5,6 +5,8 @@
  * whole by the shared engine in `memory.ts` (atomic read-modify-write, FR-6.5). When the host
  * gives no usable `Storage` — private mode, disabled storage, quota exceeded, corrupt blob — the
  * adapter keeps working in memory and reports it **once** through `console.debug` (NFR-8, NFR-14).
+ * A failed write therefore keeps its documented degrade path (`writeFailure: "degrade"`): a
+ * browser annotation must not be lost because the quota is full.
  *
  * The module never touches `window` at import time; the global `Storage` is looked up lazily.
  */
@@ -72,6 +74,7 @@ export function createLocalStorageAdapter(
     readText: () => withStorage((target) => Promise.resolve(target.getItem(key))),
     writeText: (text) => withStorage((target) => Promise.resolve(target.setItem(key, text))),
     onFallback: report,
+    writeFailure: "degrade",
   };
 
   function withStorage<T>(operation: (target: Storage) => Promise<T>): Promise<T> {

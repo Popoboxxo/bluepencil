@@ -16,8 +16,24 @@
  * When no gate is configured the host's own call to init() counts as the opt-in and the
  * layer auto-enables once (`autoEnable`, on by default) — pass `enabled: () => false` for a
  * strictly fail-closed integration, or `autoEnable: false` to mount manually.
+ *
+ * Loading contract (NFR-2/NFR-8): the store starts empty and is filled from its adapter by a
+ * reload. There is exactly **one** load path per instance:
+ *   - an enabled layer reloads on every `enable()` (src/ui/layer.ts) — that is the layer's load;
+ *   - `notes()`/`export()` stay synchronous, but the first read of a store that has not loaded yet
+ *     kicks off a reload instead of silently returning `[]`;
+ *   - `ready()` resolves once the store has been read from its adapter, so a host can be
+ *     deterministic (`await blueprint.ready()` before reading `notes()`/`export()`).
+ * The promise is shared: concurrent callers, and `notes()`/`export()` racing with `ready()`, never
+ * cause more than a single `store.reload()`. A failed load is reported through `onError`, never
+ * thrown.
+ *
+ * The facade keeps the single filter implementation of `src/core/adapter.ts` (FR-15.3): `notes()`
+ * uses `filterNotes` and `export()` uses `excludeDone`, exactly like the list, the bar and the
+ * adapters.
  */
 import type { Adapter, AdapterLike } from "./core/adapter";
+import { excludeDone, filterNotes } from "./core/adapter";
 import type { Environment, Note, NoteFilter } from "./core/model";
 import { createStore, type Store, type StoreOptions } from "./core/store";
 import { toJson } from "./core/export/json";
@@ -51,8 +67,13 @@ export interface Blueprint {
   isEnabled(): boolean;
   /** Replace the host gate at runtime (FR-12.1). */
   setEnabled(gate: (() => boolean) | null): void;
-  /** Notes currently known to the store, synchronously. */
+  /** Notes currently known to the store, synchronously (see the loading contract in the header). */
   notes(filter?: NoteFilter): Note[];
+  /**
+   * Resolves once the store has been read from its adapter, so `notes()`/`export()` are
+   * deterministic afterwards. Never rejects: a failed load is reported through `onError`.
+   */
+  ready(): Promise<void>;
   /** Export the current set as Markdown (default) or JSON (FR-7.1/7.2). */
   export(options?: { format?: "markdown" | "json"; includeDone?: boolean }): string;
   /** Final teardown: layer removed and store released (FR-12.2). */
@@ -87,6 +108,10 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
   let gate = initialGate ?? null;
   let store: Store | null = null;
   let layer: LayerHandle | null = null;
+  /** In-flight facade reload; shared so `ready()` never starts a second read (NFR-2). */
+  let loading: Promise<void> | null = null;
+  /** True once a facade reload completed, or once the layer (which reloads on enable) owns it. */
+  let loaded = false;
 
   const storeConfig: StoreOptions = {
     ...(adapter !== undefined ? { adapter: adapter as AdapterLike } : {}),
@@ -105,11 +130,54 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
     return layer;
   };
 
+  /** Report a failed load through the host's `onError`; never escalate into the host (NFR-14). */
+  const report = (error: unknown): void => {
+    try {
+      if (layerOptions.onError) {
+        layerOptions.onError(error);
+        return;
+      }
+      (globalThis as { console?: Console }).console?.debug?.("[bluepencil]", error);
+    } catch {
+      // Reporting must never become the failure itself.
+    }
+  };
+
+  /**
+   * The one facade load path: returns the in-flight reload or starts it. Never rejects, so a
+   * fire-and-forget load cannot become an unhandled rejection in the host page (NFR-14).
+   */
+  const load = (): Promise<void> => {
+    loading ??= ensureStore()
+      .reload()
+      .then(() => {
+        loaded = true;
+      })
+      .catch((error: unknown) => {
+        report(error);
+      })
+      .finally(() => {
+        loading = null;
+      });
+    return loading;
+  };
+
+  /** A synchronous read may not silently see an empty store: the first one asks the adapter. */
+  const ensureLoaded = (): void => {
+    if (!loaded && loading === null) void load();
+  };
+
   const enable = (): boolean => {
     if (gate && !gate()) {
       return false;
     }
-    ensureLayer().enable();
+    const handle = ensureLayer();
+    handle.enable();
+    // The layer hydrates the store on enable() — keep that single load path: `notes()`, `export()`
+    // and `ready()` reuse it instead of starting a second read (documented in the header).
+    if (handle.isEnabled()) {
+      loaded = true;
+    }
     return true;
   };
 
@@ -126,13 +194,23 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
       }
     },
     notes: (filter) => {
-      const all = store?.notes() ?? [];
-      return filter ? all.filter((note) => matches(note, filter)) : all;
+      ensureLoaded();
+      return filterNotes(ensureStore().notes(), filter);
+    },
+    /** Deterministic host flow: `await ready()` once, then read/export synchronously (FR-1.2). */
+    ready: () => {
+      // An enabled layer is already hydrating the store: await that reload instead of starting a
+      // second read (one load path per instance, documented in the header).
+      if (loading === null && layer !== null && layer.isEnabled()) {
+        return layer.hydrated();
+      }
+      return load();
     },
     export: (options = {}) => {
-      const notes = store?.notes() ?? [];
+      ensureLoaded();
       const includeDone = options.includeDone ?? true;
-      const selected = includeDone ? notes : notes.filter((note) => note.status !== "done");
+      const notes = ensureStore().notes();
+      const selected = includeDone ? notes : excludeDone(notes);
       if (options.format === "json") {
         return toJson(selected, environment !== undefined ? { environment } : {});
       }
@@ -146,6 +224,8 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
       await store?.destroy();
       layer = null;
       store = null;
+      loading = null;
+      loaded = false;
     },
   };
 
@@ -167,25 +247,8 @@ export function mount(config: BlueprintConfig = {}): Blueprint {
   return createBlueprint({ ...config, autoEnable: true, enabled: () => true });
 }
 
-function matches(note: Note, filter: NoteFilter): boolean {
-  if (filter.status) {
-    const wanted = Array.isArray(filter.status) ? filter.status : [filter.status];
-    if (!wanted.includes(note.status)) {
-      return false;
-    }
-  }
-  if (filter.includeDone === false && note.status === "done") return false;
-  if (filter.intent && note.intent !== filter.intent) return false;
-  if (filter.type && note.type !== filter.type) return false;
-  if (filter.route && note.anchor.route !== filter.route) return false;
-  if (filter.session && note.sessionRef !== filter.session) return false;
-  if (filter.environment && note.environment !== filter.environment) return false;
-  if (filter.source && note.source !== filter.source) return false;
-  if (filter.since && note.updatedAt < filter.since) return false;
-  return true;
-}
-
 export type { Adapter, AdapterLike, AdapterName } from "./core/adapter";
+export { filterNotes, matchesFilter, excludeDone } from "./core/adapter";
 export type { LayerHandle, LayerOptions } from "./ui/layer";
 export type { Store, StoreOptions } from "./core/store";
 export type {

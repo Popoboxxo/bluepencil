@@ -17,6 +17,7 @@ import type {
   NoteStatus,
 } from "../../src/core/model";
 import { BluepencilValidationError, createNote } from "../../src/core/model";
+import { excludeDone, filterNotes } from "../../src/core/adapter";
 import { noteToMarkdown, toMarkdown } from "../../src/core/export/markdown";
 import { fromJson, toJson } from "../../src/core/export/json";
 import { parseBundle } from "../../src/data/bundle";
@@ -379,6 +380,23 @@ describe("toMarkdown determinism", () => {
     const md = toMarkdown([doneFeedback], { includeDone: false });
     expect(md).not.toContain("💬 feedback only");
     expect(md).not.toContain("n-done-feedback");
+  });
+
+  it("narrows done notes with the shared excludeDone rule, not a local copy (FR-15.3)", () => {
+    const doneFeedback = makeNote({ id: "n-done-feedback", intent: "feedback", status: "done" });
+    const done = makeNote({ id: "n-done", status: "done" });
+    const open = makeNote({ id: "n-open" });
+    const list = [doneFeedback, done, open];
+
+    // the export narrows exactly like the bar, the list and the adapters
+    const expected = excludeDone([...list]).map((note) => note.id);
+    expect(expected).toEqual(["n-open"]);
+    const md = toMarkdown(list, { includeDone: false });
+    for (const note of list) {
+      expect(md.includes(note.id), `${note.id} in ${md}`).toBe(expected.includes(note.id));
+    }
+    // a second, independent signature of the same rule: matchesFilter of core/adapter
+    expect(filterNotes([...list], { includeDone: false }).map((note) => note.id)).toEqual(expected);
   });
 });
 

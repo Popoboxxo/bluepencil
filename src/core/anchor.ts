@@ -11,8 +11,12 @@
  *
  * Resolution order is hook -> selector -> quote. An unresolvable anchor returns `null`; the caller
  * marks `anchor.orphaned = true` and never drops the note (FR-2.4). A path segment that lives
- * behind a *closed* shadow root cannot be resolved and is reported as `anchor.degraded` — the note
- * keeps hook/quote and is flagged instead of failing silently (FR-2.4, §6b).
+ * behind a *closed* shadow root cannot be resolved and is reported as the resolution's `degraded`
+ * segment — the note keeps hook/quote and is flagged instead of failing silently (FR-2.4, §6b).
+ *
+ * Resolution is non-mutating: `resolveAnchor`/`resolveAnchorDetailed` never write to the caller's
+ * anchor object (the layer keeps notes alive across renders, so a hidden side effect would leak
+ * into data the host owns). The degradation of a failed boundary is returned, not stored.
  *
  * Input handling contract:
  *  - `deriveAnchor` throws `BluepencilValidationError` for anything that is not an element-like
@@ -578,33 +582,52 @@ function scanForHook(el: Element, value: string, hooks: readonly string[]): Elem
   return null;
 }
 
+/** Result of one resolution: the element plus the degradation of an unreachable shadow boundary. */
+export interface AnchorResolution {
+  element: Element | null;
+  /** Path segment behind a closed shadow root — the caller flags the note (FR-2.4, §6b). */
+  degraded?: string;
+}
+
 /**
- * Resolve an anchor in the order hook -> selector -> quote (FR-2.1) and return `null` when nothing
- * matches. The caller marks `anchor.orphaned = true` (FR-2.4); a failing shadow boundary is
- * recorded on the anchor as `anchor.degraded` so the degradation stays visible (FR-2.4, §6b).
+ * Resolve an anchor in the order hook -> selector -> quote (FR-2.1) and report the failure of an
+ * unreachable shadow boundary next to the element (FR-2.4, §6b).
+ *
+ * Non-mutating: the caller's anchor object is never written to, so a note kept alive by the layer
+ * cannot change behind its owner's back. Marking `anchor.orphaned = true` stays the caller's job.
  */
-export function resolveAnchor(anchor: Anchor, options?: AnchorOptions): Element | null {
-  if (!anchor || typeof anchor !== "object") return null;
+export function resolveAnchorDetailed(anchor: Anchor, options?: AnchorOptions): AnchorResolution {
+  if (!anchor || typeof anchor !== "object") return { element: null };
   const hooks = normalizeHooks(options?.hooks);
   const root = options?.root;
+  let degraded: string | undefined;
 
   if (typeof anchor.hook === "string" && anchor.hook !== "") {
     const byHook = findByHook(anchor.hook, hooks, root);
-    if (byHook) return byHook;
+    if (byHook) return { element: byHook };
   }
 
   if (typeof anchor.selector === "string" && anchor.selector !== "") {
     const resolution = resolvePathDetailed(anchor.selector, root);
-    if (resolution.element) return resolution.element;
+    if (resolution.element) return { element: resolution.element };
     if (resolution.blockedByShadowBoundary && resolution.failedSegment !== undefined) {
-      anchor.degraded = resolution.failedSegment;
+      degraded = resolution.failedSegment;
     }
   }
 
   if (typeof anchor.quote === "string" && anchor.quote.trim() !== "") {
     const byQuote = findQuote(anchor.quote, root);
-    if (byQuote) return byQuote;
+    if (byQuote) return { element: byQuote, ...(degraded === undefined ? {} : { degraded }) };
   }
 
-  return null;
+  return { element: null, ...(degraded === undefined ? {} : { degraded }) };
+}
+
+/**
+ * `resolveAnchorDetailed(anchor, options).element` — the documented one-liner of FR-2.1.
+ * An unresolvable anchor is only ever reported as `null`; the degradation of a closed shadow
+ * boundary is available through `resolveAnchorDetailed` (§6b) and is never written to the anchor.
+ */
+export function resolveAnchor(anchor: Anchor, options?: AnchorOptions): Element | null {
+  return resolveAnchorDetailed(anchor, options).element;
 }

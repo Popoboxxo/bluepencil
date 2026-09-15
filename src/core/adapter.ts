@@ -13,6 +13,7 @@ import {
   BluepencilValidationError,
   isAuthorType,
   isEnvironment,
+  isMessageKind,
   isNoteIntent,
   isNoteStatus,
   isNoteType,
@@ -145,6 +146,16 @@ function isAtOrAfter(value: string, since: string): boolean {
     return value >= since;
   }
   return left >= right;
+}
+
+/** Applies the shared filter semantics to a list — one predicate for UI, CLI, exports and MCP (FR-15.3). */
+export function filterNotes(notes: Note[], filter?: NoteFilter): Note[] {
+  return filter ? notes.filter((note) => matchesFilter(note, filter)) : [...notes];
+}
+
+/** Drops done notes: the default-view rule of the bar, the list and every export (FR-4.3/4.8). */
+export function excludeDone(notes: Note[]): Note[] {
+  return notes.filter((note) => note.status !== "done");
 }
 
 /**
@@ -323,16 +334,6 @@ function coerceMessages(value: unknown): Message[] {
     });
   }
   return messages;
-}
-
-function isMessageKind(value: unknown): value is Message["kind"] {
-  return (
-    value === "note" ||
-    value === "decision_request" ||
-    value === "decision" ||
-    value === "feedback" ||
-    value === "reply"
-  );
 }
 
 function coerceDebug(value: Record<string, unknown>): DebugContext {

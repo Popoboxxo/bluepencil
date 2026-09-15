@@ -7,6 +7,15 @@
  *
  * Everything here is environment-free: no DOM, no `node:fs`, no timers. Adapters that need a
  * host environment take it injected (see `local-storage.ts`, `file.ts`).
+ *
+ * Failure rules (NFR-8, FR-15.3):
+ *  - a subscriber that throws is logged and skipped — one broken listener must never turn a
+ *    successful (or failing) write into an unrelated rejection;
+ *  - a failing **read** degrades to memory, reported once: the session keeps working (NFR-5);
+ *  - a failing **write** is surfaced per `JsonAdapterIo.writeFailure`: `"reject"` (default) keeps
+ *    the change in memory and rejects the mutation promise so a caller that has to know (CLI,
+ *    MCP, HTTP host) never mistakes an unpersisted write for a saved one; `"degrade"` is the
+ *    documented `localStorage` path that resolves and reports once.
  */
 import {
   BluepencilValidationError,
@@ -36,9 +45,17 @@ export function createMemoryAdapter(options: { seed?: Note[] } = {}): Adapter {
   let notes: Note[] = cloneNotes(options.seed ?? []);
   const subscribers = new Set<(notes: Note[]) => void>();
 
+  /**
+   * A throwing subscriber is logged and skipped: the mutation it belongs to has already been
+   * applied, so it must not reject the caller's promise (mirrors `store.notify()`, NFR-8/NFR-14).
+   */
   const notify = (): void => {
     for (const callback of [...subscribers]) {
-      callback(cloneNotes(notes));
+      try {
+        callback(cloneNotes(notes));
+      } catch (error) {
+        console.debug("bluepencil: an adapter subscriber failed", error);
+      }
     }
   };
 
@@ -146,6 +163,9 @@ export function parseNoteSet(text: string | null): Note[] {
  * JSON blob engine — the shared body of the localStorage and file adapters
  * ---------------------------------------------------------------------------------------------- */
 
+/** How a failed write is surfaced by `createJsonAdapter`. */
+export type WriteFailurePolicy = "reject" | "degrade";
+
 /** Host-provided persistence for `createJsonAdapter`; both calls may fail (quota, disk, policy). */
 export interface JsonAdapterIo {
   /** Reads the stored blob; `null` when nothing has been stored yet. */
@@ -154,6 +174,15 @@ export interface JsonAdapterIo {
   writeText(text: string): Promise<void>;
   /** Called once when the adapter degrades to memory; the caller reports it (NFR-14). */
   onFallback(reason: unknown): void;
+  /**
+   * What a failing `writeText` means for the caller (NFR-8):
+   *  - `"reject"` (default): the change stays in memory and the mutation promise rejects — a
+   *    caller that has to know (CLI import, MCP tool) must never see a success for an unpersisted
+   *    write;
+   *  - `"degrade"`: the change stays in memory and the mutation resolves, reported once through
+   *    `onFallback` — the documented `localStorage` behaviour, where the host has no other copy.
+   */
+  writeFailure?: WriteFailurePolicy;
 }
 
 /**
@@ -161,17 +190,25 @@ export interface JsonAdapterIo {
  * through one queue, so concurrent calls can never overwrite each other (NFR-8). When the I/O
  * fails — storage unavailable, quota exceeded, unreadable blob — the adapter degrades to memory
  * **with the change already applied** and reports it exactly once: the change is never lost, it
- * is only no longer persisted.
+ * is only no longer persisted. A failing *write* follows `io.writeFailure` (default: the mutation
+ * promise rejects, see `WriteFailurePolicy`).
  */
 export function createJsonAdapter(name: string, io: JsonAdapterIo): Adapter {
   let known: Note[] = [];
   let degraded = false;
+  let writeFailureReported = false;
   let queue: Promise<unknown> = Promise.resolve();
   const subscribers = new Set<(notes: Note[]) => void>();
+  const writeFailure: WriteFailurePolicy = io.writeFailure ?? "reject";
 
+  /** A throwing subscriber is logged and skipped — it must not reject an unrelated mutation. */
   const notify = (): void => {
     for (const callback of [...subscribers]) {
-      callback(cloneNotes(known));
+      try {
+        callback(cloneNotes(known));
+      } catch (error) {
+        console.debug("bluepencil: an adapter subscriber failed", error);
+      }
     }
   };
 
@@ -206,6 +243,14 @@ export function createJsonAdapter(name: string, io: JsonAdapterIo): Adapter {
     }
   };
 
+  /**
+   * Persist the next set. The change is recorded in memory first, so nothing is ever lost (NFR-8);
+   * what happens next depends on the configured policy:
+   *  - `"degrade"`: the adapter stops writing for this session, reported once;
+   *  - `"reject"`: the failure is reported once, but not cached — a later write is attempted again
+   *    (a read-only file can become writable) and the in-flight mutation rejects so the caller
+   *    learns that nothing reached the host (the root cause of the swallowed-write MCP defect).
+   */
   const persist = async (notes: Note[]): Promise<void> => {
     known = notes;
     if (degraded) {
@@ -214,7 +259,15 @@ export function createJsonAdapter(name: string, io: JsonAdapterIo): Adapter {
     try {
       await io.writeText(serializeNoteSet(notes));
     } catch (error) {
-      degrade(error);
+      if (writeFailure === "degrade") {
+        degrade(error);
+        return;
+      }
+      if (!writeFailureReported) {
+        writeFailureReported = true;
+        io.onFallback(error);
+      }
+      throw error;
     }
   };
 

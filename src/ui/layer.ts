@@ -18,10 +18,16 @@
  *    highlight removes itself through a CSS `animationend` event;
  *  - production text is only ever set via `textContent` (FR-9.3) and all copy comes from
  *    `src/i18n` (FR-11.1);
- *  - failures go to `options.onError` / `console.debug`, never into the page (NFR-14).
+ *  - keyboard (FR-1.6/1.7/11.2): the reserved keys `c`, `d`, `l`, `f`, `b`, `j`, `k`, `1`–`9`, `?`
+ *    and `Escape` (plus `Ctrl/⌘ + Enter` in the composer) are only ever *swallowed* while an
+ *    annotation mode is active or one of the layer's own surfaces is open. While the layer is
+ *    idle they may still act on the layer, but the host's default action and propagation survive
+ *    (FR-12.6);
+ *  - failures go to `options.onError` / `console.debug` and to a translated inline message of the
+ *    panel or the composer, never into the page (NFR-14).
  */
 
-import { deriveAnchor, describeElement, resolveAnchor } from "../core/anchor";
+import { deriveAnchor, describeElement, resolveAnchor, resolveAnchorDetailed } from "../core/anchor";
 import { captureContext, selectionQuote } from "../core/capture";
 import { toJson } from "../core/export/json";
 import { toMarkdown } from "../core/export/markdown";
@@ -70,6 +76,12 @@ export interface LayerHandle {
   isEnabled(): boolean;
   refresh(): void;
   setShowDone(value: boolean): void;
+  /**
+   * Resolves when the store hydration kicked off by `enable()` has settled (additive; `ready()`
+   * of the public `Blueprint` awaits it instead of starting a second read). Never rejects: a
+   * failed load is reported through `options.onError` and the store simply stays as it is.
+   */
+  hydrated(): Promise<void>;
 }
 
 /** Annotation modes (FR-1.3 text / FR-1.4 design). */
@@ -260,6 +272,12 @@ export function createLayer(options: LayerOptions): LayerHandle {
   /** Element resolution per note id, refreshed on every render (FR-2.4/4.7). */
   const resolutions = new Map<string, Element | null>();
 
+  /** Degraded notes of the last resolution round — resolution itself never mutates a note (§6b). */
+  const degradations = new Set<string>();
+
+  /** Store hydration of the last `enable()`; awaited by `hydrated()` (never rejects). */
+  let hydration: Promise<void> = Promise.resolve();
+
   /** Nodes belonging to this instance (all inside `root`). */
   let root: HTMLElement | null = null;
   let bar: HTMLElement | null = null;
@@ -327,6 +345,38 @@ export function createLayer(options: LayerOptions): LayerHandle {
     } catch {
       // ignore
     }
+  }
+
+  /**
+   * A failed action is reported twice: to the host (`onError`) and to the user, as a translated
+   * inline message in the panel and — when it is open — in the composer (NFR-14, FR-11.1).
+   */
+  function reportFailure(key: MessageKey, error: unknown): void {
+    reportError(error);
+    panel?.reportMessage(key);
+    if (composer?.isOpen()) composer.reportError(key);
+  }
+
+  /** Wraps a delegated listener so no exception of ours can ever reach the host page (NFR-14). */
+  function guard(handler: (event: Event) => void): EventListener {
+    return (event: Event): void => {
+      try {
+        handler(event);
+      } catch (error) {
+        reportError(error);
+      }
+    };
+  }
+
+  /** True while no mode is active and no own surface holds the keyboard (FR-12.6). */
+  function isIdle(): boolean {
+    return (
+      mode === "off" &&
+      !(composer?.isOpen() ?? false) &&
+      !(panel?.isOpen() ?? false) &&
+      !(legend?.isOpen() ?? false) &&
+      !(settingsPopover?.isOpen() ?? false)
+    );
   }
 
   /* -- persistence (FR-4.5, FR-1.2) --------------------------------------- */
@@ -489,6 +539,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
       instanceId,
       notes: () => options.store.notes(),
       resolve: (note) => resolutions.get(note.id) ?? null,
+      degraded: (note) => degradations.has(note.id) || note.anchor.degraded !== undefined,
       showDone: () => settings.showDone,
       selectedId: () => selectedId,
       actions: panelActions(),
@@ -550,9 +601,14 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
   function refreshResolutions(): void {
     resolutions.clear();
+    degradations.clear();
     for (const note of options.store.notes()) {
       try {
-        resolutions.set(note.id, resolveAnchor(note.anchor, anchorOptions()));
+        const resolution = resolveAnchorDetailed(note.anchor, anchorOptions());
+        resolutions.set(note.id, resolution.element);
+        if (resolution.degraded !== undefined) {
+          degradations.add(note.id);
+        }
       } catch (error) {
         reportError(error);
         resolutions.set(note.id, null);
@@ -925,20 +981,30 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
   /* -- export (FR-7.1/7.2) ------------------------------------------------ */
 
+  /**
+   * Export the whole set. Both formats can fail — a JSON bundle refuses notes of two environments
+   * (FR-14.1), a Markdown export can hit a broken anchor — so the failure is caught here, reported
+   * to the host and shown inline; nothing is thrown into the click path (NFR-14).
+   */
   function exportNotes(format: "markdown" | "json"): void {
-    const notes = options.store.notes();
     const isJson = format === "json";
-    const text = isJson
-      ? toJson(notes)
-      : toMarkdown(notes, {
-          language: settings.language === "de" ? "de" : "en",
-          includeDone: true,
-        });
-    download(
-      text,
-      isJson ? "bluepencil-notes.json" : "bluepencil-notes.md",
-      isJson ? "application/json" : "text/markdown",
-    );
+    try {
+      const notes = options.store.notes();
+      const text = isJson
+        ? toJson(notes)
+        : toMarkdown(notes, {
+            language: settings.language === "de" ? "de" : "en",
+            includeDone: true,
+          });
+      download(
+        text,
+        isJson ? "bluepencil-notes.json" : "bluepencil-notes.md",
+        isJson ? "application/json" : "text/markdown",
+      );
+      panel?.reportMessage(undefined);
+    } catch (error) {
+      reportFailure("panel.error.export", error);
+    }
   }
 
   /** Host-provided download path; unavailable APIs degrade to a console note (NFR-5). */
@@ -1034,8 +1100,21 @@ export function createLayer(options: LayerOptions): LayerHandle {
     openComposerFor(picked, mode === "design" ? "design" : "text");
   }
 
-  /** Route a click inside the layer by `data-bp-action` (one listener for the whole instance). */
+  /**
+   * Route a click inside the layer by `data-bp-action` (one listener for the whole instance).
+   * The whole dispatch runs guarded: a failing store, export or render step is reported through
+   * `onError` and shown inline instead of escaping into the host page (NFR-14). The click itself
+   * is never swallowed here (FR-12.6).
+   */
   function handleLayerClick(event: Event, path: readonly unknown[]): void {
+    try {
+      dispatchLayerAction(event, path);
+    } catch (error) {
+      reportFailure("panel.error.action", error);
+    }
+  }
+
+  function dispatchLayerAction(event: Event, path: readonly unknown[]): void {
     const actionNode = path.find((node) => isElement(node) && node.hasAttribute("data-bp-action"));
     if (!isElement(actionNode)) return;
     const action = actionNode.getAttribute("data-bp-action");
@@ -1179,17 +1258,28 @@ export function createLayer(options: LayerOptions): LayerHandle {
     }
   }
 
-  /** Keyboard operation (FR-1.6/1.7/11.2) — one capture-phase listener for the whole layer. */
+  /**
+   * Keyboard operation (FR-1.6/1.7/11.2) — one capture-phase listener for the whole layer.
+   *
+   * Reserved keys while the layer owns the keyboard (`mode !== "off"` or one of its surfaces is
+   * open): `c`/`d` modes, `l` panel, `f` feedback-only, `b` bar, `?` legend, `j`/`k` selection,
+   * `1`–`9` jump, `Escape` cancel, and `Ctrl/⌘ + Enter` inside the composer. They are only ever
+   * swallowed (preventDefault/stopPropagation) in that state; while the layer is idle the same
+   * shortcuts still act on the layer, but the host keeps its own key (FR-12.6).
+   */
   function onDocumentKeyDown(event: Event): void {
     if (!enabled) return;
     if (!(event instanceof KeyboardEvent)) return;
     const rawKey = event.key;
     const key = rawKey.length === 1 ? rawKey.toLowerCase() : rawKey;
+    // Captured before the switch: `c`/`d` change the mode themselves, and the decision to swallow
+    // the key belongs to the state the layer was in when the key arrived.
+    const idle = isIdle();
 
     if (composer?.isOpen()) {
       if (composer.handleKey(event)) {
         event.preventDefault();
-        if (mode !== "off") event.stopPropagation();
+        if (!idle) event.stopPropagation();
       }
       return;
     }
@@ -1197,7 +1287,8 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (key === "Escape") {
       if (escape()) {
         event.preventDefault();
-        if (mode !== "off") event.stopPropagation();
+        // Swallowing follows the state the key arrived in: leaving a mode is still our action.
+        if (!idle) event.stopPropagation();
       }
       return;
     }
@@ -1245,10 +1336,10 @@ export function createLayer(options: LayerOptions): LayerHandle {
           handled = false;
         }
     }
-    if (!handled) return;
+    if (!handled || idle) return;
     event.preventDefault();
-    // FR-12.6: swallow the key for the host only while a mode is active.
-    if (mode !== "off") event.stopPropagation();
+    // FR-12.6: a key is swallowed for the host only while the layer owns the keyboard.
+    event.stopPropagation();
   }
 
   /** Esc: closes the topmost layer surface, then leaves the mode (FR-1.7/11.2). */
@@ -1365,10 +1456,11 @@ export function createLayer(options: LayerOptions): LayerHandle {
     const doc = ownerDocument;
     if (!doc) return;
     // Capture phase everywhere: the layer sees events before the host does, and only then
-    // decides whether to interfere (FR-12.6).
-    listen(doc, "click", onDocumentClick, true);
-    listen(doc, "change", onDocumentChange, true);
-    listen(doc, "keydown", onDocumentKeyDown, true);
+    // decides whether to interfere (FR-12.6). Every handler is guarded, so a defect in our own
+    // code reports through `onError` instead of surfacing in the host's console (NFR-14).
+    listen(doc, "click", guard(onDocumentClick), true);
+    listen(doc, "change", guard(onDocumentChange), true);
+    listen(doc, "keydown", guard(onDocumentKeyDown), true);
     if (view) {
       listen(view, "scroll", onScroll, { capture: true, passive: true });
       listen(view, "resize", onResize, { passive: true });
@@ -1418,10 +1510,12 @@ export function createLayer(options: LayerOptions): LayerHandle {
     applyUiState();
     // Hydrate from the adapter on every enable(): the store starts empty and only the host (or
     // this call) asks the transport for persisted notes (NFR-2, NFR-8). reload() notifies the
-    // subscription above, so the bar, markers and panel render the restored set.
-    void Promise.resolve()
+    // subscription above, so the bar, markers and panel render the restored set, and `hydrated()`
+    // lets `Blueprint.ready()` await it instead of starting a second read.
+    hydration = Promise.resolve()
       .then(() => options.store.reload())
       .catch((error: unknown) => reportError(error));
+    void hydration;
     if (options.markerStrategy === "sibling") {
       reportDegraded("markerStrategy 'sibling' is not implemented in M1 — using the overlay strategy (D2)");
     }
@@ -1458,6 +1552,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
     markerNodes.clear();
     resolutions.clear();
+    degradations.clear();
     selectedId = null;
     mode = "off";
     activeTarget = null;
@@ -1485,6 +1580,8 @@ export function createLayer(options: LayerOptions): LayerHandle {
     enable,
     disable,
     isEnabled: () => enabled,
+    /** Store hydration of the last `enable()` (additive; used by `Blueprint.ready()`). */
+    hydrated: () => hydration,
     /** Re-render from the current store snapshot (host-driven refresh). */
     refresh(): void {
       if (!enabled) return;

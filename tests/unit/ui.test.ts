@@ -12,12 +12,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createMemoryAdapter } from "../../src/adapters/memory";
 import { resolveAnchor } from "../../src/core/anchor";
-import type { Note, NoteDraft } from "../../src/core/model";
+import { BluepencilValidationError, createNote, type Note, type NoteDraft } from "../../src/core/model";
 import { createStore, type Store } from "../../src/core/store";
 import { de } from "../../src/i18n/de";
 import { en } from "../../src/i18n/en";
 import type { MessageKey } from "../../src/i18n/en";
+import { applyTranslations, createTranslator, translate, type Messages } from "../../src/i18n";
 import { createLayer, type LayerHandle, type LayerOptions } from "../../src/ui/layer";
+import { noteCounters } from "../../src/ui/panel";
 import { STYLES } from "../../src/ui/styles";
 
 /* -------------------------------------------------------------------------- */
@@ -234,6 +236,7 @@ async function addNote(store: Store, draft: Partial<NoteDraft> = {}): Promise<No
     ...(draft.status !== undefined ? { status: draft.status } : {}),
     ...(draft.intent !== undefined ? { intent: draft.intent } : {}),
     ...(draft.now !== undefined ? { now: draft.now } : {}),
+    ...(draft.environment !== undefined ? { environment: draft.environment } : {}),
   });
 }
 
@@ -1163,6 +1166,237 @@ describe("multi-instance and i18n", () => {
     expect(style).toContain("--bp-surface: #eeeeee");
     expect(byId("host").querySelector("[style]")).toBeNull();
     handle.disable();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* counters, keyboard reservation and failure paths                            */
+/* (FR-4.3/4.8, FR-12.6, FR-2.4, NFR-14)                                       */
+/* -------------------------------------------------------------------------- */
+
+describe("counters, keyboard and failure paths", () => {
+  it("excludes done notes from every counter, feedback included (FR-4.3/4.8)", async () => {
+    const store = makeStore();
+    const doneFeedback = await addNote(store, {
+      body: "done assessment",
+      status: "done",
+      intent: "feedback",
+    });
+    const openFeedback = await addNote(store, { body: "open assessment", intent: "feedback" });
+    const openImplement = await addNote(store, { body: "open work" });
+
+    // the reported triple: a done feedback note must not be counted anywhere
+    expect(noteCounters([doneFeedback, openFeedback, openImplement])).toEqual({
+      total: 2,
+      open: 2,
+      decisions: 0,
+      feedback: 1,
+    });
+
+    const handle = startLayer(store);
+    const counters = (): (string | null)[] =>
+      (["total", "open", "decisions", "feedback"] as const).map(
+        (key) => query(`[data-bp-part="counter-${key}"]`).textContent,
+      );
+    expect(counters()).toEqual(["2", "2", "0", "1"]);
+    handle.disable();
+  });
+
+  it("leaves the host's keyboard alone while idle and owns it in a mode (FR-12.6)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="p1">text</p></main>`;
+    const handle = startLayer(makeStore());
+    const seen: string[] = [];
+    const record = (): void => {
+      seen.push("host");
+    };
+    document.body.addEventListener("keydown", record);
+
+    const press = (key: string): KeyboardEvent => {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      // Dispatched on a host node, so a swallowed key is visible as "the host listener never ran".
+      document.body.dispatchEvent(event);
+      return event;
+    };
+
+    // Idle: the layer still acts on its own shortcut, but the host's key survives. The reported
+    // defect was `c`/`d`: they toggled the mode *and* swallowed the event for the host.
+    const c = press("c");
+    expect(mode()).toBe("text");
+    expect(c.defaultPrevented).toBe(false);
+    expect(seen).toEqual(["host"]);
+
+    // A mode is active: the reserved keys belong to the layer.
+    seen.length = 0;
+    const f = press("f");
+    expect(f.defaultPrevented).toBe(true);
+    expect(seen).toEqual([]);
+
+    // Esc leaves the mode (itself a reserved key while a mode is active) …
+    seen.length = 0;
+    const escape = press("Escape");
+    expect(mode()).toBe("off");
+    expect(escape.defaultPrevented).toBe(true);
+    expect(seen).toEqual([]);
+
+    // … and the layer is idle again: the host gets its key back.
+    seen.length = 0;
+    const panelKey = press("l");
+    expect(panelEl().hidden).toBe(false);
+    expect(panelKey.defaultPrevented).toBe(false);
+    expect(seen).toEqual(["host"]);
+
+    // With one of its own surfaces open the layer owns the keyboard again.
+    seen.length = 0;
+    const closeKey = press("l");
+    expect(panelEl().hidden).toBe(true);
+    expect(closeKey.defaultPrevented).toBe(true);
+    expect(seen).toEqual([]);
+
+    document.body.removeEventListener("keydown", record);
+    handle.disable();
+  });
+
+  it("reports a failing JSON export through onError and inline, never into the page (NFR-14)", async () => {
+    const errors: unknown[] = [];
+    const store = makeStore();
+    await addNote(store, { body: "dev note", environment: "dev" });
+    await addNote(store, { body: "live note", environment: "live" });
+    const handle = startLayer(store, { onError: (error) => errors.push(error) });
+
+    const blobs: Blob[] = [];
+    const urlApi = globalThis.URL as unknown as { createObjectURL?: (blob: Blob) => string };
+    const originalCreate = urlApi.createObjectURL;
+    urlApi.createObjectURL = (blob: Blob): string => {
+      blobs.push(blob);
+      return "#bluepencil-export";
+    };
+
+    try {
+      click(barButton("panel"));
+      // A bundle carries exactly one environment (FR-14.1): this export cannot succeed …
+      expect(() => click(query('[data-bp-action="export-json"]'))).not.toThrow();
+
+      // … so the host hears about it, the user sees it, and nothing was downloaded.
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeInstanceOf(BluepencilValidationError);
+      const message = query('[data-bp-part="panel-message"]');
+      expect(message.hidden).toBe(false);
+      expect(message.textContent).toBe(en["panel.error.export"]);
+      expect(blobs).toEqual([]);
+    } finally {
+      urlApi.createObjectURL = originalCreate;
+    }
+    handle.disable();
+  });
+
+  it("reports a failing Markdown export inline as well and clears the message on success (NFR-14)", async () => {
+    const errors: unknown[] = [];
+    // A hand-edited or imported note can carry a body that is not a string (FR-14.6): the export
+    // must not explode inside the click listener.
+    const corrupt: Note = {
+      ...createNote({
+        id: "n-corrupt",
+        type: "text",
+        body: "broken",
+        anchor: { hook: "corrupt" },
+        now: "2026-09-15T10:00:00.000Z",
+      }),
+      body: null as unknown as string,
+    };
+    const store = createStore({ adapter: createMemoryAdapter({ seed: [corrupt] }) });
+    const handle = startLayer(store, { onError: (error) => errors.push(error) });
+    await handle.hydrated();
+
+    const blobs: Blob[] = [];
+    const urlApi = globalThis.URL as unknown as { createObjectURL?: (blob: Blob) => string };
+    const originalCreate = urlApi.createObjectURL;
+    urlApi.createObjectURL = (blob: Blob): string => {
+      blobs.push(blob);
+      return "#bluepencil-export";
+    };
+
+    try {
+      click(barButton("panel"));
+      expect(() => click(query('[data-bp-action="export-markdown"]'))).not.toThrow();
+      expect(errors).toHaveLength(1);
+      const message = query('[data-bp-part="panel-message"]');
+      expect(message.textContent).toBe(en["panel.error.export"]);
+      expect(message.hidden).toBe(false);
+      expect(blobs).toEqual([]);
+
+      // With the broken note gone the same action succeeds and clears the inline message.
+      await store.remove("n-corrupt");
+      click(query('[data-bp-action="export-markdown"]'));
+      expect(blobs).toHaveLength(1);
+      expect(query('[data-bp-part="panel-message"]').hidden).toBe(true);
+      expect(errors).toHaveLength(1);
+    } finally {
+      urlApi.createObjectURL = originalCreate;
+    }
+    handle.disable();
+  });
+
+  it("shows a degraded anchor without writing into the stored note (FR-2.4, §6b)", async () => {
+    document.body.innerHTML = `<div id="host"></div>`;
+    byId("host").attachShadow({ mode: "closed" }).innerHTML = `<span class="secret">hidden</span>`;
+
+    const anchor = { selector: "div#host:nth-of-type(1) >> span:nth-of-type(1)" };
+    const seeded = createNote({
+      id: "n-degraded",
+      type: "text",
+      body: "closed root note",
+      anchor,
+      now: "2026-09-15T10:00:00.000Z",
+    });
+    const store = createStore({ adapter: createMemoryAdapter({ seed: [seeded] }) });
+    const handle = startLayer(store);
+    await handle.hydrated();
+
+    pressKey("l");
+    const entry = noteEntries()[0];
+    expect(entry?.classList.contains("is-orphaned")).toBe(true);
+    expect(entry?.querySelector(".bp-badge--degraded")?.textContent).toBe(en["panel.degraded"]);
+    // The degradation was reported by the resolution, not stamped onto the note the host owns.
+    expect(store.notes()[0]?.anchor.degraded).toBeUndefined();
+    expect(seeded.anchor.degraded).toBeUndefined();
+    expect(anchor).toEqual({ selector: "div#host:nth-of-type(1) >> span:nth-of-type(1)" });
+    handle.disable();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* i18n lookup fallbacks (FR-11.1, FR-9.3, NFR-14)                              */
+/* -------------------------------------------------------------------------- */
+
+describe("i18n lookup fallbacks", () => {
+  it("falls back to English for a missing key and renders an unknown key instead of throwing", () => {
+    const partial: Partial<Messages> = { ...de };
+    delete partial["bar.panel"];
+    const translator = createTranslator("de", partial);
+
+    expect(translator.language).toBe("de");
+    expect(translator.t("bar.title")).toBe(de["bar.title"]);
+    // the reported gap: a table without that key used to throw inside the translation
+    expect(translator.t("bar.panel")).toBe(en["bar.panel"]);
+    expect(translator.t("not.a.key" as MessageKey)).toBe("not.a.key");
+    expect(translate("de", "bar.panel")).toBe(de["bar.panel"]);
+
+    // the DOM walk of the layer survives both cases (no TypeError on the host page)
+    const mount = document.createElement("div");
+    mount.innerHTML = [
+      `<span data-bp-i18n="bar.panel"></span>`,
+      `<span data-bp-i18n="not.a.key"></span>`,
+      `<span data-bp-i18n-aria="bar.title"></span>`,
+    ].join("");
+    expect(() => applyTranslations(mount, translator.t)).not.toThrow();
+    const nodes = Array.from(mount.querySelectorAll("span"));
+    expect(nodes[0]?.textContent).toBe(en["bar.panel"]);
+    // unknown keys stay out of the UI — a marked node is never rendered as a raw key (FR-9.3)
+    expect(nodes[1]?.textContent).toBe("");
+    expect(nodes[2]?.getAttribute("aria-label")).toBe(de["bar.title"]);
+
+    // an unsupported language tag still resolves to English
+    expect(createTranslator("fr-FR").t("bar.panel")).toBe(en["bar.panel"]);
   });
 });
 

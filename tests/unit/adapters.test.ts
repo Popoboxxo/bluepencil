@@ -22,6 +22,7 @@ import { createMemoryAdapter } from "../../src/adapters/memory";
 import { createLocalStorageAdapter, localStorageKey } from "../../src/adapters/local-storage";
 import { createFileAdapter, type FileAdapterIo } from "../../src/adapters/file";
 import { HttpAdapterError, createHttpAdapter } from "../../src/adapters/http";
+import { createStore } from "../../src/core/store";
 
 const ROUTE_A = "/checkout";
 const ROUTE_B = "/settings";
@@ -556,17 +557,107 @@ describe("file adapter specifics", () => {
     expect(debug).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to memory when the file cannot be written", async () => {
+  it("rejects a failing write instead of reporting a write that never reached the file (NFR-8)", async () => {
+    // Root cause of the swallowed-write MCP defect: the mutation used to resolve while the
+    // adapter only logged, so a tool reported success for a note that was never persisted.
     const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    let writes = 0;
+    let content: string | null = null;
     const adapter = createFileAdapter({
-      read: async () => null,
+      read: async () => content,
       write: async () => {
-        throw new Error("ENOSPC");
+        writes += 1;
+        throw Object.assign(new Error("EACCES: permission denied, open 'store.json'"), {
+          code: "EACCES",
+        });
       },
     });
-    const note = await adapter.create(draft({ body: "kept" }));
-    expect((await adapter.list()).map((entry) => entry.id)).toEqual([note.id]);
+
+    await expect(adapter.create(draft({ body: "never persisted" }))).rejects.toThrow(/EACCES/);
+    expect(content).toBeNull();
     expect(debug).toHaveBeenCalledTimes(1);
+    expect(String(debug.mock.calls[0]?.[0])).toMatch(/file adapter I\/O failed/);
+
+    // The failure is not cached: the next write is attempted again and rejects as well.
+    await expect(adapter.create(draft({ body: "second" }))).rejects.toThrow(/EACCES/);
+    expect(writes).toBe(2);
+    expect(debug).toHaveBeenCalledTimes(1);
+
+    // A usable write after the failure persists again and resolves.
+    content = "[]";
+    const reloaded = createFileAdapter({
+      read: async () => content,
+      write: async (text: string) => {
+        content = text;
+      },
+    });
+    await expect(reloaded.create(draft({ body: "on disk" }))).resolves.toMatchObject({ body: "on disk" });
+    expect(content).toContain("on disk");
+  });
+
+  it("propagates a failed write to the store mutation so a caller cannot mistake it for a save", async () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const store = createStore({
+      adapter: createFileAdapter({
+        read: async () => null,
+        write: async () => {
+          throw new Error("EACCES: permission denied");
+        },
+      }),
+    });
+
+    await expect(store.create(draft({ body: "not saved" }))).rejects.toThrow(/EACCES/);
+    // NFR-8: the in-memory change stays — the caller learns about it, the user loses nothing.
+    expect(store.notes().map((entry) => entry.body)).toEqual(["not saved"]);
+    expect(debug).toHaveBeenCalledTimes(1);
+    await store.destroy();
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * subscriber isolation
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("adapter subscriber isolation", () => {
+  it("keeps a memory-adapter mutation successful when a subscriber throws", async () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const adapter = createMemoryAdapter();
+    const seen: string[][] = [];
+    let armed = false;
+    // The immediate call of a fresh subscriber is not the subject here: only *notifications* are.
+    adapter.subscribe?.(() => {
+      if (armed) {
+        throw new Error("broken subscriber");
+      }
+    });
+    adapter.subscribe?.((notes) => {
+      seen.push(notes.map((note) => note.body));
+    });
+    armed = true;
+
+    const note = await adapter.create(draft({ body: "still saved" }));
+    expect(note.body).toBe("still saved");
+    // the healthy subscriber still saw the change …
+    expect(seen.at(-1)).toEqual(["still saved"]);
+    // … and the failure is a log line, not a rejected mutation (mirrors store.notify, NFR-8)
+    expect(debug).toHaveBeenCalledWith("bluepencil: an adapter subscriber failed", expect.any(Error));
+  });
+
+  it("keeps a JSON-adapter mutation successful when a subscriber throws", async () => {
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    const adapter = createLocalStorageAdapter({ key: "subscribers", storage: createFakeStorage() });
+    let armed = false;
+    adapter.subscribe?.(() => {
+      if (armed) {
+        throw new Error("broken subscriber");
+      }
+    });
+    armed = true;
+
+    const note = await adapter.create(draft({ body: "persisted anyway" }));
+    const stored = await adapter.list();
+    expect(stored.map((entry) => entry.id)).toEqual([note.id]);
+    expect(debug).toHaveBeenCalledWith("bluepencil: an adapter subscriber failed", expect.any(Error));
   });
 });
 

@@ -76,7 +76,10 @@ export const DEFAULT_FILTERS: PanelFilters = { type: "all", intent: "all", statu
 /* -------------------------------------------------------------------------- */
 
 export interface NoteCounters {
-  /** Visible work — `done` notes are excluded, exactly as the list hides them (FR-4.3). */
+  /**
+   * Visible work — `done` notes are excluded from `total`, `open`, `decisions` **and** `feedback`,
+   * exactly as the list hides them (FR-4.3, FR-4.8).
+   */
   total: number;
   open: number;
   decisions: number;
@@ -89,11 +92,11 @@ export function noteCounters(notes: readonly Note[]): NoteCounters {
   let decisions = 0;
   let feedback = 0;
   for (const note of notes) {
-    if (note.intent === "feedback") feedback += 1;
     if (note.status === "done") continue;
     total += 1;
     if (note.status === "open") open += 1;
     if (note.status === "needs_decision") decisions += 1;
+    if (note.intent === "feedback") feedback += 1;
   }
   return { total, open, decisions, feedback };
 }
@@ -127,6 +130,11 @@ export interface PanelOptions {
   selectedId: () => string | null;
   actions: PanelActions;
   onError?: (err: unknown) => void;
+  /**
+   * Degradation known to the layer for one note (`resolveAnchorDetailed(...).degraded`), because
+   * resolution no longer writes into `note.anchor`. Falls back to the stored `anchor.degraded`.
+   */
+  degraded?: (note: Note) => boolean;
 }
 
 export interface Panel {
@@ -146,6 +154,11 @@ export interface Panel {
   replyValue(note: Note): string;
   /** Show or clear an inline message on one entry (e.g. an empty reply, a failed write). */
   reportNoteError(note: Note, key?: MessageKey): void;
+  /**
+   * Show or clear a translated inline message of the panel itself (a failed export, a failed
+   * action) — the visible half of NFR-14, next to `onError`.
+   */
+  reportMessage(key?: MessageKey): void;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -255,7 +268,13 @@ export function createPanel(options: PanelOptions): Panel {
   const statusLine = createEl(doc, "p", "bp-hint");
   statusLine.setAttribute("data-bp-part", "panel-status");
 
-  element.append(header, filtersRow, body, statusLine);
+  /** Inline feedback of the panel itself (a failed export/action) — never markup (FR-9.3). */
+  const messageLine = createEl(doc, "p", "bp-error");
+  messageLine.setAttribute("data-bp-part", "panel-message");
+  messageLine.setAttribute("role", "alert");
+  messageLine.hidden = true;
+
+  element.append(header, filtersRow, body, statusLine, messageLine);
 
   let openState = false;
   const filters: PanelFilters = { ...DEFAULT_FILTERS };
@@ -394,7 +413,7 @@ export function createPanel(options: PanelOptions): Panel {
       orphanBadge.setAttribute("data-bp-i18n", "panel.orphaned");
       head.append(orphanBadge);
     }
-    if (note.anchor.degraded !== undefined) {
+    if (options.degraded ? options.degraded(note) : note.anchor.degraded !== undefined) {
       const degradedBadge = createEl(doc, "span", "bp-badge bp-badge--degraded");
       degradedBadge.setAttribute("data-bp-i18n", "panel.degraded");
       head.append(degradedBadge);
@@ -473,6 +492,8 @@ export function createPanel(options: PanelOptions): Panel {
     statusLine.textContent = status.join(" · ");
 
     applyTranslations(element, options.t);
+    // Re-apply an inline message so a language switch translates it with everything else.
+    reportMessage(messageKey);
   }
 
   function open(): void {
@@ -484,7 +505,22 @@ export function createPanel(options: PanelOptions): Panel {
   function close(): void {
     openState = false;
     element.hidden = true;
+    reportMessage(undefined);
   }
+
+  /** Inline message of the panel; `undefined` clears it (a closed panel shows nothing). */
+  function reportMessage(key?: MessageKey): void {
+    messageKey = key;
+    if (key === undefined) {
+      messageLine.textContent = "";
+      messageLine.hidden = true;
+      return;
+    }
+    messageLine.textContent = options.t(key);
+    messageLine.hidden = false;
+  }
+
+  let messageKey: MessageKey | undefined;
 
   return {
     element,
@@ -528,6 +564,7 @@ export function createPanel(options: PanelOptions): Panel {
       target.textContent = options.t(key);
       target.hidden = false;
     },
+    reportMessage,
   };
 
   /** The rendered entry of one note, if it is currently in the list (no selector injection). */

@@ -4,7 +4,9 @@
  * The host owns the I/O (`node:fs` in the CLI, a download/upload in the browser, a temp file in a
  * test), so this module stays free of `node:fs` and of the DOM and works in both runtimes. The
  * whole set lives in one JSON blob written through the shared engine in `memory.ts`; a failing
- * read or write degrades to memory and is reported once (NFR-8).
+ * read degrades to memory and is reported once, while a failing write keeps the change in memory
+ * **and** rejects the mutation promise (`writeFailure: "reject"`): a tool that persists annotations
+ * must never report a success for a write that never reached the file (NFR-8).
  */
 import { BluepencilValidationError } from "../core/model";
 import type { Adapter } from "../core/adapter";
