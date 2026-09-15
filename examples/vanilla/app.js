@@ -242,7 +242,7 @@ function renderFindingsTable() {
  * live inside that shadow root, which is what FR-12.4 is about — the layer has to evaluate
  * clicks on `event.composedPath()` and encode the shadow boundary in the anchor path.
  * The button intentionally carries no hook: interactive controls pass through in every mode
- * (FR-1.9, FR-12.6), and it keeps working while an annotation mode is active.
+ * (FR-2.7, FR-12.6), and it keeps working while an annotation mode is active.
  */
 class DemoInsightCard extends HTMLElement {
   connectedCallback() {

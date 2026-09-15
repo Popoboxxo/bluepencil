@@ -20,6 +20,10 @@
 The Markdown export always opens with the two **exception sections** (`⚠ open decisions`,
 `💬 feedback only`) — read them first, they constrain everything else (PROTOCOL §7).
 
+> There is no npm release yet: run the CLI as `node dist/cli.js <command> …` (after `npm run build`),
+> or `npm link` once and use the shorter `bluepencil <command> …` form. The MCP row above is the
+> same server as in §2.
+
 ## 2. MCP server
 
 ```bash
@@ -59,28 +63,37 @@ hermes config set mcp_servers.bluepencil.command "/opt/data/repos/bluepencil/scr
 hermes config set mcp_servers.bluepencil.env.BLUEPENCIL_STORE "/opt/data/reviews/my-tool.bluepencil.json"
 hermes config set mcp_servers.bluepencil.env.BLUEPENCIL_ENVIRONMENT "dev"
 hermes config set mcp_servers.bluepencil.env.BLUEPENCIL_APP "my-web-tool"
-hermes config set mcp_servers.bluepencil.env.BLUEPENCIL_ALLOW_WRITE "0"   # 1 = writes enabled
 hermes config set mcp_servers.bluepencil.sampling.enabled false
 hermes config set mcp_servers.bluepencil.timeout 60
 hermes mcp test bluepencil
 ```
 
-Tools appear in a session as `mcp_bluepencil_<tool>` after a restart (no hot reload). For a live
-round with writes, either flip `BLUEPENCIL_ALLOW_WRITE` to `1` or start a second server entry
-(e.g. `bluepencil_dev`) bound to a dev store.
+Writes stay disabled because `BLUEPENCIL_ALLOW_WRITE` is simply **absent** — that is the safe
+default of the wrapper. Do not set it with `hermes config set … 1`: the value is stored as a YAML
+integer and the MCP client refuses to start (`Input should be a valid string`). To enable writes,
+add it to `config.yaml` by hand as a quoted string (`BLUEPENCIL_ALLOW_WRITE: '1'`), preferably on a
+second server entry bound to a dev store.
+
+Tools appear in a session as `mcp__bluepencil__<tool>` — e.g. `mcp__bluepencil__list_notes` — after
+a restart (no hot reload). For a live round with writes, either flip `BLUEPENCIL_ALLOW_WRITE` to `1`
+or start a second server entry (e.g. `bluepencil_dev`) bound to a dev store.
 
 ## 3. CLI (no runtime involved)
 
 ```bash
-bluepencil inspect  live.bluepencil.json                       # summary, writes nothing
-bluepencil validate live.bluepencil.json                       # schema check, exit 4 when invalid
-bluepencil export   live.bluepencil.json --format md           # agent-facing Markdown
-bluepencil merge    dev.bluepencil.json live.bluepencil.json --dry-run --json
-bluepencil import   live.bluepencil.json dev.bluepencil.json --mode merge
+node dist/cli.js inspect  live.bluepencil.json                       # summary, writes nothing
+node dist/cli.js validate live.bluepencil.json                       # schema check, exit 4 when invalid
+node dist/cli.js export   live.bluepencil.json --format md           # agent-facing Markdown
+node dist/cli.js merge    dev.bluepencil.json live.bluepencil.json --dry-run --json
+node dist/cli.js import   live.bluepencil.json dev.bluepencil.json --mode merge
 ```
 
 Exit codes are meaningful for pipelines: `0` ok, `1` usage, `2` refused (unresolved conflicts),
 `3` environment mismatch, `4` invalid input.
+
+`npm run build` must have produced `dist/cli.js`; `npm link` gives you the shorter `bluepencil …`
+form. Two more commands exist: `bluepencil notes <file>` prints a file's notes as JSON, and
+`bluepencil mcp …` starts the server of §2.
 
 ## 4. The loop an agent runs
 
@@ -100,8 +113,8 @@ Hard prohibitions from PROTOCOL §6 apply unchanged: never invent a human decisi
 A thin Hermes skill is enough — the server holds the logic:
 
 * trigger: "work off the bluepencil notes for <app>" / "review notes";
-* steps: `mcp_bluepencil_list_notes` → group by route → implement → `mcp_bluepencil_reply` +
-  `mcp_bluepencil_set_status`;
+* steps: `mcp__bluepencil__list_notes` → group by route → implement → `mcp__bluepencil__reply` +
+  `mcp__bluepencil__set_status`;
 * guardrails: read-only unless writes were opted in; environment must match the store; report
   conflicts instead of resolving them.
 

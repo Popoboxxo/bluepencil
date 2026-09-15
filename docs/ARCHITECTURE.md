@@ -111,11 +111,12 @@ await store.create(createNote({
 ```
 
 ```bash
-# CLI: exchange and inspection without any UI (FR-15.2)
-bluepencil export --adapter http --endpoint … --env live --out live.bluepencil.json
+# CLI: exchange and inspection without any UI (FR-15.2) — file based today; the `--adapter http`
+# form is the M2 extension (adapter selection in the CLI), the HTTP surface is used through the library.
+bluepencil export --adapter http --endpoint … --env live --out live.bluepencil.json   # M2
 bluepencil inspect live.bluepencil.json
 bluepencil merge dev.bluepencil.json live.bluepencil.json --dry-run --json
-bluepencil import live.bluepencil.json --adapter http --endpoint … --mode merge
+bluepencil import live.bluepencil.json --adapter http --endpoint … --mode merge       # M2
 ```
 
 Everything the UI does is also available headlessly through `bp.store` and the export
@@ -225,7 +226,7 @@ Markdown mirror, so notes can be committed to a repository if the host wants tha
 A loader that injects the IIFE build into the current page:
 
 ```
-javascript:(()=>{const s=document.createElement('script');s.src='https://<host>/bluepencil.js';
+javascript:(()=>{const s=document.createElement('script');s.src='https://<host>/bluepencil.iife.js';
 s.onload=()=>bluepencil.init({adapter:bluepencil.adapters.localStorage(),
 getUser:()=>({name:'reviewer'}),getRoute:()=>location.pathname});document.head.appendChild(s)})()
 ```

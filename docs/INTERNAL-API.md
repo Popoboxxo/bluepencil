@@ -236,7 +236,7 @@ export function createLayer(options: LayerOptions): LayerHandle;
 * Shortcuts: `C` text mode, `D` design mode, `L` panel, `F` feedback-only, `B` bar toggle,
   `?` legend, `Esc` cancel, `J`/`K` navigate the list, digits 1–9 jump to a note (FR-1.6/1.7).
 * `a[href]`, form fields and `[data-bp-ignore]` are passed through **even while a mode is active**,
-  and `stopPropagation()` is called only when a mode is active (FR-1.9, FR-12.6).
+  and `stopPropagation()` is called only when a mode is active (FR-2.7, FR-12.6).
 * Markers are overlay-positioned (`markerStrategy: "overlay"`, D2) and never change host layout
   (FR-1.8); `@media print` hides the whole layer (FR-1.9).
 * Done notes are hidden by default in list **and** markers (D4, FR-4.3) with a one-click reveal.

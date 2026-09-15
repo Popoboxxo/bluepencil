@@ -17,10 +17,16 @@ no "the second badge in the header".
         └─ thread → intent: implement | feedback   status: open | done | needs_decision
 ```
 
-**Status:** M1 in progress (`0.1.0`) — the data model, the vanilla fixture app and the example
-server exist; core UI, adapters and exports are being implemented on `feat/m1-core-ui-adapters`.
-This repository is the home of the library; the interaction model itself is already
-proven in a production-used prototype (see [docs/CONCEPT.md](docs/CONCEPT.md#7-proven-prior-art)).
+**Status:** M1 (`0.1.0`) is implemented on `feat/m1-core-ui-adapters` — core model, anchoring,
+capture, store and the four adapters (with a conformance suite); the headless data library (schema,
+canonical bundles, merge modes, migrations); Markdown/JSON export; the collaboration protocol; the
+review layer with i18n; the public API and the `<bluepencil-notes>` element; the CLI and the MCP
+server (read-only by default); the vanilla fixture app, its seed bundle and the unit tests.
+Honest M1 gaps: no Playwright E2E suite, no reference HTTP server, no import/merge surface in the
+UI, no bulk delete or retention, i18n only `en`/`de` (milestones in
+[docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)). This repository is the home of the library; the
+interaction model itself is already proven in a production-used prototype (see
+[docs/CONCEPT.md](docs/CONCEPT.md#7-proven-prior-art)).
 
 ## Why the name
 
@@ -35,20 +41,36 @@ dependencies**; the dev dependencies are for the build and the tests only.
 
 ```bash
 npm install              # dev dependencies (esbuild, vitest, jsdom, typescript)
-npm run build            # writes dist/bluepencil.js and the other bundles
+npm run build            # writes dist/ — see the artifact table below
 node scripts/serve-example.mjs
 # open http://localhost:9283/examples/vanilla/
 ```
 
+`npm run build` writes five consumable artifacts; which one a host needs depends on how it loads
+code:
+
+| Artifact | Host type | Entry |
+|---|---|---|
+| `dist/bluepencil.js` (with `dist/data.js`, `dist/adapters/*.js`, `dist/i18n/*.js`) | npm dependency / bundler | the package entry — `import { init } from "bluepencil"` |
+| `dist/bluepencil.iife.js` | classic `<script>` tag, bookmarklet | global `bluepencil` |
+| `dist/bluepencil.element.js` | no-build host: one ES module resource (static page, CMS, Home Assistant) | defines `<bluepencil-notes>` |
+| `dist/cli.js` | CLI in CI, scripts and offline exchange | `bluepencil …` (or `node dist/cli.js …`) |
+| `dist/mcp.js` | MCP server over stdio, read-only by default | `node dist/mcp.js --store …` |
+
+`dist/bluepencil.js` is the code-split ES module build — the `chunk-*.js` files next to it are its
+internals, not entry points. `dist/types/**` holds the `.d.ts` declarations for every entry.
+
 The fixture page is a small dashboard that carries every requirement group — annotate text and
 design, select a quote, filter, reveal done notes, switch feedback-only mode, answer a decision
-thread, export Markdown/JSON, bulk delete. The checklist for a manual round is in
+thread, export Markdown/JSON. Bulk delete (FR-8.2) and session purge (FR-8.3) are M2 work and have
+no control in the fixture. The checklist for a manual round is in
 [examples/vanilla/README.md](examples/vanilla/README.md).
 
-On your own page it is one call:
+On your own page it is one call — with the classic build from the table above (a bundler host
+uses `import { init } from "bluepencil"` instead and has no global):
 
 ```html
-<script src="/bluepencil.js"></script>
+<script src="/dist/bluepencil.iife.js"></script>
 <script>
   bluepencil.init({
     enabled: () => me.roles.includes("admin"),   // re-checked on every enable(); fail closed
@@ -125,6 +147,26 @@ use exactly the same data and validators as the UI.
 * **Agent-readable by design**: the Markdown export *is* the interface; the headless data
   library lets agents and CI read and write the same note sets without a browser.
 * **No lock-in**: no hosted service, no account, self-hostable in a few lines.
+
+## Privacy & secrets
+
+* **No credentials.** The library stores and transmits none of its own — no account, no token, no
+  session. The only requests that leave the page are the ones the host configured through an
+  adapter (FR-9.1, NFR-7), and note text is rendered as text, never as HTML (FR-9.3).
+* **Notes may contain internal wording.** A note is a review artefact, not a data store; treat it as
+  if it names internal features, customers or drafts. The policy is **"no personal data in notes"**:
+  purge a round once it is worked off, and prefer the local (`localStorage`) or file adapter when in
+  doubt (NFR-13).
+* **Review data is never committed.** `.gitignore` excludes `*.bluepencil.json`; the fixture's seed
+  bundle is the single deliberate exception (`!examples/vanilla/data/seed.bluepencil.json`). The same
+  rule applies to bundles handed to CI or checked into a repo.
+* **No self-deletion.** The browser library never deletes notes on its own (D5): bulk delete
+  (FR-8.2, M2) and retention (FR-8.4, M4) are not part of M1.
+
+The pipeline keeps these claims checkable: `.github/workflows/ci.yml` runs the typecheck, the unit
+tests, the build, the size guard, the CLI/MCP/packaging smoke scripts (`scripts/cli-smoke.mjs`,
+`scripts/mcp-smoke.mjs`, `scripts/pack-smoke.mjs`) and the secret scan. The same chain minus the
+process-level smokes is local: `npm run verify`.
 
 ## License
 
