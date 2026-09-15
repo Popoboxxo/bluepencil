@@ -36,7 +36,7 @@ bluepencil/
 │  │  ├─ composer.ts       # note input (mode, checkbox "feedback only")
 │  │  ├─ panel.ts          # list, filters, thread, reply, orphan markers
 │  │  ├─ legend.ts         # shortcut overlay
-│  │  └─ styles.css        # token-driven, prefix .bp-, no global resets
+│  │  └─ styles.ts         # token-driven CSS string (prefix .bp-, no global resets)
 │  ├─ i18n/                # en.ts, de.ts (strings only)
 │  ├─ react/               # optional wrapper (peer dependency)
 │  ├─ element/             # custom-element build (<bluepencil-notes>) for hosts w/o a bundler
