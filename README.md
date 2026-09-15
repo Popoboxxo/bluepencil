@@ -17,7 +17,8 @@ no "the second badge in the header".
         └─ thread → intent: implement | feedback   status: open | done | needs_decision
 ```
 
-**Status:** concept & requirements (no code yet).
+**Status:** M1 in progress (`0.1.0`) — the data model, the vanilla fixture app and the example
+server exist; core UI, adapters and exports are being implemented on `feat/m1-core-ui-adapters`.
 This repository is the home of the library; the interaction model itself is already
 proven in a production-used prototype (see [docs/CONCEPT.md](docs/CONCEPT.md#7-proven-prior-art)).
 
@@ -26,6 +27,51 @@ proven in a production-used prototype (see [docs/CONCEPT.md](docs/CONCEPT.md#7-p
 To *blue-pencil* something means to edit it — marking up a draft with corrections and
 suggestions. That is exactly what this overlay does: it is the blue pencil you hold against
 a running application instead of a screenshot.
+
+## Quick start
+
+There is no npm release yet — build it from the repository. The library itself has **no runtime
+dependencies**; the dev dependencies are for the build and the tests only.
+
+```bash
+npm install              # dev dependencies (esbuild, vitest, jsdom, typescript)
+npm run build            # writes dist/bluepencil.js and the other bundles
+node scripts/serve-example.mjs
+# open http://localhost:9283/examples/vanilla/
+```
+
+The fixture page is a small dashboard that carries every requirement group — annotate text and
+design, select a quote, filter, reveal done notes, switch feedback-only mode, answer a decision
+thread, export Markdown/JSON, bulk delete. The checklist for a manual round is in
+[examples/vanilla/README.md](examples/vanilla/README.md).
+
+On your own page it is one call:
+
+```html
+<script src="/bluepencil.js"></script>
+<script>
+  bluepencil.init({
+    enabled: () => me.roles.includes("admin"),   // re-checked on every enable(); fail closed
+    adapter: "localStorage",                     // or httpAdapter({ endpoint: "/api/v1/bluepencil" })
+    getRoute: () => location.pathname + location.search,
+  });
+</script>
+```
+
+`init()` returns a handle the host can switch at runtime, without a reload:
+
+```ts
+const bp = init({ enabled: () => flags.uiNotes, adapter: "localStorage" });
+
+bp.enable();                        // attach the layer
+bp.disable();                       // remove nodes, listeners, styles — idempotent
+bp.export({ format: "markdown" });  // the agent-facing export
+await bp.destroy();                 // final cleanup
+```
+
+Next stops: [docs/INTEGRATION.md](docs/INTEGRATION.md) for the modes, host hooks, theming and the
+admin debug pattern; [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#2-public-api-sketch) and
+[docs/INTERNAL-API.md](docs/INTERNAL-API.md) §9 for the full API.
 
 ## Documentation
 
@@ -36,6 +82,8 @@ a running application instead of a screenshot.
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module layout, data model, storage adapters, HTTP contract, bookmarklet, test strategy |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | Normative rules for human + agent collaboration (implement / feedback / decision requests) |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | Integration modes, host hooks, theming, security notes, admin debug mode |
+| [docs/INTERNAL-API.md](docs/INTERNAL-API.md) | Frozen module boundaries and the public API sketch for M1 (`0.1.0`) |
+| [examples/vanilla/README.md](examples/vanilla/README.md) | The fixture app: smoke commands, hook inventory, seed bundle, manual checklist |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) §8 | Environment tagging, bundle exchange rules, promotion between dev and live |
 
 ## What it will be, in one paragraph

@@ -60,3 +60,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
   recorded.
 
 Nothing is implemented yet; this is the concept and requirements baseline for milestone M1.
+Implementation status per milestone is tracked in the version sections below.
+
+## [0.1.0] — 2026-09-15
+
+M1 implementation baseline, in progress on `feat/m1-core-ui-adapters`: the data model, the fixture
+app and the example server are here, core UI, adapters and exports follow in the same milestone.
+
+### Added
+- `src/core/model.ts` — the frozen data model: note, message, anchor and captured-context types,
+  the vocabulary (`text`/`design`, `implement`/`feedback`, `open`/`done`/`needs_decision`),
+  note sources, debug context, schema version, bundle shape and the validation error class.
+- `examples/vanilla/` — the fixture app: a small dashboard that carries **every requirement group
+  on one page** (headings, paragraphs, list, table with cells, form, links, KPI/card grid, one
+  element inside a web component with a shadow root), a stable `data-bluepencil` hook on every
+  annotatable element, a design-token style block with `--bp-*` overrides and a dark-mode media
+  query, and a runtime on/off switch calling `enable()`/`disable()` without a reload. It degrades
+  with an on-page notice instead of a broken page when `dist/bluepencil.js` has not been built yet.
+- `examples/vanilla/app.js` — the fixture's demo logic, plain ES2022, no dependencies: KPI grid,
+  table, shadow-DOM component, seed import through the documented store API, and Markdown/JSON
+  export through `bp.export({ format })`.
+- `examples/vanilla/data/seed.bluepencil.json` — a portable 6-note bundle for the fixture: one
+  `needs_decision` with a decision thread, one feedback-only note, one design note with captured
+  context, one `done` note, one note written by tooling (source + debug context) and one plain
+  open note; anchored to hooks that exist on the fixture page.
+- `examples/vanilla/README.md` — smoke commands, the hook inventory, the seed-bundle table and the
+  manual checklist for a review round (annotate text/design, quote, filter, done-hidden default,
+  settings, feedback-only mode, decision thread, export Markdown/JSON, bulk delete).
+- `scripts/serve-example.mjs` — dependency-free static server for the repository root on port
+  9283, so `/dist/bluepencil.js` and `/examples/vanilla/` share one origin. Flags: `--port`,
+  `--root`, `--once` (serve one request and exit, for CI smoke tests), `--quiet`, `--help`.
+- `README.md` — *Quick start*: build, serve, open the fixture, plus the one-line host integration
+  and the runtime `enable()`/`disable()`/`export()`/`destroy()` handle.
+
+### Changed
+- `README.md` status line and documentation index: M1 is in progress instead of "no code yet";
+  `docs/INTERNAL-API.md` and the fixture README are indexed.
+
+Nothing else is implemented yet: `src/ui`, `src/adapters`, `src/data` (bundles, merge, canonical
+serialization, migration), `src/i18n` and the exports of `docs/INTERNAL-API.md` remain the open M1
+work; the fixture is the reproducible target for those groups.

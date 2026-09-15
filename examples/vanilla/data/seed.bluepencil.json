@@ -1,0 +1,271 @@
+{
+  "kind": "bluepencil.bundle",
+  "schemaVersion": 1,
+  "exportedAt": "2026-09-15T09:12:00.000Z",
+  "exportedBy": "daniel@bluepencil-demo",
+  "environment": "dev",
+  "app": { "name": "bluepencil-vanilla-fixture", "buildRef": "demo-abc1234" },
+  "sessions": [
+    {
+      "ref": "review-2026-09",
+      "label": "Fixture smoke review",
+      "createdAt": "2026-09-15T09:00:00.000Z"
+    }
+  ],
+  "notes": [
+    {
+      "id": "n-seed-001",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-15T09:02:10.000Z",
+      "updatedAt": "2026-09-15T09:02:10.000Z",
+      "sessionRef": "review-2026-09",
+      "type": "text",
+      "intent": "implement",
+      "status": "open",
+      "body": "Searching for an archived project returns an empty list with no explanation. Add an empty state that names the filter which caused the empty result.",
+      "author": "reviewer@demo",
+      "authorType": "human",
+      "anchor": {
+        "hook": "finding-item-1",
+        "selector": "#findings-list > li:nth-child(1)",
+        "quote": "Search returns no results for archived projects.",
+        "route": "/examples/vanilla/"
+      },
+      "context": null,
+      "messages": [
+        {
+          "id": "m-seed-001-1",
+          "ts": "2026-09-15T09:02:10.000Z",
+          "author": "reviewer@demo",
+          "authorType": "human",
+          "kind": "note",
+          "text": "Searching for an archived project returns an empty list with no explanation. Add an empty state that names the filter which caused the empty result."
+        }
+      ],
+      "source": "ui:human",
+      "environment": "dev"
+    },
+    {
+      "id": "n-seed-002",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-15T09:03:40.000Z",
+      "updatedAt": "2026-09-15T09:05:05.000Z",
+      "sessionRef": "review-2026-09",
+      "type": "text",
+      "intent": "implement",
+      "status": "needs_decision",
+      "body": "The throughput card shows 128 tickets with no unit cap and no rounding rule. Decide how the value is presented before this goes into the export.",
+      "author": "reviewer@demo",
+      "authorType": "human",
+      "anchor": {
+        "hook": "insight-value",
+        "selector": "demo-insight-card >> article.demo-insight >> p.demo-insight-value",
+        "quote": "128",
+        "route": "/examples/vanilla/"
+      },
+      "context": null,
+      "messages": [
+        {
+          "id": "m-seed-002-1",
+          "ts": "2026-09-15T09:03:40.000Z",
+          "author": "reviewer@demo",
+          "authorType": "human",
+          "kind": "note",
+          "text": "The throughput card shows 128 tickets with no unit cap and no rounding rule. Decide how the value is presented before this goes into the export."
+        },
+        {
+          "id": "m-seed-002-2",
+          "ts": "2026-09-15T09:04:30.000Z",
+          "author": "claude",
+          "authorType": "agent",
+          "kind": "decision_request",
+          "text": "Presentation of large counts needs a decision. Options: (1) keep the raw integer, (2) round to 1.2k above 1000, (3) show raw with a compact secondary label. Recommendation: option 2, one rule for every card, formatted by the same helper that the export uses. I am not changing anything until this is answered."
+        },
+        {
+          "id": "m-seed-002-3",
+          "ts": "2026-09-15T09:05:05.000Z",
+          "author": "reviewer@demo",
+          "authorType": "human",
+          "kind": "reply",
+          "text": "Checking with the reporting team whether the export must keep the exact integer — leaving the status on needs_decision for now."
+        }
+      ],
+      "source": "ui:human",
+      "environment": "dev"
+    },
+    {
+      "id": "n-seed-003",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-15T09:06:15.000Z",
+      "updatedAt": "2026-09-15T09:06:15.000Z",
+      "sessionRef": "review-2026-09",
+      "type": "design",
+      "intent": "implement",
+      "status": "open",
+      "body": "The warning tint is too close to the normal card surface. Use the accent token for the left rule or raise the border contrast to at least 3:1.",
+      "author": "reviewer@demo",
+      "authorType": "human",
+      "anchor": {
+        "hook": "kpi-decisions",
+        "selector": "#kpi-grid > article:nth-child(3)",
+        "quote": "Decisions pending",
+        "route": "/examples/vanilla/"
+      },
+      "context": {
+        "tag": "article",
+        "classes": ["demo-kpi", "demo-kpi--warn"],
+        "styles": {
+          "font-family": "ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif",
+          "font-size": "14px",
+          "font-weight": "500",
+          "line-height": "20px",
+          "color": "rgb(20, 24, 29)",
+          "background-color": "rgb(255, 255, 255)",
+          "margin-top": "0px",
+          "margin-right": "0px",
+          "margin-bottom": "0px",
+          "margin-left": "0px",
+          "padding-top": "16px",
+          "padding-right": "16px",
+          "padding-bottom": "16px",
+          "padding-left": "16px",
+          "border-top-width": "1px",
+          "border-right-width": "1px",
+          "border-bottom-width": "1px",
+          "border-left-width": "4px",
+          "border-left-color": "rgb(138, 83, 0)",
+          "border-top-color": "rgb(215, 220, 226)",
+          "border-radius": "10px",
+          "gap": "4px",
+          "display": "flex"
+        },
+        "box": { "w": 240, "h": 112, "x": 468, "y": 320 },
+        "scheme": "light",
+        "viewport": { "w": 1440, "h": 900 },
+        "buildRef": "demo-abc1234"
+      },
+      "messages": [
+        {
+          "id": "m-seed-003-1",
+          "ts": "2026-09-15T09:06:15.000Z",
+          "author": "reviewer@demo",
+          "authorType": "human",
+          "kind": "note",
+          "text": "The warning tint is too close to the normal card surface. Use the accent token for the left rule or raise the border contrast to at least 3:1."
+        }
+      ],
+      "source": "ui:human",
+      "environment": "dev"
+    },
+    {
+      "id": "n-seed-004",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-15T09:07:30.000Z",
+      "updatedAt": "2026-09-15T09:10:00.000Z",
+      "sessionRef": "review-2026-09",
+      "type": "design",
+      "intent": "implement",
+      "status": "done",
+      "body": "The tooltip on the finding rows cannot be opened with the keyboard. It must open on focus and close with Esc.",
+      "author": "reviewer@demo",
+      "authorType": "human",
+      "anchor": {
+        "hook": "finding-item-2",
+        "selector": "#findings-list > li:nth-child(2)",
+        "quote": "Tooltip on the findings table is not reachable with the keyboard.",
+        "route": "/examples/vanilla/"
+      },
+      "context": null,
+      "messages": [
+        {
+          "id": "m-seed-004-1",
+          "ts": "2026-09-15T09:07:30.000Z",
+          "author": "reviewer@demo",
+          "authorType": "human",
+          "kind": "note",
+          "text": "The tooltip on the finding rows cannot be opened with the keyboard. It must open on focus and close with Esc."
+        },
+        {
+          "id": "m-seed-004-2",
+          "ts": "2026-09-15T09:10:00.000Z",
+          "author": "reviewer@demo",
+          "authorType": "human",
+          "kind": "reply",
+          "text": "Done: the tooltip is a focusable trigger now, opens on focus and closes on Esc or blur. Verified with the keyboard-only pass."
+        }
+      ],
+      "source": "ui:human",
+      "environment": "dev"
+    },
+    {
+      "id": "n-seed-005",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-15T09:08:20.000Z",
+      "updatedAt": "2026-09-15T09:08:20.000Z",
+      "sessionRef": "review-2026-09",
+      "type": "text",
+      "intent": "feedback",
+      "status": "open",
+      "body": "Assessment only, please do not change anything: is \"Findings\" or \"Issues\" the right word for this list — in the sidebar, the empty state and the Markdown export?",
+      "author": "reviewer@demo",
+      "authorType": "human",
+      "anchor": {
+        "hook": "findings-intro",
+        "selector": "#findings-intro",
+        "quote": "Every finding from the current review round starts here; nothing is exported unchecked.",
+        "route": "/examples/vanilla/"
+      },
+      "context": null,
+      "messages": [
+        {
+          "id": "m-seed-005-1",
+          "ts": "2026-09-15T09:08:20.000Z",
+          "author": "reviewer@demo",
+          "authorType": "human",
+          "kind": "note",
+          "text": "Assessment only, please do not change anything: is \"Findings\" or \"Issues\" the right word for this list — in the sidebar, the empty state and the Markdown export?"
+        }
+      ],
+      "source": "ui:human",
+      "environment": "dev"
+    },
+    {
+      "id": "n-seed-006",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-15T09:11:00.000Z",
+      "updatedAt": "2026-09-15T09:11:00.000Z",
+      "sessionRef": "review-2026-09",
+      "type": "text",
+      "intent": "implement",
+      "status": "open",
+      "body": "E2E assertion failed at this cell: expected \"3 days\", received \"0 days\". The age column is computed in the browser and the fixture renders it from the row data.",
+      "author": "bluepencil-cli",
+      "authorType": "agent",
+      "anchor": {
+        "hook": "table-cell-1-age",
+        "selector": "#findings-table tbody tr:nth-child(1) > td:nth-child(4)",
+        "quote": "3 days",
+        "route": "/examples/vanilla/"
+      },
+      "context": null,
+      "messages": [
+        {
+          "id": "m-seed-006-1",
+          "ts": "2026-09-15T09:11:00.000Z",
+          "author": "bluepencil-cli",
+          "authorType": "agent",
+          "kind": "note",
+          "text": "E2E assertion failed at this cell: expected \"3 days\", received \"0 days\". Written by the test runner, read by the reviewer."
+        }
+      ],
+      "source": "tool:test-runner",
+      "environment": "dev",
+      "debug": {
+        "test": "tests/e2e/findings-table.spec.ts",
+        "commit": "abc1234",
+        "file": "src/ui/findings-table.ts:42",
+        "stack": "findings-table.spec.ts:58: expected [ 3 days ] to equal [ 0 days ]"
+      }
+    }
+  ]
+}

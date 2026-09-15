@@ -12,6 +12,8 @@ test-results/
 
 # local notes (never commit review data)
 *.bluepencil.json
+# …except the fixture seed bundle, which is part of the example
+!examples/vanilla/data/seed.bluepencil.json
 
 # editors / os
 .DS_Store
