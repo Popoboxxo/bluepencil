@@ -51,10 +51,49 @@ const jobs = [
     name: "esm",
     options: {
       ...shared,
-      entryPoints: [join(root, "src/index.ts")],
+      // The library entry is emitted under the name the package manifest advertises.
+      entryPoints: [{ in: join(root, "src/index.ts"), out: "bluepencil" }],
       outdir: join(root, "dist"),
       format: "esm",
       splitting: true,
+      minify: false,
+      banner: { js: banner },
+    },
+  },
+  {
+    name: "data",
+    options: {
+      ...shared,
+      entryPoints: [join(root, "src/data/index.ts")],
+      outfile: join(root, "dist/data.js"),
+      format: "esm",
+      minify: false,
+      banner: { js: banner },
+    },
+  },
+  {
+    name: "adapters",
+    options: {
+      ...shared,
+      entryPoints: {
+        memory: join(root, "src/adapters/memory.ts"),
+        "local-storage": join(root, "src/adapters/local-storage.ts"),
+        file: join(root, "src/adapters/file.ts"),
+        http: join(root, "src/adapters/http.ts"),
+      },
+      outdir: join(root, "dist/adapters"),
+      format: "esm",
+      minify: false,
+      banner: { js: banner },
+    },
+  },
+  {
+    name: "i18n",
+    options: {
+      ...shared,
+      entryPoints: { en: join(root, "src/i18n/en.ts"), de: join(root, "src/i18n/de.ts") },
+      outdir: join(root, "dist/i18n"),
+      format: "esm",
       minify: false,
       banner: { js: banner },
     },

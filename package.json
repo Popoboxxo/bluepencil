@@ -36,10 +36,6 @@
       "types": "./dist/types/adapters/http.d.ts",
       "import": "./dist/adapters/http.js"
     },
-    "./adapters/mcp": {
-      "types": "./dist/types/adapters/mcp.d.ts",
-      "import": "./dist/adapters/mcp.js"
-    },
     "./i18n/en": {
       "types": "./dist/types/i18n/en.d.ts",
       "import": "./dist/i18n/en.js"
@@ -70,7 +66,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "size": "node scripts/size-guard.mjs",
-    "verify": "npm run typecheck && npm run test && npm run build && npm run size"
+    "smoke:cli": "node scripts/cli-smoke.mjs",
+    "smoke:mcp": "node scripts/mcp-smoke.mjs",
+    "smoke:pack": "node scripts/pack-smoke.mjs",
+    "secret-scan": "node scripts/secret-scan.mjs",
+    "verify": "npm run typecheck && npm run test && npm run build && npm run size && npm run smoke:pack"
   },
   "dependencies": {},
   "devDependencies": {
