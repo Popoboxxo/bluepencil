@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bluepencil — Presentation (localStorage)</title>
+<meta name="description" content="Self-contained deck-style HTML that attaches bluepencil in localStorage mode. No backend required.">
+<!--
+  Presentation example (EMBED.md §1 mode b — single-file deck, no backend).
+  The review layer is mounted via attach.js in auto mode; notes persist in
+  localStorage and can be exported/imported as JSON.
+-->
+<style>
+  :root {
+    --bp-accent: #1d4ed8;
+    --bp-surface: #ffffff;
+    --bp-ink: #14181d;
+    --bp-muted: #5a6470;
+    --bp-line: #d7dce2;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, sans-serif; background:#f4f5f7; color:#14181d; }
+  .deck { max-width: 52rem; margin: 0 auto; padding: 2rem 1.5rem; }
+  .slide {
+    display: none; padding: 2rem; background: #fff;
+    border: 1px solid #d7dce2; border-radius: 10px;
+  }
+  .slide.active { display: block; }
+  .slide h2 { margin: 0 0 .5rem; font-size: 1.5rem; }
+  .slide p  { margin: 0 0 .75rem; color: #5a6470; }
+  code { background:#eef1f5; padding:.15em .35em; border-radius:4px; font-size:.875em; }
+  nav {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: .75rem 1.5rem; background: #14181d; color: #eef1f5;
+  }
+  nav button {
+    background: none; border: 1px solid #5a6470; color: #eef1f5;
+    padding: .35rem .7rem; border-radius: 6px; cursor: pointer; font-size: .875rem;
+  }
+  nav button:disabled { opacity: .3; cursor: default; }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bp-accent: #7ea2ff;
+      --bp-surface: #171b21;
+      --bp-ink: #eef1f5;
+      --bp-muted: #9aa4b0;
+      --bp-line: #2c333c;
+    }
+    body { background: #101317; color: #eef1f5; }
+    .slide { background: #171b21; border-color: #2c333c; }
+    .slide p { color: #9aa4b0; }
+    code { background:#1f242c; }
+    nav { background: #101317; border-bottom: 1px solid #2c333c; }
+  }
+</style>
+</head>
+<body>
+
+<nav aria-label="Deck controls" data-bp-ignore>
+  <span id="slide-title">Slide 1 / 3</span>
+  <div>
+    <button id="prev" disabled>← Zurück</button>
+    <button id="next">Weiter →</button>
+  </div>
+</nav>
+
+<div class="deck" role="region" aria-label="Slide deck">
+
+  <section class="slide active" data-testid="slide-intro">
+    <h2>Einführung</h2>
+    <p>
+      Diese Seite ist ein einzelnes HTML-Dokument mit angehängtem
+      bluepencil-Review-Layer. Es verwendet <code>localStorage</code> als
+      Speicher — kein Backend nötig.
+    </p>
+  </section>
+
+  <section class="slide" data-testid="slide-how">
+    <h2>So funktioniert es</h2>
+    <p>
+      Ein einzelner <code>&lt;script&gt;</code>-Tag lädt
+      <code>attach.js</code>, das das Custom Element
+      <code>&lt;bluepencil-notes&gt;</code> definiert und den Layer
+      automatisch an <code>document.body</code> anhängt.
+    </p>
+  </section>
+
+  <section class="slide" data-testid="slide-export">
+    <h2>Export / Import</h2>
+    <p>
+      Notizen überleben Reloads und lassen sich als JSON exportieren und
+      auf einem anderen Browser importieren. Kein Server, keine Datenbank.
+    </p>
+  </section>
+
+</div>
+
+<!--
+  bluepencil: review layer
+  adapter = localStorage (no backend)
+  language = de
+  gate = always true (exposed on window before the loader runs)
+  environment = dev
+  EMBED.md §1 mode b, §2
+-->
+<script>window.__bpGate = () => true;</script>
+<script src="../../dist/attach.js"
+        data-adapter="localStorage"
+        data-language="de"
+        data-environment="dev"
+        data-gate="__bpGate"></script>
+
+<script>
+  // Deck navigation (arrow keys + buttons)
+  const slides = document.querySelectorAll('.slide');
+  const prev   = document.getElementById('prev');
+  const next   = document.getElementById('next');
+  const title  = document.getElementById('slide-title');
+  let current  = 0;
+
+  function show(n) {
+    slides[current].classList.remove('active');
+    current = Math.max(0, Math.min(n, slides.length - 1));
+    slides[current].classList.add('active');
+    title.textContent = `Slide ${current + 1} / ${slides.length}`;
+    prev.disabled = current === 0;
+    next.disabled = current === slides.length - 1;
+  }
+
+  prev.addEventListener('click', () => show(current - 1));
+  next.addEventListener('click', () => show(current + 1));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft')  show(current - 1);
+    if (e.key === 'ArrowRight') show(current + 1);
+  });
+</script>
+</body>
+</html>

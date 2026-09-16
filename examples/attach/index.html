@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Analytics — bluepencil whole-system attach</title>
+<meta name="description" content="Fixture host app: a small analytics dashboard that attaches bluepencil against a backend endpoint with one script tag.">
+<!--
+  Whole-system attach fixture (EMBED.md §1 mode a — "the host already has a backend").
+
+  This page *is* the host application: it owns its markup, its design tokens and its session, and
+  it hands bluepencil exactly one script slot. Everything else arrives through the loader's
+  `data-*` attributes, so nothing in the host has to be rebuilt to change how the review layer
+  behaves — or which version of it runs.
+
+  Conventions (same as examples/vanilla): no inline event handler attributes (NFR-6), `demo-`
+  prefixed classes only, every user-visible string written as text (FR-9.3), and a stable
+  `data-testid` on every annotatable block so notes survive a re-render (FR-2.1).
+
+  Diagnostics: open with `?selftest=1` and the page runs the host-side probe of the attach
+  contract and prints its result block (host.js, examples/attach/README.md). That probe is what
+  `scripts/embed-smoke.mjs` drives in a real browser.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+
+    --demo-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --demo-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    --demo-bg: #f4f5f7;
+    --demo-surface: #ffffff;
+    --demo-surface-alt: #eef1f5;
+    --demo-ink: #14181d;
+    --demo-muted: #5a6470;
+    --demo-line: #d7dce2;
+    --demo-accent: #1d4ed8;
+    --demo-accent-soft: #e6ecfb;
+    --demo-ok: #0f6b3f;
+    --demo-warn: #8a5300;
+    --demo-warn-soft: #fdf3e2;
+    --demo-radius: 10px;
+
+    /* bluepencil token overrides (EMBED.md §2, INTEGRATION §8): the layer hardcodes nothing, the
+       host points --bp-* at its own design system. */
+    --bp-accent: var(--demo-accent);
+    --bp-surface: var(--demo-surface);
+    --bp-ink: var(--demo-ink);
+    --bp-muted: var(--demo-muted);
+    --bp-line: var(--demo-line);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --demo-bg: #101317;
+      --demo-surface: #171b21;
+      --demo-surface-alt: #1f242c;
+      --demo-ink: #eef1f5;
+      --demo-muted: #9aa4b0;
+      --demo-line: #2c333c;
+      --demo-accent: #7ea2ff;
+      --demo-accent-soft: #1b2540;
+      --demo-ok: #7fd4a8;
+      --demo-warn: #e0b072;
+      --demo-warn-soft: #2a2116;
+      --bp-surface: var(--demo-surface-alt);
+    }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: var(--demo-font);
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--demo-ink);
+    background: var(--demo-bg);
+  }
+
+  h1, h2, h3 { line-height: 1.25; margin: 0; }
+  h1 { font-size: 1.2rem; }
+  h2 { font-size: 1rem; }
+  h3 { font-size: .8125rem; text-transform: uppercase; letter-spacing: .06em; color: var(--demo-muted); }
+  p { margin: 0; }
+  code { font-family: var(--demo-mono); font-size: .8125em; background: var(--demo-surface-alt); padding: .1em .35em; border-radius: 4px; }
+
+  .demo-app { display: grid; grid-template-columns: 15rem 1fr; min-height: 100vh; }
+  @media (max-width: 52rem) { .demo-app { grid-template-columns: 1fr; } .demo-side { display: none; } }
+
+  /* ------------------------------------------------------------------ sidebar -------------- */
+  .demo-side {
+    padding: 1rem .9rem;
+    background: var(--demo-surface);
+    border-right: 1px solid var(--demo-line);
+  }
+  .demo-brand { display: flex; align-items: center; gap: .5rem; margin-bottom: 1.25rem; font-weight: 600; }
+  .demo-dot { width: .7rem; height: .7rem; border-radius: 50%; background: var(--demo-accent); }
+  .demo-nav { list-style: none; margin: 0; padding: 0; display: grid; gap: .15rem; }
+  .demo-nav a {
+    display: block; padding: .4rem .55rem; border-radius: 6px;
+    color: var(--demo-ink); text-decoration: none; font-size: .875rem;
+  }
+  .demo-nav a[aria-current="page"] { background: var(--demo-accent-soft); color: var(--demo-accent); font-weight: 600; }
+  .demo-badge {
+    display: inline-block; margin-top: 1.25rem; padding: .15rem .5rem;
+    border: 1px solid var(--demo-line); border-radius: 999px;
+    font-size: .75rem; color: var(--demo-muted);
+  }
+
+  /* ------------------------------------------------------------------ topbar --------------- */
+  .demo-main { min-width: 0; }
+  .demo-top {
+    display: flex; align-items: center; gap: .75rem;
+    padding: .75rem 1.25rem;
+    background: var(--demo-surface);
+    border-bottom: 1px solid var(--demo-line);
+  }
+  .demo-top h1 { margin-right: auto; }
+  .demo-search {
+    font: inherit; padding: .35rem .6rem; min-width: 12rem;
+    color: var(--demo-ink); background: var(--demo-bg);
+    border: 1px solid var(--demo-line); border-radius: 6px;
+  }
+  .demo-button {
+    font: inherit; font-size: .875rem; padding: .35rem .8rem; cursor: pointer;
+    color: #fff; background: var(--demo-accent); border: 1px solid transparent; border-radius: 6px;
+  }
+
+  /* ------------------------------------------------------------------ content -------------- */
+  .demo-content { padding: 1.25rem; display: grid; gap: 1rem; max-width: 70rem; }
+  .demo-note { font-size: .8125rem; color: var(--demo-muted); }
+
+  .demo-kpis { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+  .demo-kpi {
+    padding: 1rem; background: var(--demo-surface);
+    border: 1px solid var(--demo-line); border-radius: var(--demo-radius);
+  }
+  .demo-kpi .demo-value { font-size: 1.5rem; font-weight: 600; margin-top: .35rem; }
+  .demo-kpi .demo-delta { font-size: .8125rem; color: var(--demo-ok); }
+
+  .demo-panel {
+    padding: 1rem; background: var(--demo-surface);
+    border: 1px solid var(--demo-line); border-radius: var(--demo-radius);
+  }
+  .demo-panel h2 { margin-bottom: .5rem; }
+
+  table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+  th, td { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid var(--demo-line); }
+  th { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--demo-muted); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  .demo-status { font-size: .75rem; padding: .1rem .45rem; border-radius: 999px; background: var(--demo-accent-soft); color: var(--demo-accent); }
+  .demo-status[data-state="due"] { background: var(--demo-warn-soft); color: var(--demo-warn); }
+
+  .demo-foot { padding: 1rem 1.25rem 2.5rem; font-size: .8125rem; color: var(--demo-muted); }
+
+  /* The host's own diagnostic block (`?selftest=1`) — host chrome, never part of the app UI. */
+  #bp-selftest {
+    margin: 0 1.25rem 1.25rem; padding: .75rem 1rem; max-width: 70rem;
+    font-family: var(--demo-mono); font-size: .8125rem; white-space: pre-wrap;
+    background: var(--demo-surface-alt); border: 1px solid var(--demo-line); border-radius: var(--demo-radius);
+  }
+  #bp-selftest[data-status="fail"] { border-color: var(--demo-warn); color: var(--demo-warn); }
+</style>
+</head>
+<body>
+
+<!--
+  host.js is a *classic* script and runs before the loader below: it publishes the globals the
+  loader resolves (`hostApp.canReview` as the gate, `hostApp.headers` as `headers-from`) and
+  registers the attach event log. Without it those paths cannot resolve — and the loader reports
+  that instead of ignoring it (EMBED.md §2, contract §1 rule 3).
+-->
+<script src="./host.js"></script>
+
+<div class="demo-app">
+
+  <!-- Host chrome: the layer's own [data-bp-ignore] rule keeps these regions inert in every mode. -->
+  <aside class="demo-side" data-bp-ignore>
+    <div class="demo-brand"><span class="demo-dot"></span>Northwind Analytics</div>
+    <nav aria-label="Hauptnavigation">
+      <ul class="demo-nav">
+        <li><a href="#overview" aria-current="page">Übersicht</a></li>
+        <li><a href="#reports">Berichte</a></li>
+        <li><a href="#segments">Segmente</a></li>
+        <li><a href="#settings">Einstellungen</a></li>
+      </ul>
+    </nav>
+    <span class="demo-badge">Umgebung: dev</span>
+  </aside>
+
+  <div class="demo-main">
+
+    <header class="demo-top" data-bp-ignore>
+      <h1>Übersicht</h1>
+      <label>
+        <span class="demo-note">Suche</span>
+        <input class="demo-search" type="search" name="q" placeholder="Berichte durchsuchen">
+      </label>
+      <button class="demo-button" type="button">Bericht anlegen</button>
+    </header>
+
+    <main class="demo-content">
+
+      <section class="demo-kpis" aria-label="Kennzahlen">
+        <article class="demo-kpi" data-testid="kpi-revenue">
+          <h3>Umsatz (30 Tage)</h3>
+          <div class="demo-value">1.284.500 €</div>
+          <div class="demo-delta">+8,4 % zum Vormonat</div>
+        </article>
+        <article class="demo-kpi" data-testid="kpi-signups">
+          <h3>Neuanmeldungen</h3>
+          <div class="demo-value">3.912</div>
+          <div class="demo-delta">+2,1 % zur Vorwoche</div>
+        </article>
+        <article class="demo-kpi" data-testid="kpi-churn">
+          <h3>Kündigungsquote</h3>
+          <div class="demo-value">0,9 %</div>
+          <div class="demo-delta">−0,3 Punkte</div>
+        </article>
+      </section>
+
+      <section class="demo-panel" data-testid="panel-reports">
+        <h2>Offene Berichte</h2>
+        <p class="demo-note">
+          Diese Tabelle ist der typische Anker für Design-Notizen: stabil über Re-Renders, weil jede
+          Zeile einen <code>data-testid</code> trägt.
+        </p>
+        <table>
+          <caption class="demo-note">Berichte der laufenden Review-Runde</caption>
+          <thead>
+            <tr><th scope="col">Bericht</th><th scope="col">Verantwortlich</th><th scope="col">Fällig</th><th scope="col">Status</th></tr>
+          </thead>
+          <tbody>
+            <tr data-testid="row-q3-margin"><td>Q3-Marge</td><td>K. Reuth</td><td>12.09.</td><td><span class="demo-status">in Arbeit</span></td></tr>
+            <tr data-testid="row-churn-drilldown"><td>Churn-Drilldown</td><td>A. Lindqvist</td><td>15.09.</td><td><span class="demo-status" data-state="due">fällig</span></td></tr>
+            <tr data-testid="row-forecast-fy26"><td>Forecast FY26</td><td>M. Okonkwo</td><td>22.09.</td><td><span class="demo-status">geplant</span></td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="demo-panel" data-testid="panel-summary">
+        <h2>Zusammenfassung</h2>
+        <p>
+          Der Umsatz liegt über Plan, während die Kündigungsquote zum dritten Mal in Folge sinkt.
+          Der Engpass bleibt der Forecast: zwei Zulieferungen fehlen noch.
+        </p>
+      </section>
+
+      <p class="demo-note" data-testid="hint-review">
+        Review-Hinweis: Diese Seite ist der Host für die bluepencil-Schicht. Öffne sie mit
+        <code>?selftest=1</code>, um den Anbindungs-Selbsttest der Seite auszuführen.
+      </p>
+
+    </main>
+
+    <footer class="demo-foot" data-bp-ignore>
+      <p>Northwind Analytics (Fixture) — die Schicht läuft gegen den bluepencil-Sidecar auf demselben Origin.</p>
+    </footer>
+
+  </div>
+</div>
+
+<!--
+  THE ENTIRE ATTACH: one script tag, no build step in the host.
+    data-endpoint     → implies adapter="http"; every transport setting is an attribute, so a host
+                        whose API lives on another origin does not have to guess (EMBED.md §2).
+    data-headers      → static extra headers (JSON).
+    data-headers-from → hostApp.headers(): evaluated on *every* request (refreshed tokens).
+    data-token*       → convenience: Authorization: Bearer <token> (wins over headers).
+    data-gate         → hostApp.canReview(): a *path to a function*, ANDed with enabled != "false"
+                        and re-evaluated on every enable(). A boolean path is legal too (EMBED.md §5).
+    data-route        → store location.pathname + location.search as the anchor route.
+    data-session      → the review round every note of this page belongs to.
+-->
+<script src="../../dist/attach.js"
+        data-endpoint="/api/v1/bluepencil"
+        data-environment="dev"
+        data-language="de"
+        data-session="attach-fixture"
+        data-route="url"
+        data-headers='{"X-Workspace":"demo-workspace"}'
+        data-headers-from="hostApp.headers"
+        data-token="dev-review-token"
+        data-token-header="Authorization"
+        data-token-scheme="Bearer"
+        data-gate="hostApp.canReview"></script>
+
+</body>
+</html>

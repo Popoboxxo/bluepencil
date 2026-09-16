@@ -148,3 +148,11 @@ system — including dark mode (`prefers-color-scheme`) and reduced motion.
 | Notes lose their element | Anchor resolved to an unstable path; add a `data-bluepencil`/`data-testid` hook to that element |
 | Marker drifts | Host CSS repositions the element after capture; re-check the note or switch to the hook-based anchor |
 | Bookmarklet blocked | CSP without external script allowance — use self-hosted or extension mode |
+
+## 11. Embed / attach reference
+
+For the one-script-tag attach pattern (with or without a backend), the
+full attribute table, the manifest-driven runtime update API, the store
+contract endpoint table, the gate recipe, and troubleshooting, see:
+
+**[EMBED.md](EMBED.md)**
