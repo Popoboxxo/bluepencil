@@ -166,6 +166,26 @@ async function waitForDefinition(deps: AttachDeps, tag: string): Promise<void> {
   throw new Error(`the element <${tag}> was not defined within ${deps.moduleTimeoutMs} ms`);
 }
 
+/** The version the loaded element build reports; `undefined` for a build that exposes none. */
+function registeredElementVersion(doc: Document, tag: string): string | undefined {
+  const ctor = elementRegistry(doc)?.get(tag) as { version?: unknown } | undefined;
+  const value = ctor?.version;
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/**
+ * Fills in the version for the sibling build: without a manifest the loader cannot know it before the
+ * module is loaded — and `"unknown"` in `attach-version` / `bluepencilAttach.version` is useless to a
+ * host that wants to report which build it is running (FR-19).
+ */
+function withElementVersion(target: ResolvedTarget, doc: Document, tag: string): ResolvedTarget {
+  if (target.version !== "unknown") {
+    return target;
+  }
+  const version = registeredElementVersion(doc, tag);
+  return version === undefined ? target : { ...target, version };
+}
+
 interface ResolvedTarget {
   elementUrl: string;
   version: string;
@@ -269,6 +289,7 @@ export async function attach(options: AttachOptions): Promise<AttachHandle> {
   await assertIntegrity(options, target, deps);
   await deps.importModule(target.elementUrl);
   await waitForDefinition(deps, options.tag);
+  target = withElementVersion(target, page, options.tag);
   if (options.auto) {
     element = mountElement(options, target, deps);
   }
@@ -331,6 +352,7 @@ export async function attach(options: AttachOptions): Promise<AttachHandle> {
       target = next;
       await deps.importModule(target.elementUrl);
       await waitForDefinition(deps, options.tag);
+      target = withElementVersion(target, page, options.tag);
       if (options.auto) {
         element = mountElement(options, target, deps);
       }

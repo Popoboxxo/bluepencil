@@ -120,7 +120,8 @@ describe("attach — mounting", () => {
       deps: state.deps,
     });
     expect(state.loaded).toEqual(["https://c.example/bluepencil/bluepencil.element.min.js"]);
-    expect(handle.version).toBe("unknown");
+    // The sibling build reports its own version (FR-19) — "unknown" was useless to a host.
+    expect(handle.version).toMatch(/^(dev|\d+\.\d+\.\d+)$/);
     handle.destroy();
   });
 
@@ -262,7 +263,8 @@ describe("attach — runtime updates", () => {
     });
     await handle.reload();
     expect(state.fetchCalls).toEqual([]);
-    expect(handle.version).toBe("unknown");
+    // The sibling build reports its own version (FR-19) — "unknown" was useless to a host.
+    expect(handle.version).toMatch(/^(dev|\d+\.\d+\.\d+)$/);
     handle.destroy();
   });
 });
@@ -403,7 +405,7 @@ describe("attach — script tag discovery", () => {
 
     expect(await api.check()).toBe(0);
     // The documented surface of FR-17 §2, populated without a host touching a handle.
-    expect(api.version).toBe("unknown");
+    expect(api.version).toMatch(/^(dev|\d+\.\d+\.\d+)$/);
     expect(api.src).toBe("https://c.example/bluepencil/bluepencil.element.min.js");
     expect(api.instances).toEqual(attachedElements());
     expect(await api.reload()).toBe(0);
@@ -416,6 +418,8 @@ describe("attach — script tag discovery", () => {
     const state = harness();
     const api = await start(document, state.deps);
     expect(api.handles).toEqual([]);
+    // Nothing is attached, so there is no build whose version could be reported — "unknown" is the
+    // honest answer here, not a placeholder for a version the loader failed to look up.
     expect(api.version).toBe("unknown");
     expect(api.src).toBe("");
     expect(api.instances).toEqual([]);

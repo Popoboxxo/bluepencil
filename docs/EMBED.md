@@ -253,6 +253,7 @@ them out of the box.
 | `POST` | `{base}/notes/bulk-delete` | `{ ids?: string[], filter?: NoteFilter, confirm: boolean }` | `{ removed: number }` |
 | `GET` | `{base}/sessions` | – | `{ sessions: Session[] }` |
 | `GET` | `{base}/bundle` | – | Canonical bundle (`src/data`) — for agents and exports. |
+| `GET` | `{base}/journal` | optional `?since=<seq>` | `{ journal: { backend, location, entries, lastSeq }, entries }` — the mutation history (FR-18). |
 
 `{base}` defaults to `/api/v1/bluepencil`. Error conventions: `confirm:
 true` required for bulk-delete (else `400`); unknown note id → `404`;
@@ -275,6 +276,10 @@ endpoints **plus**:
 * **Static mode:** `--root <dir>` serves files with an `index.html`
   fallback, so one origin serves both the presentation page and the
   API.
+* **Store journal (FR-18):** every accepted mutation is recorded — in
+  the surrounding git work tree when there is one, otherwise in a
+  hash-chained file next to the store; `--journal none` switches the
+  history off. See below.
 
 ```bash
 node dist/server.js \
@@ -284,6 +289,71 @@ node dist/server.js \
   --environment dev \
   --cors 'http://localhost:9283'
 ```
+
+### The store journal (FR-18)
+
+`--journal auto` (the default) decides from the infrastructure the deployment already has:
+
+| Backend | Chosen when | What it writes |
+|---|---|---|
+| `git` | the store lives inside a git work tree | stages `--store` (and `--mirror`), skips an empty diff and commits — batched over `--journal-coalesce` ms (default 2000), so a review round is not one commit per click. `--journal-author "Name <mail>"` and `--journal-subject "…"` (`{count}`, `{op}`, `{app}`) shape the commit. |
+| `file` | no work tree (the fallback) | appends one line per mutation to `journal.jsonl` next to the store: `{ seq, ts, op, noteId, actor, summary, prevHash, hash }`, every line hashing the one before it |
+| `none` | `--journal none`, or a backend that cannot be created | nothing — notes are served as usual, the reason is reported |
+
+```bash
+# history inside the repository the store lives in
+node dist/server.js --store notes.json --journal auto \
+  --journal-author "Daniel Duchrow <Popoboxxo@users.noreply.github.com>"
+
+# no git around: hash-chained file, still auditable
+node dist/server.js --store notes.json --journal file --journal-dir /var/lib/bluepencil
+
+# an explicitly unrecorded deployment
+node dist/server.js --store notes.json --journal none
+```
+
+A journal failure never fails a request: the note is on disk before the journal is written, so a
+failure is reported once on `stderr` and stays visible in `GET {base}/journal`. A backend that was
+requested but cannot be provided degrades to `none` **with a reason** (`--journal git` outside a work
+tree) instead of silently doing nothing.
+
+**Careful with tests and fixtures:** inside a work tree `auto` really commits. Any suite that points
+its store into the repository must pass `--journal none`, or it will write commits into the project.
+
+**Where the commit lands — read this before pointing `--journal git` at a real repository:** the
+commit goes onto **the branch that is checked out in that work tree**, whatever that branch happens
+to be. The sidecar only runs `git add` and `git commit`; it never runs `git switch`, never stashes and
+never rebases. Pointed at a repository whose working tree sits on a feature branch, every note edit
+becomes a commit on that feature branch: inside its diff, inside its history, and absent from the
+branch whose review you were preparing. That is not something to fix by guessing branches — it is a
+deployment decision:
+
+* give the sidecar its **own work tree** — a dedicated clone, or `git worktree add` for the notes
+  branch — so the branch it commits to is fixed by construction instead of by whatever a human left
+  checked out. Where the working tree is a coincidence rather than a decision, run `--journal file`
+  and leave git out of it.
+* the commit is **path-limited**: `git add -- <store> <mirror>` and `git commit --only -- <store>
+  <mirror>`. Work that somebody else staged in that tree stays untouched. Before this, the sidecar
+  committed the whole index, so a colleague's staged changes could ride along in a notes commit.
+* the coalescing window belongs to the sidecar, not to a user: two reviewers clicking inside the same
+  window produce **one** commit, and the journal keeps both mutations behind it.
+
+### Which version is running (FR-19)
+
+`package.json` is the single source. esbuild stamps it into every bundle, so the same string answers
+"which build is this" everywhere a host, an operator or a bug report looks:
+
+| Where | How |
+|---|---|
+| On the element | `<bluepencil-notes data-bp-version="0.1.0">` — written on connect, so devtools answers the question on the page itself |
+| On the loader API | `window.bluepencilAttach.version` — the manifest's version when there is a manifest, otherwise the version of the build that was actually loaded (it used to report `unknown`) |
+| On the mounting | `attach-version="…"` set by the loader, plus `event.detail.version` of `bp-attach-ready` / `bp-attach-updated` |
+| On the sidecar | `GET {base}/health` and `node dist/server.js --version` |
+| On CLI / MCP | `bluepencil --version`, the MCP `initialize` handshake |
+
+The library exports the same value as `VERSION`. A unit test keeps stray version literals out of the
+sources, so the numbers cannot drift apart again; running straight from the sources (unit tests,
+`tsx`) reports `"dev"`, which is honest — there is no release yet.
 
 ## 5. Gate it (never load it for end users)
 

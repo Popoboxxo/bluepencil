@@ -67,20 +67,13 @@ import {
 } from "../src/core/model";
 import { applyPatch, filterNotes, isRecord } from "../src/core/adapter";
 import { sortForReview } from "../src/core/protocol";
+import { VERSION } from "../src/version";
 import { canonicalNote } from "../src/data/canonical";
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { validateNote } from "../src/data/schema";
 
-/**
- * Build-time version stamp. esbuild (scripts/build.mjs) replaces `__BLUEPENCIL_VERSION__` with the
- * package version when it bundles `dist/server.js`; `typeof` keeps the module working (and TypeScript
- * happy) when it is imported directly from the sources, e.g. in the unit tests or via tsx.
- */
-declare const __BLUEPENCIL_VERSION__: string | undefined;
-
-/** Version reported by `GET {base}/health`; `"dev"` when the sources run without a build stamp. */
-export const SERVER_VERSION: string =
-  typeof __BLUEPENCIL_VERSION__ === "string" ? __BLUEPENCIL_VERSION__ : "dev";
+/** Version reported by `GET {base}/health` — the same string every other artifact reports (FR-19). */
+export const SERVER_VERSION: string = VERSION;
 
 /** Default base path — the documented default of the built-in `http` adapter (contract §3). */
 export const DEFAULT_BASE_PATH = "/api/v1/bluepencil";
@@ -167,8 +160,20 @@ export interface HandlerContext {
    * Persists the current store state — called once per accepted mutation, *after* the state was
    * changed. A throwing persist rolls the mutation back and answers 500 (`store_write_failed`),
    * so the in-memory set never claims more than the medium holds.
+   *
+   * The optional `event` says *what* the mutation was, so a journal (FR-18) can record an audit
+   * trail without guessing from a state diff.
    */
-  persist?: (state: NoteStoreState) => void;
+  persist?: (state: NoteStoreState, event?: MutationEvent) => void;
+}
+
+/** What a mutation was about — the sidecar's journal records this, the note set is the payload. */
+export interface MutationEvent {
+  op: "create" | "update" | "message" | "bulk-delete";
+  /** The note the mutation was about; unset for a filtered bulk delete. */
+  noteId?: string;
+  /** How many notes a bulk delete removed. */
+  removed?: number;
 }
 
 /** A refusal with a documented status code and error code. */
@@ -362,7 +367,11 @@ function toErrorResponse(error: unknown, context: HandlerContext): ServerRespons
  * A refusal (or a validation failure) leaves the set untouched; a failing persist restores the
  * previous array, so a reported success always means the medium holds the change.
  */
-function applyMutation(context: HandlerContext, mutate: () => ServerResponse): ServerResponse {
+function applyMutation(
+  context: HandlerContext,
+  mutate: () => ServerResponse,
+  event?: MutationEvent | (() => MutationEvent),
+): ServerResponse {
   const previous = context.store.notes;
   let response: ServerResponse;
   try {
@@ -373,7 +382,7 @@ function applyMutation(context: HandlerContext, mutate: () => ServerResponse): S
   }
   if (context.persist) {
     try {
-      context.persist(context.store);
+      context.persist(context.store, typeof event === "function" ? event() : event);
     } catch (error) {
       context.store.notes = previous;
       return errorResponse(
@@ -620,6 +629,7 @@ function createNoteFromBody(request: ServerRequest, context: HandlerContext): Se
       `environment must be one of ${ENVIRONMENTS.join(", ")} (got ${JSON.stringify(requested)})`,
     );
   }
+  let created = "";
   return applyMutation(context, () => {
     if (requested !== undefined) assertEnvironment(requested, context);
     const draft: NoteDraft = {
@@ -637,8 +647,9 @@ function createNoteFromBody(request: ServerRequest, context: HandlerContext): Se
       refuse(400, "duplicate_id", `a note with id ${JSON.stringify(note.id)} already exists`);
     }
     context.store.notes = [...context.store.notes, note];
+    created = note.id;
     return json(200, { note: canonicalNote(note) }, context);
-  });
+  }, () => ({ op: "create", noteId: created }));
 }
 
 function patchNote(id: string, request: ServerRequest, context: HandlerContext): ServerResponse {
@@ -655,7 +666,7 @@ function patchNote(id: string, request: ServerRequest, context: HandlerContext):
     }
     context.store.notes = context.store.notes.map((candidate) => (candidate.id === id ? next : candidate));
     return json(200, { note: canonicalNote(next) }, context);
-  });
+  }, { op: "update", noteId: id });
 }
 
 function appendMessageToNote(id: string, request: ServerRequest, context: HandlerContext): ServerResponse {
@@ -673,7 +684,7 @@ function appendMessageToNote(id: string, request: ServerRequest, context: Handle
     }
     context.store.notes = context.store.notes.map((candidate) => (candidate.id === id ? next : candidate));
     return json(200, { note: canonicalNote(next) }, context);
-  });
+  }, { op: "message", noteId: id });
 }
 
 function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResponse {
@@ -695,6 +706,7 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
   }
   const filter = rawFilter !== undefined ? filterFromBody(rawFilter) : null;
 
+  let removedCount = 0;
   return applyMutation(context, () => {
     const selected =
       ids !== null
@@ -717,8 +729,9 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
     const remaining = context.store.notes.filter((note) => !doomed.has(note.id));
     const removed = context.store.notes.length - remaining.length;
     context.store.notes = remaining;
+    removedCount = removed;
     return json(200, { removed }, context);
-  });
+  }, () => ({ op: "bulk-delete", ...(removedCount === 0 ? {} : { removed: removedCount }) }));
 }
 
 /* ------------------------------------------------------------------------------------------------

@@ -45,8 +45,7 @@ import {
   validateStoredNoteSet,
   type ToolContext,
 } from "./tools";
-
-const VERSION = "0.1.0";
+import { VERSION } from "../version";
 const PROTOCOL_VERSION = "2024-11-05";
 
 for (const level of ["debug", "info", "log", "warn"] as const) {
