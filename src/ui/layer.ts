@@ -62,7 +62,7 @@ export interface LayerOptions {
   theme?: Record<string, string>;
   anchorHooks?: string[];
   canAnnotate?: (el: Element) => boolean;
-  getRoute?: () => string;
+  getRoute?: (element?: Element) => string;
   identity?: { getUser?: () => { id?: string; name: string } } | "prompt" | "anonymous";
   markerStrategy?: "overlay" | "sibling";
   defaultShowDone?: boolean;
@@ -1401,10 +1401,12 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
   /* -- anchoring a new note (FR-1.3/1.4/1.5/2.2) -------------------------- */
 
-  function safeRoute(): string | undefined {
+  function safeRoute(element?: Element): string | undefined {
     if (!options.getRoute) return undefined;
     try {
-      const route = options.getRoute();
+      // The annotated element goes in: a host that derives the route from the element answers for
+      // *that* note instead of for whatever happens to be on screen when the composer opens.
+      const route = options.getRoute(element);
       return typeof route === "string" && route !== "" ? route : undefined;
     } catch (error) {
       reportError(error);
@@ -1422,7 +1424,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
   }
 
   function openComposerFor(element: Element, type: "text" | "design"): void {
-    const route = safeRoute();
+    const route = safeRoute(element);
     const quote = type === "text" ? safeSelectionQuote() : undefined;
     let anchor: Anchor;
     let label: string;

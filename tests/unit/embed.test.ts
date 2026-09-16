@@ -182,6 +182,18 @@ describe("embed attributes — route and gate", () => {
     const host = readRoute(source({ "route-from": "router.current" }), () => () => "/spa/route", undefined);
     expect(host.getRoute?.()).toBe("/spa/route");
     expect(host.issues).toEqual([]);
+
+    // The host function receives the annotated element, so it can answer for *that* note instead of
+    // for whatever is on screen when the composer opens (FR-2.4). Measured on the AI-Extremismus
+    // one-pager: a `nav a.is-active` hook lags a chapter behind, this one cannot.
+    const perElement = readRoute(
+      source({ "route-from": "router.forElement" }),
+      () => (element?: Element) => (element ? element.getAttribute("data-chapter") : null) ?? "",
+      undefined,
+    );
+    expect(perElement.getRoute?.({ getAttribute: () => "kapitel-05" } as unknown as Element)).toBe("kapitel-05");
+    // A zero-parameter host keeps working: it simply ignores the argument it now receives.
+    expect(perElement.getRoute?.()).toBe("");
   });
 
   it("reports an unknown route mode, a missing function and a missing location", () => {

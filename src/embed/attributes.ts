@@ -207,18 +207,28 @@ export function readTheme(source: AttributeSource): { theme: Record<string, stri
   return { theme, issues };
 }
 
-/** `route="url"` stores the current URL; `route-from` delegates to a host function. */
+/**
+ * `route="url"` stores the current URL; `route-from` delegates to a host function.
+ *
+ * The host function is called with the **annotated element** (FR-2.4, contract §2): a host that can
+ * answer "which chapter is this element in?" then gets the note's own chapter, not the one that
+ * happens to be scrolled into view. Hosts that take no argument are unaffected — an extra argument is
+ * ignored by a zero-parameter function.
+ */
 export function readRoute(
   source: AttributeSource,
   resolve: GlobalResolver,
   location: { pathname: string; search: string } | undefined,
-): { getRoute?: () => string; issues: string[] } {
+): { getRoute?: (element?: Element) => string; issues: string[] } {
   const issues: string[] = [];
   const path = readAttribute(source, "route-from");
   if (path !== undefined) {
     const resolved = resolve(path);
     if (typeof resolved === "function") {
-      return { getRoute: () => String((resolved as () => unknown)()), issues };
+      return {
+        getRoute: (element?: Element) => String((resolved as (el?: Element) => unknown)(element)),
+        issues,
+      };
     }
     issues.push(`route-from "${path}" does not resolve to a function`);
   }

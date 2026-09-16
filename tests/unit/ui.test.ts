@@ -415,6 +415,36 @@ describe("capture UI", () => {
     handle.disable();
   });
 
+  it("asks the host for the route of the annotated element, not of the viewport (FR-2.4)", async () => {
+    document.body.innerHTML = `
+      <main id="host">
+        <section data-chapter="kapitel-05"><p data-bluepencil="intro">Hello world of notes</p></section>
+      </main>`;
+    const paragraph = byId("host").querySelector("p");
+    if (paragraph === null) throw new Error("fixture missing");
+
+    const seen: Array<Element | undefined> = [];
+    const store = makeStore();
+    const handle = startLayer(store, {
+      getRoute: (element) => {
+        seen.push(element);
+        return element?.closest("section")?.getAttribute("data-chapter") ?? "";
+      },
+    });
+
+    pressKey("c");
+    click(paragraph);
+    await saveComposer("Kapitelnotiz.");
+
+    // The route comes from the clicked element's own chapter. Before this, the host was called without
+    // arguments, the answer was "" and the note lost its chapter — on the AI-Extremismus one-pager a
+    // measured 2 of 8 attributed chapters were wrong that way.
+    expect(store.notes()[0]?.anchor.route).toBe("kapitel-05");
+    expect(seen[0]).toBe(paragraph);
+
+    handle.disable();
+  });
+
   it("captures the element state in design mode (FR-1.4)", async () => {
     document.body.innerHTML = `<main id="host"><div class="card" data-bluepencil="card">card</div></main>`;
     const card = byId("host").querySelector(".card");
