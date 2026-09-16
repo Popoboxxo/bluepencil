@@ -97,13 +97,35 @@ export function shouldReload(current: string | undefined, next: string | undefin
   return current !== next;
 }
 
+/**
+ * The bytes a platform `digest` definitely accepts.
+ *
+ * Node 20 rejects an `ArrayBuffer` that came from another realm — a jsdom document, an iframe, a
+ * worker, a VM context — with "2nd argument is not instance of ArrayBuffer", because it checks with
+ * `instanceof`, which is realm-bound. Re-wrapping the bytes here goes through the internal-slot
+ * conversion instead, so it works across realms and is a no-op for a same-realm buffer.
+ */
+function toBytes(buffer: ArrayBuffer | ArrayBufferView): Uint8Array<ArrayBuffer> {
+  const source = ArrayBuffer.isView(buffer)
+    ? new Uint8Array(buffer.buffer as ArrayBuffer, buffer.byteOffset, buffer.byteLength)
+    : new Uint8Array(buffer as ArrayBuffer);
+  // A fresh, realm-local copy: `digest` accepts it on every runtime (Node 20 included) and it stays
+  // valid even when the source was a view into a buffer this realm does not own.
+  const copy = new Uint8Array(source.byteLength);
+  copy.set(source);
+  return copy;
+}
+
 /** Hex SHA-256 of a buffer, using WebCrypto (browser and Node 20+). */
-export async function sha256Hex(buffer: ArrayBuffer, cryptoImpl?: Crypto): Promise<string | undefined> {
+export async function sha256Hex(
+  buffer: ArrayBuffer | ArrayBufferView,
+  cryptoImpl?: Crypto,
+): Promise<string | undefined> {
   const subtle = cryptoImpl?.subtle ?? (globalThis as { crypto?: Crypto }).crypto?.subtle;
   if (!subtle) {
     return undefined;
   }
-  const digest = await subtle.digest("SHA-256", buffer);
+  const digest = await subtle.digest("SHA-256", toBytes(buffer));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 

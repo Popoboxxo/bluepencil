@@ -10,6 +10,8 @@
  * attribute to an outgoing request is proven without a server.
  */
 
+import vm from "node:vm";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -297,7 +299,6 @@ describe("runtime update contract — manifest and versions", () => {
     const body = new TextEncoder().encode("element build").buffer;
     const digest = await sha256Hex(body);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
-
     const fetchImpl = (async () => new Response(body, { status: 200 })) as unknown as typeof fetch;
     expect((await verifyIntegrity({ url: "/e.js", sha256: digest as string, fetchImpl })).ok).toBe(true);
     const mismatch = await verifyIntegrity({ url: "/e.js", sha256: "ab".repeat(32), fetchImpl });
@@ -305,6 +306,30 @@ describe("runtime update contract — manifest and versions", () => {
     expect(mismatch.issue).toContain("integrity check failed");
     const missing = (async () => new Response("nope", { status: 404 })) as unknown as typeof fetch;
     expect((await verifyIntegrity({ url: "/e.js", sha256: digest as string, fetchImpl: missing })).ok).toBe(false);
+  });
+
+  it("digests bytes that come from another realm", async () => {
+    // Node 20's `subtle.digest` brand-checks its argument with `instanceof`, and that check is
+    // realm-bound: an ArrayBuffer from a jsdom document, an iframe, a worker or a VM context is
+    // rejected with "2nd argument is not instance of ArrayBuffer". Node 26 accepts it, so only the
+    // CI runtime shows the difference — the bytes are re-wrapped before they are handed over.
+    const foreign = vm.runInNewContext("new Uint8Array([1, 2, 3]).buffer") as ArrayBuffer;
+    expect(foreign instanceof ArrayBuffer).toBe(false);
+    expect(await sha256Hex(foreign)).toBe(await sha256Hex(new Uint8Array([1, 2, 3]).buffer));
+
+    const handed: unknown[] = [];
+    const cryptoImpl = {
+      subtle: {
+        digest: async (_algorithm: string, bytes: unknown) => {
+          handed.push(bytes);
+          return new Uint8Array(32).buffer;
+        },
+      },
+    } as unknown as Crypto;
+    await sha256Hex(foreign, cryptoImpl);
+    expect(handed).toHaveLength(1);
+    expect(handed[0]).not.toBe(foreign);
+    expect(handed[0]).toBeInstanceOf(Uint8Array);
   });
 });
 
