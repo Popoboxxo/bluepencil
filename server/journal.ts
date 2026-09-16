@@ -355,7 +355,9 @@ class GitJournal implements Journal {
       this.#fail(`git add failed — ${oneLine(add.stderr) || `exit ${add.status}`}`);
       return;
     }
-    const diff = this.#run("git", ["-C", this.#repo, "diff", "--cached", "--quiet"], { stdio: "ignore" });
+    // A batch commits the configured paths and nothing else: whatever else is staged in the work tree
+    // belongs to someone else, and `git commit` without paths would sweep it in.
+    const diff = this.#run("git", ["-C", this.#repo, "diff", "--cached", "--quiet", "--", ...this.#paths], { stdio: "ignore" });
     if (diff.status === 0) return; // nothing changed on disk — no empty commit
 
     const subject = this.#subject
@@ -369,7 +371,7 @@ class GitJournal implements Journal {
       env.GIT_COMMITTER_NAME = this.#author.name;
       env.GIT_COMMITTER_EMAIL = this.#author.email;
     }
-    const commit = this.#run("git", ["-C", this.#repo, "commit", "-q", "-m", oneLine(subject)], {
+    const commit = this.#run("git", ["-C", this.#repo, "commit", "-q", "--only", "-m", oneLine(subject), "--", ...this.#paths], {
       stdio: "ignore",
       env,
     });
