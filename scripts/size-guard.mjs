@@ -25,6 +25,12 @@ const checks = [
     label: "core without adapters (NFR-3)",
   },
   {
+    // FR-17: the loader ships to hosts that take no bundler — it must stay a rounding error.
+    file: join(root, "dist/attach.js"),
+    budget: 8 * KB,
+    label: "attach loader (FR-17)",
+  },
+  {
     file: join(root, "dist/bluepencil.iife.js"),
     budget: 40 * KB,
     label: "IIFE incl. adapters + en/de",

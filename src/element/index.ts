@@ -1,39 +1,54 @@
 /**
- * `<bluepencil-notes>` — the no-bundler build (FR-12.5, NFR-16).
+ * `<bluepencil-notes>` — the no-bundler build (FR-12.5, NFR-16) and the attach surface of FR-17.
  *
- * Load the module as a resource (static page, CMS, Home Assistant frontend resource) and drop
- * the element anywhere; attributes map to config and events carry everything the host needs.
- * It is a thin wrapper around the same core — no second implementation.
+ * Load the module as a resource (static page, CMS, Home Assistant frontend resource, a loader
+ * script) and drop the element anywhere; attributes map to config, events carry everything the
+ * host needs. It is a thin wrapper around the same core — no second implementation.
  *
- *   <script type="module" src="/bluepencil.element.js"></script>
+ *   <script type="module" src="/bluepencil.element.min.js"></script>
  *   <bluepencil-notes adapter="localStorage" language="de" theme-accent="#8c3b2e"></bluepencil-notes>
+ *   <bluepencil-notes endpoint="/api/v1/bluepencil" token="…" environment="dev"></bluepencil-notes>
  *
- * Attributes: enabled, adapter, language, identity, session, environment, show-done,
- *             theme-accent, theme-surface, mount
- * Events:     bp-enabled, bp-disabled, bp-notes-changed, bp-export, bp-error
+ * Attributes (single source of truth: `src/embed/attributes.ts`): enabled, adapter, endpoint,
+ *   headers, headers-from, token, token-header, token-scheme, language, identity, session,
+ *   environment, show-done, theme, theme-accent, theme-surface, route, route-from, gate, mount.
+ * Events:  bp-enabled, bp-disabled, bp-notes-changed, bp-export, bp-error
+ * API:     blueprint, issues, exportNotes(), destroy()
+ *
+ * A misconfigured attribute (bad JSON, an unresolvable global path, an unknown environment) never
+ * throws into the host page: it is reported as a `bp-error` event (queued as a microtask, so
+ * listeners attached right after `appendChild` still see it) and collected in `element.issues`.
  */
 import type { AdapterLike } from "../core/adapter";
-import type { Environment, Note } from "../core/model";
+import type { Note } from "../core/model";
+import { createHttpAdapter } from "../adapters/http";
+import {
+  ALL_ATTRIBUTES,
+  readAttribute,
+  readEnvironment,
+  readGate,
+  readHeaders,
+  readRoute,
+  readStore,
+  readTheme,
+  resolveGlobalPath,
+  type GlobalResolver,
+} from "../embed/attributes";
 import { createBlueprint, type Blueprint, type BlueprintConfig } from "../index";
 
-const OBSERVED = [
-  "enabled",
-  "adapter",
-  "language",
-  "identity",
-  "session",
-  "environment",
-  "show-done",
-  "theme-accent",
-  "theme-surface",
-  "mount",
-] as const;
+const OBSERVED = ALL_ATTRIBUTES;
+
+/** The host's global scope, used to resolve `headers-from`, `route-from` and `gate`. */
+function globalScope(): unknown {
+  return globalThis;
+}
 
 export class BluepencilNotesElement extends HTMLElement {
   static readonly tagName = "bluepencil-notes";
 
   #blueprint: Blueprint | null = null;
   #unsubscribe: (() => void) | null = null;
+  #issues: string[] = [];
 
   static get observedAttributes(): readonly string[] {
     return OBSERVED;
@@ -46,7 +61,7 @@ export class BluepencilNotesElement extends HTMLElement {
       blueprint = this.#blueprint;
     }
     if (blueprint && this.getAttribute("enabled") !== "false") {
-      const started = blueprint.enable();
+      const started = this.#guard("enable", () => blueprint.enable()) ?? false;
       this.dispatchEvent(new CustomEvent("bp-enabled", { detail: { started } }));
     }
   }
@@ -68,7 +83,7 @@ export class BluepencilNotesElement extends HTMLElement {
         this.#blueprint.disable();
         this.dispatchEvent(new CustomEvent("bp-disabled"));
       } else {
-        const started = this.#blueprint.enable();
+        const started = this.#guard("enable", () => this.#blueprint?.enable() ?? false) ?? false;
         this.dispatchEvent(new CustomEvent("bp-enabled", { detail: { started } }));
       }
       return;
@@ -81,6 +96,11 @@ export class BluepencilNotesElement extends HTMLElement {
     return this.#blueprint;
   }
 
+  /** Configuration problems seen while building this instance (also reported as `bp-error`). */
+  get issues(): readonly string[] {
+    return [...this.#issues];
+  }
+
   /** Export the current set as a string and announce it as an event (host hook). */
   exportNotes(format: "markdown" | "json" = "markdown"): string {
     const text = this.#blueprint?.export({ format }) ?? "";
@@ -88,9 +108,30 @@ export class BluepencilNotesElement extends HTMLElement {
     return text;
   }
 
+  /**
+   * Full teardown: the layer, its listeners and the store. Unlike removing the element (which only
+   * disables the layer and keeps the data), this releases everything — the attach loader uses it
+   * before it swaps in another bluepencil version.
+   */
+  destroy(): void {
+    this.#unsubscribe?.();
+    this.#unsubscribe = null;
+    const blueprint = this.#blueprint;
+    this.#blueprint = null;
+    if (blueprint) {
+      void blueprint.destroy();
+    }
+    this.dispatchEvent(new CustomEvent("bp-disabled"));
+  }
+
   #start(): void {
-    this.#blueprint = createBlueprint(this.#config());
-    this.#unsubscribe = this.#blueprint.store.subscribe((notes) => this.#emitNotes(notes));
+    try {
+      this.#blueprint = createBlueprint(this.#config());
+      this.#unsubscribe = this.#blueprint.store.subscribe((notes) => this.#emitNotes(notes));
+    } catch (error) {
+      this.#blueprint = null;
+      this.#report(error);
+    }
   }
 
   #rebuild(): void {
@@ -109,7 +150,7 @@ export class BluepencilNotesElement extends HTMLElement {
   #enableIfPresent(): void {
     const blueprint = this.#blueprint;
     if (blueprint) {
-      blueprint.enable();
+      this.#guard("enable", () => blueprint.enable());
     }
   }
 
@@ -117,37 +158,86 @@ export class BluepencilNotesElement extends HTMLElement {
     this.dispatchEvent(new CustomEvent("bp-notes-changed", { detail: { count: notes.length, notes } }));
   }
 
-  #config(): BlueprintConfig {
-    const theme: Record<string, string> = {};
-    const accent = this.getAttribute("theme-accent");
-    const surface = this.getAttribute("theme-surface");
-    if (accent) theme.accent = accent;
-    if (surface) theme.surface = surface;
+  /** Runs a host-visible operation without ever letting it throw into the host page. */
+  #guard<T>(label: string, fn: () => T): T | undefined {
+    try {
+      return fn();
+    } catch (error) {
+      this.#report(error, label);
+      return undefined;
+    }
+  }
 
-    const mountAttr = this.getAttribute("mount");
+  /** Queued as a microtask so a host that attaches its listener right after mounting sees it. */
+  #report(error: unknown, label?: string): void {
+    const message = label === undefined ? String((error as Error)?.message ?? error) : `${label}: ${String((error as Error)?.message ?? error)}`;
+    this.#issues = [...this.#issues, message];
+    queueMicrotask(() => this.dispatchEvent(new CustomEvent("bp-error", { detail: error })));
+  }
+
+  /** Configuration issues are reported, never thrown (FR-17: a typo must not break the host). */
+  #collect(issues: readonly string[]): void {
+    if (issues.length === 0) {
+      return;
+    }
+    this.#issues = [...this.#issues, ...issues];
+    queueMicrotask(() => {
+      for (const issue of issues) {
+        this.dispatchEvent(new CustomEvent("bp-error", { detail: new Error(`bluepencil: ${issue}`) }));
+      }
+    });
+  }
+
+  #config(): BlueprintConfig {
+    this.#issues = [];
+    const resolve: GlobalResolver = (path) => resolveGlobalPath(globalScope(), path);
+
+    const headers = readHeaders(this, resolve);
+    const theme = readTheme(this);
+    const store = readStore(this);
+    const env = readEnvironment(this);
+    const route = readRoute(this, resolve, locationOrUndefined());
+    const gate = readGate(this, resolve);
+    this.#collect([...headers.issues, ...theme.issues, ...env.issues, ...route.issues, ...gate.issues]);
+
+    const mountAttr = readAttribute(this, "mount");
     const root = this.getRootNode() as Document | ShadowRoot;
     const mountTarget = mountAttr ? (root.querySelector?.(mountAttr) as Element | null) : null;
 
+    const adapter = store.endpoint === undefined
+      ? store.adapterName === undefined
+        ? undefined
+        : (store.adapterName as AdapterLike)
+      : (): ReturnType<typeof createHttpAdapter> =>
+          createHttpAdapter({
+            endpoint: store.endpoint as string,
+            ...(headers.headers === undefined ? {} : { headers: headers.headers }),
+          });
+
     const config: BlueprintConfig = {
-      enabled: () => this.getAttribute("enabled") !== "false",
+      enabled: () => this.getAttribute("enabled") !== "false" && (gate.gate ? gate.gate() : true),
       autoEnable: false,
-      defaultShowDone: this.getAttribute("show-done") === "true",
-      ...(this.getAttribute("adapter") ? { adapter: this.getAttribute("adapter") as AdapterLike } : {}),
-      ...(this.getAttribute("language") ? { language: this.getAttribute("language") as string } : {}),
-      ...(Object.keys(theme).length > 0 ? { theme } : {}),
-      ...(this.getAttribute("session") ? { sessionRef: this.getAttribute("session") as string } : {}),
-      ...(this.getAttribute("environment")
-        ? { environment: this.getAttribute("environment") as Environment }
-        : {}),
+      defaultShowDone: env.showDone === true,
+      ...(adapter === undefined ? {} : { adapter }),
+      ...(readAttribute(this, "language") === undefined ? {} : { language: readAttribute(this, "language") as string }),
+      ...(Object.keys(theme.theme).length > 0 ? { theme: theme.theme } : {}),
+      ...(env.sessionRef === undefined ? {} : { sessionRef: env.sessionRef }),
+      ...(env.environment === undefined ? {} : { environment: env.environment }),
+      ...(route.getRoute === undefined ? {} : { getRoute: route.getRoute }),
       ...(mountTarget ? { mount: mountTarget } : {}),
       onError: (error: unknown) => this.dispatchEvent(new CustomEvent("bp-error", { detail: error })),
     };
-    const identity = this.getAttribute("identity");
-    if (identity === "prompt" || identity === "anonymous") {
-      config.identity = identity;
+    if (env.identity !== undefined) {
+      config.identity = env.identity;
     }
     return config;
   }
+}
+
+/** The element may live in a document without a `location` (jsdom, SSR) — never assume one. */
+function locationOrUndefined(): { pathname: string; search: string } | undefined {
+  const location = (globalThis as { location?: { pathname: string; search: string } }).location;
+  return location === undefined ? undefined : { pathname: location.pathname, search: location.search };
 }
 
 /** Register the element once (idempotent — safe even if several hosts import this module). */

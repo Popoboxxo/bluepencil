@@ -270,3 +270,5 @@ export type {
   Session,
 } from "./core/model";
 export { SCHEMA_VERSION, BluepencilValidationError } from "./core/model";
+/** Register a named adapter factory, e.g. a preconfigured HTTP store (FR-6.2, FR-17). */
+export { registerAdapter } from "./core/store";
