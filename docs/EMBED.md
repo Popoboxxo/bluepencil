@@ -253,6 +253,7 @@ them out of the box.
 | `POST` | `{base}/notes/bulk-delete` | `{ ids?: string[], filter?: NoteFilter, confirm: boolean }` | `{ removed: number }` |
 | `GET` | `{base}/sessions` | – | `{ sessions: Session[] }` |
 | `GET` | `{base}/bundle` | – | Canonical bundle (`src/data`) — for agents and exports. |
+| `GET` | `{base}/journal` | optional `?since=<seq>` | `{ journal: { backend, location, entries, lastSeq }, entries }` — the mutation history (FR-18). |
 
 `{base}` defaults to `/api/v1/bluepencil`. Error conventions: `confirm:
 true` required for bulk-delete (else `400`); unknown note id → `404`;
@@ -275,6 +276,10 @@ endpoints **plus**:
 * **Static mode:** `--root <dir>` serves files with an `index.html`
   fallback, so one origin serves both the presentation page and the
   API.
+* **Store journal (FR-18):** every accepted mutation is recorded — in
+  the surrounding git work tree when there is one, otherwise in a
+  hash-chained file next to the store; `--journal none` switches the
+  history off. See below.
 
 ```bash
 node dist/server.js \
@@ -284,6 +289,36 @@ node dist/server.js \
   --environment dev \
   --cors 'http://localhost:9283'
 ```
+
+### The store journal (FR-18)
+
+`--journal auto` (the default) decides from the infrastructure the deployment already has:
+
+| Backend | Chosen when | What it writes |
+|---|---|---|
+| `git` | the store lives inside a git work tree | stages `--store` (and `--mirror`), skips an empty diff and commits — batched over `--journal-coalesce` ms (default 2000), so a review round is not one commit per click. `--journal-author "Name <mail>"` and `--journal-subject "…"` (`{count}`, `{op}`, `{app}`) shape the commit. |
+| `file` | no work tree (the fallback) | appends one line per mutation to `journal.jsonl` next to the store: `{ seq, ts, op, noteId, actor, summary, prevHash, hash }`, every line hashing the one before it |
+| `none` | `--journal none`, or a backend that cannot be created | nothing — notes are served as usual, the reason is reported |
+
+```bash
+# history inside the repository the store lives in
+node dist/server.js --store notes.json --journal auto \
+  --journal-author "Daniel Duchrow <Popoboxxo@users.noreply.github.com>"
+
+# no git around: hash-chained file, still auditable
+node dist/server.js --store notes.json --journal file --journal-dir /var/lib/bluepencil
+
+# an explicitly unrecorded deployment
+node dist/server.js --store notes.json --journal none
+```
+
+A journal failure never fails a request: the note is on disk before the journal is written, so a
+failure is reported once on `stderr` and stays visible in `GET {base}/journal`. A backend that was
+requested but cannot be provided degrades to `none` **with a reason** (`--journal git` outside a work
+tree) instead of silently doing nothing.
+
+**Careful with tests and fixtures:** inside a work tree `auto` really commits. Any suite that points
+its store into the repository must pass `--journal none`, or it will write commits into the project.
 
 ## 5. Gate it (never load it for end users)
 

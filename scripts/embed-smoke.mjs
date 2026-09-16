@@ -20,7 +20,7 @@
  *
  * Each case prints `PASS`/`FAIL`; the exit code is non-zero when any case failed.
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -348,6 +348,10 @@ async function startSidecar(options) {
   if (options.mirror) args.push("--mirror", options.mirror);
   if (options.readOnly) args.push("--read-only");
   if (options.allowEnvMismatch) args.push("--allow-env-mismatch");
+  // The smoke runs inside the repository's work tree, where `auto` would commit into the project —
+  // so the shared sidecar keeps its history off unless a case asks for a journal explicitly.
+  args.push("--journal", options.journal ?? "none");
+  for (const extra of options.extra ?? []) args.push(extra);
 
   const child = spawn(process.execPath, args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
@@ -545,6 +549,83 @@ function cases() {
       assert(lines.length >= 1 && lines.length <= 3, `corrupt store: expected a short error, got ${lines.length} lines`);
       assert(!/\n\s+at /.test(result.stderr), "corrupt store: the error printed a stack trace");
       assert(/not valid|unreadable|corrupt|JSON/i.test(result.stderr), `corrupt store: unclear message ${JSON.stringify(result.stderr.slice(0, 160))}`);
+    },
+
+    "sidecar: the journal records the history (file backend)": async (ctx) => {
+      const dir = join(WORKSPACE, "journal-file");
+      mkdirSync(dir, { recursive: true });
+      const store = join(dir, "store.json");
+      blankStore(store);
+      const server = await startSidecar({
+        store,
+        environment: "dev",
+        extra: ["--journal-dir", dir],
+        journal: "file",
+      });
+      try {
+        const created = await json(
+          await request({ base: server.base }, "POST", "/notes", draft("n-j1", { sessionRef: "journal-1" })),
+        );
+        assert(created.status === 200, `POST /notes → ${created.status}: ${created.text.slice(0, 120)}`);
+
+        const history = await json(await request({ base: server.base }, "GET", "/journal"));
+        assert(history.status === 200, `GET /journal → ${history.status}: ${history.text.slice(0, 120)}`);
+        assert(history.body.journal?.backend === "file", `backend is ${history.body.journal?.backend}`);
+        assert(history.body.journal.entries >= 1, "the mutation was not recorded");
+        const entry = history.body.entries?.[0];
+        assert(entry?.seq === 1, `first entry seq is ${entry?.seq}`);
+        assert(/^[0-9a-f]{64}$/.test(entry?.hash ?? ""), `entry hash is not a sha256: ${entry?.hash}`);
+        assert(
+          String(entry?.summary ?? "").includes("n-j1"),
+          `the summary does not name the note: ${entry?.summary}`,
+        );
+
+        // The chain is verifiable on disk, and `since` is what an agent needs.
+        const journalFile = readFileSync(join(dir, "journal.jsonl"), "utf8").trimEnd().split("\n");
+        assert(journalFile.length === 1, `expected one journal line, got ${journalFile.length}`);
+        const since = await json(await request({ base: server.base }, "GET", "/journal?since=1"));
+        assert(since.body.entries.length === 0, "since=1 must not repeat the first entry");
+      } finally {
+        await server.stop();
+      }
+    },
+
+    "sidecar: the journal commits inside a git work tree": async (ctx) => {
+      const repo = join(WORKSPACE, "journal-git");
+      mkdirSync(repo, { recursive: true });
+      const git = (args) => {
+        const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+        assert(result.status === 0, `git ${args.join(" ")} → ${result.stderr}`);
+        return result.stdout;
+      };
+      git(["init", "-q"]);
+      git(["config", "user.name", "embed smoke"]);
+      git(["config", "user.email", "smoke@example.invalid"]);
+      const store = join(repo, "store.json");
+      blankStore(store);
+      git(["add", "store.json"]);
+      git(["commit", "-q", "-m", "init"]);
+
+      const server = await startSidecar({
+        store,
+        environment: "dev",
+        journal: "git", // the store lives in this throwaway repository
+        extra: ["--journal-coalesce", "0"],
+      });
+      try {
+        const created = await json(
+          await request({ base: server.base }, "POST", "/notes", draft("n-j2", { sessionRef: "journal-2" })),
+        );
+        assert(created.status === 200, `POST /notes → ${created.status}`);
+        const log = git(["log", "--format=%s", "-n", "2"]).trim().split("\n");
+        assert(log.length === 2, `expected a new commit, the log has ${log.length} entries`);
+        assert(/change\(s\)|note/i.test(log[0]), `unexpected subject: ${log[0]}`);
+        const status = await json(await request({ base: server.base }, "GET", "/journal"));
+        assert(status.body.journal.backend === "git", `backend is ${status.body.journal.backend}`);
+        assert(status.body.journal.entries === 1, `expected one commit from this run, got ${status.body.journal.entries}`);
+      } finally {
+        await server.stop();
+      }
     },
 
     "element: endpoint attribute talks to the running sidecar": async (ctx) => {

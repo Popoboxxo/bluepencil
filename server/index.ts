@@ -61,7 +61,9 @@ import {
   type HandlerContext,
   type NoteStoreState,
   type ServerErrorCode,
+  type MutationEvent,
 } from "./handler";
+import { selectJournal, type Journal, type JournalRecord, type JournalStatus } from "./journal";
 
 /** Bind/port defaults: loopback only, and the port the contract documents. */
 export const DEFAULT_PORT = 8787;
@@ -96,6 +98,21 @@ export interface ServerOptions {
   quiet?: boolean;
   appName?: string;
   exportedBy?: string;
+  /**
+   * Store journal backend (FR-18). `auto` (default) picks `git` when the store lives in a work tree
+   * and `file` otherwise; `none` switches the history off on purpose.
+   */
+  journal?: "auto" | "git" | "file" | "none";
+  /** Directory of the journal file (`--journal-dir`); defaults to the store's directory. */
+  journalDir?: string;
+  /** Repository root of the `git` backend (`--journal-repo`); defaults to the store's directory. */
+  journalRepo?: string;
+  /** Milliseconds a `git` commit waits for more changes (`--journal-coalesce`, default 2000). */
+  journalCoalesceMs?: number;
+  /** `Name <mail>` used for the journal commits (`--journal-author`). */
+  journalAuthor?: string;
+  /** Commit subject template (`--journal-subject`): `{count}`, `{op}`, `{app}` are substituted. */
+  journalSubject?: string;
   /** Injectable clock, so tests are deterministic (NFR-17). */
   now?: () => string;
 }
@@ -114,6 +131,12 @@ interface ResolvedOptions {
   quiet: boolean;
   appName: string;
   exportedBy: string;
+  journal: "auto" | "git" | "file" | "none";
+  journalDir: string | undefined;
+  journalRepo: string | undefined;
+  journalCoalesceMs: number | undefined;
+  journalAuthor: string | undefined;
+  journalSubject: string | undefined;
   now: (() => string) | undefined;
 }
 
@@ -132,6 +155,12 @@ function resolveOptions(options: ServerOptions): ResolvedOptions {
     quiet: options.quiet ?? false,
     appName: options.appName ?? SIDECAR_APP_NAME,
     exportedBy: options.exportedBy ?? SIDECAR_EXPORTED_BY,
+    journal: options.journal ?? "auto",
+    journalDir: options.journalDir,
+    journalRepo: options.journalRepo,
+    journalCoalesceMs: options.journalCoalesceMs,
+    journalAuthor: options.journalAuthor,
+    journalSubject: options.journalSubject,
     now: options.now,
   };
 }
@@ -436,14 +465,88 @@ function serveStatic(url: string, method: string, options: ResolvedOptions, resp
   });
 }
 
+/** The journal changes are flushed on a signal, so a `git` batch is not lost to a shutdown. */
+let activeJournal: Journal | null = null;
+
+/**
+ * The journal's one-line summary of a mutation: what happened, to which note, and how many notes the
+ * set holds now — the shape the presentation page's own server already used for its commits (FR-18).
+ */
+function describeMutation(state: NoteStoreState, event: MutationEvent | undefined): JournalRecord {
+  const op = event?.op ?? "update";
+  const removed = event?.removed;
+  const detail =
+    op === "bulk-delete" && removed !== undefined
+      ? `bulk-delete ${removed} note(s)`
+      : `${op}${event?.noteId === undefined ? "" : ` ${event.noteId}`}`;
+  return {
+    op,
+    ...(event?.noteId === undefined ? {} : { noteId: event.noteId }),
+    summary: `${detail} — ${state.notes.length} note(s) in the set`,
+  };
+}
+
+/** The path of the journal endpoint for a (normalised) base path. */
+function journalPathOf(base: string): string {
+  return base === "" ? "/journal" : `${base}/journal`;
+}
+
+/**
+ * `GET {base}/journal[?since=<seq>]` — the audit trail (FR-18).
+ *
+ * It lives in the glue and not in the pure handler: the journal is deployment infrastructure, and
+ * the handler stays free of `node:fs`. `since` makes the endpoint cheap for an agent that only wants
+ * what changed since its last round.
+ */
+function journalResponse(
+  method: string,
+  url: string,
+  journal: Journal,
+  options: ResolvedOptions,
+): GlueResponse {
+  if (method !== "GET") {
+    return glueError(405, "method_not_allowed", `${method} is not allowed on the journal — use GET`, options);
+  }
+  let since = 0;
+  const query = url.indexOf("?");
+  if (query !== -1) {
+    const raw = new URLSearchParams(url.slice(query + 1)).get("since");
+    if (raw !== null) {
+      const parsed = Number(raw);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        return glueError(400, "invalid_query", `since must be a non-negative integer (got ${JSON.stringify(raw)})`, options);
+      }
+      since = parsed;
+    }
+  }
+  const read = journal.read(since);
+  const status: JournalStatus = journal.status();
+  return {
+    status: 200,
+    headers: { "content-type": JSON_CONTENT_TYPE, ...corsHeaders(options.cors) },
+    body: JSON.stringify({
+      journal: status,
+      ...(read.issue === undefined ? {} : { issue: read.issue }),
+      entries: read.entries,
+    }),
+  };
+}
+
 async function respond(
   request: IncomingMessage,
   response: NodeResponse,
   options: ResolvedOptions,
   context: HandlerContext,
+  journal: Journal,
 ): Promise<void> {
   const url = request.url ?? "/";
   const method = (request.method ?? "GET").toUpperCase();
+
+  // The journal answers before the static/API split: it belongs to neither.
+  if (requestPath(url) === journalPathOf(options.base)) {
+    write(response, journalResponse(method, url, journal, options));
+    return;
+  }
 
   // Without `--root` the handler answers everything (and 404s for anything outside the API).
   if (options.root !== undefined && !isApiPath(url, context.base)) {
@@ -490,6 +593,21 @@ export interface RunningServer {
  */
 export async function startServer(options: ServerOptions): Promise<RunningServer> {
   const resolved = resolveOptions(options);
+  const journal = selectJournal({
+    backend: resolved.journal,
+    storePath: resolved.storePath,
+    ...(resolved.journalDir === undefined ? {} : { dir: resolved.journalDir }),
+    ...(resolved.journalRepo === undefined ? {} : { repo: resolved.journalRepo }),
+    ...(resolved.journalCoalesceMs === undefined ? {} : { coalesceMs: resolved.journalCoalesceMs }),
+    ...(resolved.journalAuthor === undefined ? {} : { author: resolved.journalAuthor }),
+    ...(resolved.journalSubject === undefined ? {} : { subjectTemplate: resolved.journalSubject }),
+    appName: resolved.appName,
+    paths: [resolved.storePath, ...(resolved.mirror === undefined ? [] : [resolved.mirror])],
+    onError: (message) => {
+      if (!resolved.quiet) process.stderr.write(`bluepencil server: ${oneLine(message)}\n`);
+    },
+  });
+  activeJournal = journal;
   const store = createFileStore({
     ...(resolved.mirror !== undefined ? { mirror: resolved.mirror } : {}),
     storePath: resolved.storePath,
@@ -510,11 +628,16 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     exportedBy: resolved.exportedBy,
     ...(resolved.cors !== undefined ? { cors: resolved.cors } : {}),
     ...(resolved.now !== undefined ? { now: resolved.now } : {}),
-    persist: (state) => store.persist(state),
+    persist: (state, event) => {
+      store.persist(state);
+      // The note is on disk at this point; a journal failure must never roll it back, so the journal
+      // reports its own problems and leaves the request alone (see `server/journal.ts`).
+      journal.record(describeMutation(state, event));
+    },
   };
 
   const server = createServer((request, response) => {
-    respond(request, response, resolved, context).catch((error: unknown) => {
+    respond(request, response, resolved, context, journal).catch((error: unknown) => {
       if (response.headersSent) {
         response.end();
         return;
@@ -599,6 +722,19 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
   const mirror = get("--mirror");
   const host = get("--host");
   const base = get("--base");
+  const journalRaw = get("--journal") ?? process.env.BLUEPENCIL_JOURNAL;
+  if (journalRaw !== undefined && !["auto", "git", "file", "none"].includes(journalRaw)) {
+    return `--journal must be one of auto, git, file, none (got ${JSON.stringify(journalRaw)})`;
+  }
+  const coalesceRaw = get("--journal-coalesce");
+  let journalCoalesceMs: number | undefined;
+  if (coalesceRaw !== undefined) {
+    const parsed = Number(coalesceRaw);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      return `--journal-coalesce must be a non-negative integer (got ${JSON.stringify(coalesceRaw)})`;
+    }
+    journalCoalesceMs = parsed;
+  }
   const cors = argv.some((arg) => arg === "--cors" || arg.startsWith("--cors="))
     ? (get("--cors") ?? "*")
     : undefined;
@@ -614,6 +750,12 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
     allowEnvMismatch: has("--allow-env-mismatch"),
     ...(mirror !== undefined ? { mirror } : {}),
     ...(cors !== undefined ? { cors } : {}),
+    ...(journalRaw !== undefined ? { journal: journalRaw as "auto" | "git" | "file" | "none" } : {}),
+    ...(get("--journal-dir") === undefined ? {} : { journalDir: get("--journal-dir") as string }),
+    ...(get("--journal-repo") === undefined ? {} : { journalRepo: get("--journal-repo") as string }),
+    ...(journalCoalesceMs === undefined ? {} : { journalCoalesceMs }),
+    ...(get("--journal-author") === undefined ? {} : { journalAuthor: get("--journal-author") as string }),
+    ...(get("--journal-subject") === undefined ? {} : { journalSubject: get("--journal-subject") as string }),
     quiet: has("--quiet"),
   };
 }
@@ -624,6 +766,8 @@ Usage:
   node dist/server.js --store notes.json [--port 8787] [--host 127.0.0.1]
     [--base /api/v1/bluepencil] [--root <static dir>] [--environment dev|staging|live]
     [--read-only] [--allow-env-mismatch] [--mirror notes.md] [--cors <origin|*>] [--quiet]
+    [--journal auto|git|file|none] [--journal-dir <dir>] [--journal-repo <dir>]
+    [--journal-coalesce <ms>] [--journal-author "Name <mail>"] [--journal-subject "<template>"]
 
 Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in http adapter):
   GET    {base}/health              { ok, status, version }
@@ -635,6 +779,8 @@ Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in h
   POST   {base}/notes/bulk-delete   { ids? , filter?, confirm: true }  → { removed }
   GET    {base}/sessions            → { sessions }
   GET    {base}/bundle              canonical bundle (src/data) — for agents/exports
+  GET    {base}/journal             history: { journal: {backend, location, entries, lastSeq},
+                                    entries } — optional ?since=<seq> for agents (FR-18)
 
 Rules: bulk-delete requires "confirm": true; an unknown id is 404; a malformed body is 400; a body
 that is not application/json is 415; a known path with the wrong method is 405; every error is
@@ -643,6 +789,12 @@ environment: a write that names another one is refused (400) unless --allow-env-
 it (FR-14.8). The store file is canonical bundle JSON, written atomically; a corrupt store file
 refuses the start (exit 2) instead of being served as an empty set. --root serves a static
 directory with an index.html fallback on the same origin. --cors is off by default.
+
+Journal (FR-18): the sidecar keeps a history of every accepted mutation. --journal auto (default)
+commits through the surrounding git work tree when there is one (staged paths, empty diffs skipped,
+batched over --journal-coalesce ms, default 2000) and otherwise appends to a hash-chained
+journal.jsonl next to the store; --journal none switches the history off. A journal failure never
+fails a request: it is reported once on stderr and stays visible in GET {base}/journal.
 
 Exit codes: 0 serving ended normally, 1 usage error, 2 the store file is not a valid note set.`;
 
@@ -664,6 +816,16 @@ async function main(argv: string[]): Promise<void> {
   if (typeof parsed === "string") {
     fail(parsed, 1);
   }
+  // A coalescing journal holds a batch back; a signal must not lose it.
+  const flushAndExit = (signal: string): void => {
+    activeJournal?.flush();
+    if (!argv.includes("--quiet")) {
+      process.stderr.write(`bluepencil server: ${signal} — journal flushed\n`);
+    }
+    process.exit(0);
+  };
+  process.once("SIGINT", () => flushAndExit("SIGINT"));
+  process.once("SIGTERM", () => flushAndExit("SIGTERM"));
   try {
     await startServer(parsed);
   } catch (error) {
