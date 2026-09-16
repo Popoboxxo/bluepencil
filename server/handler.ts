@@ -67,20 +67,13 @@ import {
 } from "../src/core/model";
 import { applyPatch, filterNotes, isRecord } from "../src/core/adapter";
 import { sortForReview } from "../src/core/protocol";
+import { VERSION } from "../src/version";
 import { canonicalNote } from "../src/data/canonical";
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { validateNote } from "../src/data/schema";
 
-/**
- * Build-time version stamp. esbuild (scripts/build.mjs) replaces `__BLUEPENCIL_VERSION__` with the
- * package version when it bundles `dist/server.js`; `typeof` keeps the module working (and TypeScript
- * happy) when it is imported directly from the sources, e.g. in the unit tests or via tsx.
- */
-declare const __BLUEPENCIL_VERSION__: string | undefined;
-
-/** Version reported by `GET {base}/health`; `"dev"` when the sources run without a build stamp. */
-export const SERVER_VERSION: string =
-  typeof __BLUEPENCIL_VERSION__ === "string" ? __BLUEPENCIL_VERSION__ : "dev";
+/** Version reported by `GET {base}/health` — the same string every other artifact reports (FR-19). */
+export const SERVER_VERSION: string = VERSION;
 
 /** Default base path — the documented default of the built-in `http` adapter (contract §3). */
 export const DEFAULT_BASE_PATH = "/api/v1/bluepencil";

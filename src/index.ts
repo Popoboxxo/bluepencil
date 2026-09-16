@@ -40,7 +40,7 @@ import { toJson } from "./core/export/json";
 import { toMarkdown } from "./core/export/markdown";
 import { createLayer, type LayerHandle, type LayerOptions } from "./ui/layer";
 
-export const VERSION = "0.1.0";
+export { VERSION } from "./version";
 
 export interface BlueprintConfig extends Omit<LayerOptions, "store"> {
   /** Adapter instance, built-in adapter name, or a factory that returns one. */

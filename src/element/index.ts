@@ -35,6 +35,7 @@ import {
   type GlobalResolver,
 } from "../embed/attributes";
 import { createBlueprint, type Blueprint, type BlueprintConfig } from "../index";
+import { VERSION } from "../version";
 
 const OBSERVED = ALL_ATTRIBUTES;
 
@@ -45,6 +46,9 @@ function globalScope(): unknown {
 
 export class BluepencilNotesElement extends HTMLElement {
   static readonly tagName = "bluepencil-notes";
+
+  /** The bluepencil build this element comes from (same string in every artifact, FR-19). */
+  static readonly version: string = VERSION;
 
   #blueprint: Blueprint | null = null;
   #unsubscribe: (() => void) | null = null;
@@ -59,6 +63,10 @@ export class BluepencilNotesElement extends HTMLElement {
     if (!blueprint) {
       this.#start();
       blueprint = this.#blueprint;
+    }
+    // Which build is on this page — readable in the DOM, which is where a host looks first.
+    if (this.getAttribute("data-bp-version") !== VERSION) {
+      this.setAttribute("data-bp-version", VERSION);
     }
     if (blueprint && this.getAttribute("enabled") !== "false") {
       const started = this.#guard("enable", () => blueprint.enable()) ?? false;
