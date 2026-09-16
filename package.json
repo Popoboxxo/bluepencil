@@ -48,6 +48,13 @@
       "types": "./dist/types/element/index.d.ts",
       "import": "./dist/bluepencil.element.js"
     },
+    "./attach": {
+      "types": "./dist/types/embed/attach.d.ts",
+      "import": "./dist/attach.esm.js"
+    },
+    "./server": {
+      "import": "./dist/server.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -66,11 +73,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "size": "node scripts/size-guard.mjs",
+    "serve": "node dist/server.js",
     "smoke:cli": "node scripts/cli-smoke.mjs",
     "smoke:mcp": "node scripts/mcp-smoke.mjs",
     "smoke:pack": "node scripts/pack-smoke.mjs",
+    "smoke:embed": "node scripts/embed-smoke.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
-    "verify": "npm run typecheck && npm run test && npm run build && npm run size && npm run smoke:pack"
+    "verify": "npm run typecheck && npm run test && npm run build && npm run size && npm run smoke:pack && npm run smoke:embed"
   },
   "dependencies": {},
   "devDependencies": {

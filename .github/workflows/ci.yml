@@ -1,13 +1,18 @@
 # Continuous integration (NFR-3, NFR-11, NFR-13).
 #
-# The pipeline mirrors what the local `npm run verify` does, plus the two smoke scripts that
-# exercise the headless surfaces with real processes:
+# The pipeline mirrors what the local `npm run verify` does, plus the smoke scripts that exercise
+# the headless and the embedded surfaces with real processes:
 #   - cli-smoke: exit codes, conflict refusal, environment isolation, atomic writes
 #   - mcp-smoke: JSON-RPC handshake, read-only default, environment binding, import fidelity
 #   - pack-smoke: every path of the exports map exists, imports and is published
+#   - embed-smoke: the sidecar HTTP contract, the element against a running API, and the attach
+#     loader in a real browser (the fixture website examples/attach plus a live version swap)
+#
+# Embed smoke leg 4 needs a Chrome/Chromium; the runner image ships one, and BP_REQUIRE_BROWSER=1
+# makes a missing browser a failure so the real-browser round cannot be skipped silently.
 #
 # A Playwright E2E suite against examples/vanilla is still outstanding (NFR-11); until it lands the
-# browser round is covered by the manual checklist in examples/vanilla/README.md.
+# browser round is covered by the embed smoke and the manual checklist in examples/vanilla/README.md.
 name: CI
 
 on:
@@ -50,6 +55,13 @@ jobs:
 
       - name: Packaging smoke
         run: npm run smoke:pack
+
+      - name: Embed smoke (sidecar + element + attach loader + fixture website)
+        env:
+          # The real-browser leg is the only one that runs the shipped attach.js as a script tag;
+          # fail instead of skipping when the runner has no browser.
+          BP_REQUIRE_BROWSER: "1"
+        run: npm run smoke:embed
 
       - name: Secret scan
         run: npm run secret-scan

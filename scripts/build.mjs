@@ -136,6 +136,32 @@ const jobs = [
     },
   },
   {
+    // FR-17: the attach loader — a classic script for hosts that must not build anything.
+    name: "attach",
+    options: {
+      ...shared,
+      entryPoints: [join(root, "src/embed/attach.ts")],
+      outfile: join(root, "dist/attach.js"),
+      format: "iife",
+      platform: "browser",
+      minify: true,
+      banner: { js: banner },
+    },
+  },
+  {
+    // The same loader for hosts that import it from a bundler.
+    name: "attach-esm",
+    options: {
+      ...shared,
+      entryPoints: [join(root, "src/embed/attach.ts")],
+      outfile: join(root, "dist/attach.esm.js"),
+      format: "esm",
+      platform: "browser",
+      minify: false,
+      banner: { js: banner },
+    },
+  },
+  {
     name: "cli",
     options: {
       ...shared,
@@ -154,6 +180,21 @@ const jobs = [
       ...shared,
       entryPoints: [join(root, "src/mcp/server.ts")],
       outfile: join(root, "dist/mcp.js"),
+      format: "esm",
+      platform: "node",
+      target: ["node20"],
+      minify: false,
+      banner: { js: banner },
+    },
+  },
+  {
+    // FR-17 §3: the sidecar store — one command, dependency-free, serves API + static files.
+    name: "server",
+    entry: join(root, "server/index.ts"),
+    options: {
+      ...shared,
+      entryPoints: [join(root, "server/index.ts")],
+      outfile: join(root, "dist/server.js"),
       format: "esm",
       platform: "node",
       target: ["node20"],
@@ -183,9 +224,19 @@ async function main() {
   await cleanDist();
   await mkdir(join(root, "dist"), { recursive: true });
 
+  // A job may declare an `entry` to be skipped while its source does not exist yet (the sidecar
+  // lives in server/ and is optional for a browser-only checkout) — never skip silently.
+  const runnable = jobs.filter((job) => {
+    if (!job.entry || existsSync(job.entry)) {
+      return true;
+    }
+    console.warn(`[build] ${job.name} skipped — ${job.entry} does not exist`);
+    return false;
+  });
+
   if (watch) {
     const { context } = await import("esbuild");
-    for (const job of jobs) {
+    for (const job of runnable) {
       const ctx = await context(job.options);
       await ctx.watch();
       console.log(`[build] watching ${job.name}`);
@@ -193,7 +244,7 @@ async function main() {
     return;
   }
 
-  for (const job of jobs) {
+  for (const job of runnable) {
     await build(job.options);
     console.log(`[build] ${job.name} ok`);
   }
