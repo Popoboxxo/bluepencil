@@ -78,8 +78,14 @@ equivalent (`data-*`). The loader mirrors every element attribute
 | `token-header` | `"Authorization"` | Header name for `token`. |
 | `token-scheme` | – | Prefixed scheme for `token` (e.g. `"Bearer"` → `Authorization: Bearer ***`). Default: none (verbatim). |
 | `route` | – | `"url"` → store `location.pathname + location.search` as the anchor route (SPA hosts). |
-| `route-from` | – | Global path to a function returning the route (router-aware hosts). Wins over `route`. |
+| `route-from` | – | Global path to a function returning the route (router-aware hosts). It is called as `fn(element)` with the annotated element, so the route belongs to *that* note; a zero-parameter host keeps working. Wins over `route`. |
 | `gate` | – | Global path to a function (or boolean) that decides whether the layer may exist; ANDed with `enabled != "false"`. Re-evaluated on every `enable()`. |
+
+A note's route comes from the element that was annotated, not from the scroll position: with
+`route-from` the host is asked as `fn(element)`. That is not a cosmetic detail — on a scroll-animated
+one-pager a `nav a.is-active` style hook was **measured** to lag a whole chapter behind, while a host
+that answers from the clicked element cannot. Zero-parameter hosts are unaffected, so existing
+integrations keep working.
 
 #### Loader keys (`data-*` attributes on the `<script>` tag)
 
