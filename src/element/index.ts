@@ -28,6 +28,7 @@ import {
   readAnnotateSelectors,
   readAttribute,
   readCanAnnotate,
+  readDock,
   readEnvironment,
   readGate,
   readHeaders,
@@ -214,6 +215,7 @@ export class BluepencilNotesElement extends HTMLElement {
     const annotatable = readCanAnnotate(this, resolve);
     const registered = readAnnotateSelectors(this);
     const keyboard = readKeymap(this);
+    const docking = readDock(this);
     this.#collect([
       ...headers.issues,
       ...theme.issues,
@@ -224,6 +226,7 @@ export class BluepencilNotesElement extends HTMLElement {
       ...annotatable.issues,
       ...registered.issues,
       ...keyboard.issues,
+      ...docking.issues,
     ]);
 
     const mountAttr = readAttribute(this, "mount");
@@ -254,6 +257,7 @@ export class BluepencilNotesElement extends HTMLElement {
       ...(annotatable.canAnnotate === undefined ? {} : { canAnnotate: annotatable.canAnnotate }),
       ...(registered.annotateSelectors === undefined ? {} : { annotateSelectors: registered.annotateSelectors }),
       ...(keyboard.keymap === undefined ? {} : { keymap: keyboard.keymap }),
+      ...(docking.dock === undefined ? {} : { dock: docking.dock }),
       ...(mountTarget ? { mount: mountTarget } : {}),
       onError: (error: unknown) => this.dispatchEvent(new CustomEvent("bp-error", { detail: error })),
     };

@@ -63,20 +63,14 @@ export interface LayerOptions {
   theme?: Record<string, string>;
   anchorHooks?: string[];
   canAnnotate?: (el: Element) => boolean;
-  /**
-   * Registered target selectors (FR-1.12, issue #3): a host that brings its own component vocabulary
-   * lists selectors here. The nearest match in the click path becomes the annotation target — the
-   * card itself, not the heading inside it — in text *and* design mode. Invalid selectors are
-   * reported once by `readAnnotateSelectors` (element path) and ignored here.
-   */
+  /** Registered target selectors (FR-1.12): the nearest match in the click path becomes the target. */
   annotateSelectors?: readonly string[];
-  /**
-   * Shortcut overrides (FR-12.11): `{ bar: "g", panel: ["l", "p"] }`. Conflicts, unknown ids and
-   * keys that cannot be remapped are reported — the legend always shows the effective keymap.
-   */
+  /** Shortcut overrides (FR-12.11); conflicts and non-remappable keys are reported (FR-12.11). */
   keymap?: KeymapOverrides;
   /** Initial chrome level (FR-12.9); the user's choice is persisted on top of it. */
   chrome?: ChromeLevel;
+  /** The edge the strip and its handle dock to (FR-12.13); the mode hint takes the opposite edge. */
+  dock?: "top" | "bottom";
   getRoute?: (element?: Element) => string;
   identity?: { getUser?: () => { id?: string; name: string } } | "prompt" | "anonymous";
   markerStrategy?: "overlay" | "sibling";
@@ -111,11 +105,13 @@ export interface LayerHandle {
 type Mode = "off" | "text" | "design";
 
 /**
- * How much chrome the layer shows (FR-12.9): `full` = bar + handle, `quiet` = handle only, `off` =
- * neither. Deliberately *not* `disable()`: the annotations and their markers stay, only the layer's
- * own controls go — `disable()` is what removes every node (NFR-15).
+ * How much chrome the layer shows: `full` = bar + handle, `quiet` = handle only, `off` = neither.
+ * Not `disable()`: annotations stay, only the layer's own controls go (NFR-15 keeps that meaning).
  */
 export type ChromeLevel = "full" | "quiet" | "off";
+
+/** Below this width the strip yields to its handle on its own (FR-12.13). */
+const NARROW_WIDTH = 720;
 
 /* -------------------------------------------------------------------------- */
 /* style node registry — one <style> per document, removed with the last layer */
@@ -299,6 +295,12 @@ export function createLayer(options: LayerOptions): LayerHandle {
    * explicit change at runtime wins over it (then it is gone).
    */
   let chromeOverride = chromeFromUrl(view);
+  /**
+   * True while the viewport is too narrow for a strip (FR-12.13). A viewport fact, not a preference:
+   * it is never persisted, and it yields to an explicit `setChrome()` on a wide screen.
+   */
+  let narrow =
+    view !== undefined && typeof view.innerWidth === "number" && view.innerWidth > 0 && view.innerWidth <= NARROW_WIDTH;
   const settings: LayerSettings = {
     ...DEFAULT_SETTINGS,
     showDone: options.defaultShowDone ?? false,
@@ -501,6 +503,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     bar.className = "bp-bar";
     bar.id = `bp-${instanceId}-bar`;
     bar.setAttribute("data-bp-part", "bar");
+    bar.setAttribute("data-bp-slot", "top-end");
     bar.setAttribute("role", "toolbar");
     bar.setAttribute("data-bp-i18n-aria", "a11y.barLabel");
 
@@ -561,6 +564,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     handle.className = "bp-handle";
     handle.id = `bp-${instanceId}-handle`;
     handle.setAttribute("data-bp-part", "handle");
+    handle.setAttribute("data-bp-slot", "top-end");
     handle.setAttribute("data-bp-action", "expand");
     handle.setAttribute("data-bp-i18n-aria", "a11y.handleLabel");
     handleCount = doc.createElement("span");
@@ -575,6 +579,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     modeHint.className = "bp-mode-hint";
     modeHint.id = `bp-${instanceId}-mode-hint`;
     modeHint.setAttribute("data-bp-part", "mode-hint");
+    modeHint.setAttribute("data-bp-slot", "bottom-center");
     modeHintText = doc.createElement("span");
     modeHintText.setAttribute("data-bp-part", "mode-hint-text");
     modeHintText.setAttribute("data-bp-i18n", "mode.text.hint");
@@ -803,8 +808,10 @@ export function createLayer(options: LayerOptions): LayerHandle {
     root.setAttribute("data-bp-mode", mode);
     root.setAttribute("data-bp-instance", instanceId);
     // Chrome level (FR-12.9): full keeps the bar/handle pair as before, quiet leaves only the
-    // handle, off leaves the annotations without any chrome of their own.
-    const level = chromeOverride ?? settings.chromeLevel;
+    // handle, off leaves the annotations without any chrome of their own. A narrow viewport behaves
+    // as `quiet` on its own (FR-12.13) without touching the stored preference.
+    const level = chromeOverride ?? (narrow && settings.chromeLevel === "full" ? "quiet" : settings.chromeLevel);
+    root.setAttribute("data-bp-dock", options.dock === "bottom" ? "bottom" : "top");
     if (bar) bar.hidden = settings.barCollapsed || level !== "full";
     if (handle) handle.hidden = level === "off" || (level === "full" && !settings.barCollapsed);
     if (barCollapseButton) {
@@ -841,6 +848,19 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
   function announce(key: MessageKey): void {
     if (liveRegion) liveRegion.textContent = t(key);
+  }
+
+  /**
+   * The viewport crossed (or left) the narrow range (FR-12.13). Below `NARROW_WIDTH` the strip yields
+   * to its handle on its own; above it the stored preference applies again. Never persisted — this is
+   * a fact about the viewport, not a choice.
+   */
+  function onViewportResize(): void {
+    if (view === undefined || typeof view.innerWidth !== "number") return;
+    const next = view.innerWidth > 0 && view.innerWidth <= NARROW_WIDTH;
+    if (next === narrow) return;
+    narrow = next;
+    applyUiState();
   }
 
   /**
@@ -1527,6 +1547,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
   function onResize(): void {
     positionMarkers();
+    onViewportResize();
   }
 
   /* -- anchoring a new note (FR-1.3/1.4/1.5/2.2) -------------------------- */
