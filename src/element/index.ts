@@ -24,6 +24,7 @@ import type { Note } from "../core/model";
 import { createHttpAdapter } from "../adapters/http";
 import {
   ALL_ATTRIBUTES,
+  readAnchorHooks,
   readAttribute,
   readEnvironment,
   readGate,
@@ -206,7 +207,15 @@ export class BluepencilNotesElement extends HTMLElement {
     const env = readEnvironment(this);
     const route = readRoute(this, resolve, locationOrUndefined());
     const gate = readGate(this, resolve);
-    this.#collect([...headers.issues, ...theme.issues, ...env.issues, ...route.issues, ...gate.issues]);
+    const hooks = readAnchorHooks(this);
+    this.#collect([
+      ...headers.issues,
+      ...theme.issues,
+      ...env.issues,
+      ...route.issues,
+      ...gate.issues,
+      ...hooks.issues,
+    ]);
 
     const mountAttr = readAttribute(this, "mount");
     const root = this.getRootNode() as Document | ShadowRoot;
@@ -232,6 +241,7 @@ export class BluepencilNotesElement extends HTMLElement {
       ...(env.sessionRef === undefined ? {} : { sessionRef: env.sessionRef }),
       ...(env.environment === undefined ? {} : { environment: env.environment }),
       ...(route.getRoute === undefined ? {} : { getRoute: route.getRoute }),
+      ...(hooks.hooks === undefined ? {} : { anchorHooks: hooks.hooks }),
       ...(mountTarget ? { mount: mountTarget } : {}),
       onError: (error: unknown) => this.dispatchEvent(new CustomEvent("bp-error", { detail: error })),
     };

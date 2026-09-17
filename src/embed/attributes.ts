@@ -41,6 +41,7 @@ export const EMBED_ATTRIBUTES = [
   "route",
   "route-from",
   "gate",
+  "anchor-hooks",
 ] as const;
 
 /** Every attribute the element observes and documents. */
@@ -205,6 +206,32 @@ export function readTheme(source: AttributeSource): { theme: Record<string, stri
   if (accent !== undefined) theme.accent = accent;
   if (surface !== undefined) theme.surface = surface;
   return { theme, issues };
+}
+
+/**
+ * `anchor-hooks="data-testid,id"` — the attribute names `deriveAnchor` may use as the primary anchor.
+ *
+ * A host whose markup carries stable hooks can anchor on those instead of on a CSS path: a
+ * `data-testid` survives refactoring, while `h2.reveal.is-in` (or any class-styled element) does not.
+ * Hosts that put test hooks on every interactive element get this for one attribute.
+ */
+export function readAnchorHooks(source: AttributeSource): { hooks?: string[]; issues: string[] } {
+  const issues: string[] = [];
+  const raw = readAttribute(source, "anchor-hooks");
+  if (raw === undefined) {
+    return { issues };
+  }
+  const hooks = raw
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name !== "");
+  if (hooks.length === 0) {
+    issues.push(
+      'anchor-hooks is empty — expected a comma-separated list of attribute names (e.g. "data-testid,id")',
+    );
+    return { issues };
+  }
+  return { hooks, issues };
 }
 
 /**
