@@ -57,6 +57,12 @@ export interface JournalStatus {
   lastSeq: number;
   /** Set when a write failed — the journal keeps serving, but an operator must see this. */
   issue?: string;
+  /**
+   * Which identity the commits carry (`git` backend): `Name <mail>`, or a note when it is left to the
+   * repository. An unexpected author in `git log` is the classic "who wrote that?" moment, so the
+   * answer belongs in the status, not only in the log.
+   */
+  author?: string;
 }
 
 export interface Journal {
@@ -70,6 +76,16 @@ export interface Journal {
   /** Verifies the medium: chain intact (file) / history readable (git). */
   verify(): { ok: boolean; entries: number; issue?: string };
   status(): JournalStatus;
+}
+
+/** Environment fallbacks for the git identity: a deployment pins them once instead of repeating flags. */
+export const JOURNAL_AUTHOR_ENV = "BLUEPENCIL_JOURNAL_AUTHOR";
+export const JOURNAL_SUBJECT_ENV = "BLUEPENCIL_JOURNAL_SUBJECT";
+
+/** Trimmed environment value; `undefined` when unset or blank (`…=""` is not an identity). */
+function envValue(name: string): string | undefined {
+  const value = process.env[name];
+  return value === undefined || value.trim() === "" ? undefined : value.trim();
 }
 
 export interface JournalOptions {
@@ -319,12 +335,14 @@ class GitJournal implements Journal {
     this.#paths = paths;
     this.#run = options.run ?? defaultRun;
     this.#coalesceMs = options.coalesceMs ?? DEFAULT_COALESCE_MS;
-    this.#subject = options.subjectTemplate ?? DEFAULT_SUBJECT;
+    // Flags win, then the environment: a deployment pins the identity once instead of repeating flags
+    // in every start script. Blank values count as "not set".
+    this.#subject = options.subjectTemplate ?? envValue(JOURNAL_SUBJECT_ENV) ?? DEFAULT_SUBJECT;
     this.#appName = options.appName ?? "bluepencil";
     this.#setTimeout = options.setTimeoutImpl ?? ((fn, ms) => setTimeout(fn, ms) as unknown as number);
     this.#clearTimeout = options.clearTimeoutImpl ?? ((handle) => clearTimeout(handle as unknown as ReturnType<typeof setTimeout>));
     this.#onError = options.onError ?? (() => undefined);
-    this.#author = parseAuthor(options.author);
+    this.#author = parseAuthor(options.author ?? envValue(JOURNAL_AUTHOR_ENV));
   }
 
   record(record: JournalRecord): void {
@@ -426,6 +444,11 @@ class GitJournal implements Journal {
       location: this.#repo,
       entries: this.#entries,
       lastSeq: this.#lastSeq,
+      // Visible here instead of only in `git log`: the first question about an unexpected commit.
+      author:
+        this.#author === undefined
+          ? "(the repository's configured identity)"
+          : `${this.#author.name} <${this.#author.email}>`,
       ...(this.#issue === undefined ? {} : { issue: this.#issue }),
     };
   }

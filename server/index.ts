@@ -768,6 +768,9 @@ Usage:
     [--read-only] [--allow-env-mismatch] [--mirror notes.md] [--cors <origin|*>] [--quiet]
     [--journal auto|git|file|none] [--journal-dir <dir>] [--journal-repo <dir>]
     [--journal-coalesce <ms>] [--journal-author "Name <mail>"] [--journal-subject "<template>"]
+      env: BLUEPENCIL_JOURNAL (backend), BLUEPENCIL_JOURNAL_AUTHOR, BLUEPENCIL_JOURNAL_SUBJECT
+      a flag wins over the env; without an author the commits carry the repository's identity,
+      and the journal status reports which identity is in use
 
 Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in http adapter):
   GET    {base}/health              { ok, status, version }

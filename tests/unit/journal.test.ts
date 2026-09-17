@@ -167,6 +167,51 @@ describe("journal — git backend", () => {
     expect(show.stdout).toContain("store.json");
   });
 
+  it("takes the commit identity from the environment when no option is given", () => {
+    initRepo(dir);
+    const storePath = join(dir, "store.json");
+    const saved = process.env.BLUEPENCIL_JOURNAL_AUTHOR;
+    process.env.BLUEPENCIL_JOURNAL_AUTHOR = "hermes <hermes@duchrow.local>";
+    try {
+      const journal = selectJournal({ ...options(), backend: "git", storePath, coalesceMs: 0 });
+      // Which identity is in use is visible in the status, not only in the log.
+      expect(journal.status().author).toBe("hermes <hermes@duchrow.local>");
+
+      writeFileSync(storePath, "{\"notes\":[{\"id\":\"n-1\"}]}\n", "utf8");
+      journal.record({ op: "create", noteId: "n-1", summary: "create n-1" });
+      journal.flush();
+      // Identity from the environment, subject from the default template — both land in the commit.
+      expect(gitLog(dir)[0]).toBe("chore(notes): 1 change(s) in bluepencil|hermes|hermes@duchrow.local");
+    } finally {
+      if (saved === undefined) delete process.env.BLUEPENCIL_JOURNAL_AUTHOR;
+      else process.env.BLUEPENCIL_JOURNAL_AUTHOR = saved;
+    }
+  });
+
+  it("lets the flag win over the environment and names the inherited identity", () => {
+    initRepo(dir);
+    const storePath = join(dir, "store.json");
+    const saved = process.env.BLUEPENCIL_JOURNAL_AUTHOR;
+    process.env.BLUEPENCIL_JOURNAL_AUTHOR = "hermes <hermes@duchrow.local>";
+    try {
+      const flagged = selectJournal({
+        ...options(),
+        backend: "git",
+        storePath,
+        coalesceMs: 0,
+        author: "Flag Wins <flag@example.invalid>",
+      });
+      expect(flagged.status().author).toBe("Flag Wins <flag@example.invalid>");
+    } finally {
+      if (saved === undefined) delete process.env.BLUEPENCIL_JOURNAL_AUTHOR;
+      else process.env.BLUEPENCIL_JOURNAL_AUTHOR = saved;
+    }
+
+    // Neither flag nor env: the repository decides, and the status says exactly that instead of guessing.
+    const inherited = selectJournal({ ...options(), backend: "git", storePath, coalesceMs: 0 });
+    expect(inherited.status().author).toBe("(the repository's configured identity)");
+  });
+
   it("waits for the coalescing window before it commits", () => {
     initRepo(dir);
     const storePath = join(dir, "store.json");

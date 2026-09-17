@@ -338,6 +338,25 @@ deployment decision:
 * the coalescing window belongs to the sidecar, not to a user: two reviewers clicking inside the same
   window produce **one** commit, and the journal keeps both mutations behind it.
 
+**Whose name is on the commit:** without configuration the commits carry **the identity of the
+repository** the work tree uses — on a shared host that is often not the identity you want, and the
+result is a history that nobody recognizes as their own. Set it once per deployment:
+
+```bash
+# the flag wins over the environment
+node dist/server.js --store notes.json --journal git \
+  --journal-author "hermes <hermes@duchrow.local>"
+
+# or pinned in the unit's environment (start script, systemd unit, compose file)
+BLUEPENCIL_JOURNAL_AUTHOR="hermes <hermes@duchrow.local>" \
+BLUEPENCIL_JOURNAL_SUBJECT="chore(notes): {count} change(s) in {app}" \
+  node dist/server.js --store notes.json --journal git
+```
+
+Author **and** committer are set, so `git log` shows one identity instead of two. Which identity is in
+use is reported by `GET {base}/journal` (`journal.author`) — no guessing and no reading it out of the
+log afterwards.
+
 ### Which version is running (FR-19)
 
 `package.json` is the single source. esbuild stamps it into every bundle, so the same string answers
