@@ -18,11 +18,13 @@ import {
   ALL_ATTRIBUTES,
   collectDataAttributes,
   parseLoaderOptions,
+  readAnnotateSelectors,
   readAttribute,
   readCanAnnotate,
   readEnvironment,
   readGate,
   readHeaders,
+  readKeymap,
   readJsonAttribute,
   readRoute,
   readStore,
@@ -496,6 +498,83 @@ describe("identity and can-annotate as host paths", () => {
       accepted.remove();
     } finally {
       delete (globalThis as { hostApp?: unknown }).hostApp;
+    }
+  });
+
+  it("reads a keymap from markup and reports what it cannot honour (FR-12.11)", () => {
+    expect(ALL_ATTRIBUTES).toContain("keymap");
+
+    const read = readKeymap(source({ keymap: "bar=g, panel=p" }));
+    expect(read.keymap).toEqual({ bar: ["g"], panel: ["p"] });
+    expect(read.issues).toEqual([]);
+
+    expect(readKeymap(source({ keymap: "bar" })).issues[0]).toContain('keymap "bar" is missing a key');
+    expect(readKeymap(source({ keymap: "bar=l" })).issues[0]).toContain('"bar" and "panel" both claim "l"');
+    expect(readKeymap(source({ keymap: "nope=x" })).issues[0]).toContain('unknown shortcut "nope"');
+    expect(readKeymap(source({})).keymap).toBeUndefined();
+  });
+
+  it("reaches the layer through the element: a remapped key acts (FR-12.11)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
+    const element = mount({ adapter: "memory", keymap: "bar=g" });
+    try {
+      expect(element.issues).toEqual([]);
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+      const bar = document.querySelector('[data-bp-part="bar"]') as HTMLElement | null;
+      expect(bar?.hidden).toBe(false);
+
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "g", bubbles: true }));
+      expect(bar?.hidden).toBe(true);
+    } finally {
+      element.destroy();
+      element.remove();
+    }
+  });
+
+  it("reads annotate-selectors and reports a selector the DOM refuses", () => {
+    expect(ALL_ATTRIBUTES).toContain("annotate-selectors");
+
+    const read = readAnnotateSelectors(source({ "annotate-selectors": ".card, .tile" }));
+    expect(read.annotateSelectors).toEqual([".card", ".tile"]);
+    expect(read.issues).toEqual([]);
+
+    // One bad entry does not cost the good ones — and the host hears about it up front.
+    const partial = readAnnotateSelectors(source({ "annotate-selectors": ".card, >>nope" }));
+    expect(partial.annotateSelectors).toEqual([".card"]);
+    expect(partial.issues[0]).toContain('annotate-selectors ">>nope" is not a valid CSS selector');
+
+    expect(readAnnotateSelectors(source({})).annotateSelectors).toBeUndefined();
+  });
+
+  it("reaches the layer through the element: the registered card becomes the anchor (FR-1.12)", async () => {
+    document.body.innerHTML = `
+      <main id="host">
+        <article class="card" data-bluepencil="card-1"><h3 class="card-title">Umsatz 42</h3></article>
+      </main>`;
+    const element = mount({ adapter: "memory", "annotate-selectors": ".card" });
+    try {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+      const title = document.querySelector(".card-title");
+      if (title === null) throw new Error("fixture missing");
+      title.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+
+      const textarea = document.querySelector('[data-bp-part="composer"] textarea') as HTMLTextAreaElement | null;
+      if (textarea === null) throw new Error("composer did not open");
+      textarea.value = "Karte prüfen";
+      document
+        .querySelector('[data-bp-part="composer"] [data-bp-action="composer-save"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const notes = element.blueprint?.store.notes() ?? [];
+      expect(notes).toHaveLength(1);
+      const note = notes[0];
+      if (note === undefined) throw new Error("note was not stored");
+      expect(JSON.stringify(note.anchor)).toContain("card");
+      expect(JSON.stringify(note.anchor)).not.toContain("h3");
+    } finally {
+      element.destroy();
+      element.remove();
     }
   });
 

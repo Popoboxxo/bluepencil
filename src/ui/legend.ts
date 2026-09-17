@@ -7,61 +7,18 @@
  * every `open()`, so a language switch is picked up without rebuilding the layer.
  */
 
-import type { MessageKey } from "../i18n/en";
 import { applyTranslations, type Translate } from "../i18n";
+import { legendGroups, type KeymapOverrides, type LegendGroup, type LegendRow } from "./keymap";
 
-/**
- * One shortcut row. `keys` are *keyboard identifiers* (not copy) and therefore are not
- * translated — they read the same on a German keyboard.
- */
-export interface LegendRow {
-  readonly keys: readonly string[];
-  readonly label: MessageKey;
-}
-
-export interface LegendGroup {
-  readonly title: MessageKey;
-  readonly rows: readonly LegendRow[];
-}
-
-/** All shortcuts the layer implements, grouped for the overlay (FR-1.7). */
-export const LEGEND_GROUPS: readonly LegendGroup[] = Object.freeze([
-  {
-    title: "legend.group.capture",
-    rows: [
-      { keys: ["C"], label: "legend.key.text" },
-      { keys: ["D"], label: "legend.key.design" },
-    ],
-  },
-  {
-    title: "legend.group.view",
-    rows: [
-      { keys: ["L"], label: "legend.key.panel" },
-      { keys: ["F"], label: "legend.key.feedbackOnly" },
-      { keys: ["B"], label: "legend.key.bar" },
-      { keys: ["?"], label: "legend.key.legend" },
-      { keys: ["Esc"], label: "legend.key.cancel" },
-    ],
-  },
-  {
-    title: "legend.group.navigate",
-    rows: [
-      { keys: ["J"], label: "legend.key.next" },
-      { keys: ["K"], label: "legend.key.previous" },
-      { keys: ["1…9"], label: "legend.key.jump" },
-    ],
-  },
-  {
-    title: "legend.group.edit",
-    rows: [{ keys: ["Ctrl/⌘", "Enter"], label: "legend.key.save" }],
-  },
-]);
+export type { LegendGroup, LegendRow };
 
 export interface LegendOptions {
   document: Document;
   t: Translate;
   /** Instance namespace for element ids (`bp-<instanceId>-legend`). */
   instanceId: string;
+  /** Shortcut overrides — the legend shows the *effective* keys (FR-1.11). */
+  keymap?: KeymapOverrides;
   /** Called after the overlay closed (used to return focus, FR-11.2). */
   onClose?: () => void;
 }
@@ -120,7 +77,7 @@ export function createLegend(options: LegendOptions): Legend {
   /** Build the grouped shortcut rows from the static table above. */
   function render(): void {
     body.textContent = "";
-    for (const group of LEGEND_GROUPS) {
+    for (const group of legendGroups(options.keymap)) {
       const groupElement = doc.createElement("section");
       groupElement.className = "bp-legend-group";
       groupElement.setAttribute("data-bp-part", "legend-group");
