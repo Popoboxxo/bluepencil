@@ -14,6 +14,7 @@
  *   (`myApp.flags.reviewNotes`); an unresolvable path is reported, never silently ignored.
  */
 import { isEnvironment, type Environment } from "../core/model";
+import { resolveKeymap, type KeymapOverrides } from "../ui/keymap";
 
 /** Attributes that existed before FR-17 — kept unchanged for existing hosts. */
 export const CORE_ATTRIBUTES = [
@@ -43,6 +44,8 @@ export const EMBED_ATTRIBUTES = [
   "gate",
   "anchor-hooks",
   "can-annotate",
+  "annotate-selectors",
+  "keymap",
 ] as const;
 
 /** Every attribute the element observes and documents. */
@@ -238,6 +241,75 @@ export function readCanAnnotate(
   }
   issues.push(`can-annotate "${path}" does not resolve to a function`);
   return { issues };
+}
+
+/**
+ * `annotate-selectors=".card, .tile, figure.map"` — the host's own target vocabulary (FR-1.12,
+ * issue #3). The nearest match in the click path becomes the annotation target in text *and* design
+ * mode, so the anchor is the component and not the text node inside it. A selector the DOM rejects is
+ * reported once through `element.issues` instead of failing silently at click time.
+ */
+export function readAnnotateSelectors(source: AttributeSource): {
+  annotateSelectors?: readonly string[];
+  issues: string[];
+} {
+  const issues: string[] = [];
+  const raw = readAttribute(source, "annotate-selectors");
+  if (raw === undefined) return { issues };
+
+  const selectors: string[] = [];
+  for (const candidate of raw.split(",")) {
+    const selector = candidate.trim();
+    if (selector === "") continue;
+    if (!isValidSelector(selector)) {
+      issues.push(`annotate-selectors "${selector}" is not a valid CSS selector`);
+      continue;
+    }
+    selectors.push(selector);
+  }
+  if (selectors.length === 0) return { issues };
+  return { annotateSelectors: Object.freeze(selectors), issues };
+}
+
+/** Ask the DOM's own parser rather than guessing at a selector's grammar. */
+function isValidSelector(selector: string): boolean {
+  try {
+    document.createDocumentFragment().querySelectorAll(selector);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `keymap="bar=g, panel=p"` — remap the layer's shortcuts from markup (FR-12.11).
+ *
+ * A shortcut is never lost silently: an unknown id, a missing key, a key claimed twice or a key that
+ * cannot be remapped (the `1…9` range, the composer-scoped save) is reported through `element.issues`.
+ * The legend then shows the effective keys, because it renders from the same registry.
+ */
+export function readKeymap(source: AttributeSource): { keymap?: KeymapOverrides; issues: string[] } {
+  const raw = readAttribute(source, "keymap");
+  if (raw === undefined) return { issues: [] };
+
+  const overrides: Record<string, string[]> = {};
+  const issues: string[] = [];
+  for (const entry of raw.split(",")) {
+    const trimmed = entry.trim();
+    if (trimmed === "") continue;
+    const separator = trimmed.indexOf("=");
+    const id = (separator === -1 ? trimmed : trimmed.slice(0, separator)).trim();
+    const key = separator === -1 ? "" : trimmed.slice(separator + 1).trim();
+    if (key === "") {
+      issues.push(`keymap "${trimmed}" is missing a key (expected shortcut=key)`);
+      continue;
+    }
+    const bucket = overrides[id];
+    if (bucket === undefined) overrides[id] = [key];
+    else bucket.push(key);
+  }
+  if (Object.keys(overrides).length === 0) return { issues };
+  return { keymap: overrides, issues: [...issues, ...resolveKeymap(overrides).issues] };
 }
 
 /**

@@ -24,6 +24,8 @@
 | FR-1.8 | The layer never changes the host layout (no reflow, no shifted elements) | P0 | M1 | P | Host content boxes identical with layer on/off (measured) |
 | FR-1.9 | Printing and host exports exclude the layer | P0 | M1 | P | `@media print` hides bar, handle, panel, composer, settings, markers |
 | FR-1.10 | Annotating works inside dialogs, drawers and overlays of the host | P1 | M2 | G | Note can be created on an element inside a modal |
+| FR-1.11 | **One shortcut registry**: shortcuts are registered once and the legend is generated from that registry — a divergence between help text and handler is a test failure | P0 | M2 | P | A remapped key updates the legend; a test walks every registered key and fails if the handler ignores it; the `0–6`-vs-nine-chapters bug cannot recur |
+| FR-1.12 | **Extensible target resolution**: a host registers selectors (or a resolver function) for text and design annotation, and a component the layer does not know is still an annotatable block instead of silently inert | P0 | M2 | P | `annotate-selectors=".card, .tile"` makes the nearest match the anchor in both modes; `can-annotate` lets the host veto per element; a component whose text lives in children opens the composer; links inside stay operable |
 
 ## FR-2 Anchoring
 
@@ -148,6 +150,7 @@
 | FR-12.6 | **No host interference**: listeners work in the capture phase and never call `stopPropagation()` unless an annotation mode is active; interactive elements (`a[href]`, form fields, `[data-bp-ignore]`) are passed through even then; original behaviour is restored on teardown | P0 | M1 | N | Host's own click handlers fire normally with the layer enabled but idle; links and fields stay operable while a mode is active (FR-2.7) |
 | FR-12.7 | **Documented host variety**: worked examples for at least a static page, a framework SPA, a micro-frontend/web-component host and a Home Assistant custom card | P1 | M3 | N | Each example in `examples/` runs and is covered by an E2E smoke test |
 | FR-12.8 | **Config-driven identity** (D3): `identity` accepts a hook, `"prompt"` or `"anonymous"`; unset falls back to `"prompt"` | P0 | M1 | N | All three modes verified in the fixture app |
+| FR-12.11 | **Configurable keymap**: shortcuts are overridable, conflicts are detectable, and host shortcuts are only overridden while the layer owns the keyboard | P0 | M2 | P | `keymap="bar=g"` remaps and the legend follows; a conflict is reported through `element.issues` instead of last-one-wins; typing in a host field never triggers layer shortcuts |
 
 ## FR-13 Developer systems: read *and* write during debugging
 

@@ -25,11 +25,13 @@ import { createHttpAdapter } from "../adapters/http";
 import {
   ALL_ATTRIBUTES,
   readAnchorHooks,
+  readAnnotateSelectors,
   readAttribute,
   readCanAnnotate,
   readEnvironment,
   readGate,
   readHeaders,
+  readKeymap,
   readRoute,
   readStore,
   readTheme,
@@ -210,6 +212,8 @@ export class BluepencilNotesElement extends HTMLElement {
     const gate = readGate(this, resolve);
     const hooks = readAnchorHooks(this);
     const annotatable = readCanAnnotate(this, resolve);
+    const registered = readAnnotateSelectors(this);
+    const keyboard = readKeymap(this);
     this.#collect([
       ...headers.issues,
       ...theme.issues,
@@ -218,6 +222,8 @@ export class BluepencilNotesElement extends HTMLElement {
       ...gate.issues,
       ...hooks.issues,
       ...annotatable.issues,
+      ...registered.issues,
+      ...keyboard.issues,
     ]);
 
     const mountAttr = readAttribute(this, "mount");
@@ -246,6 +252,8 @@ export class BluepencilNotesElement extends HTMLElement {
       ...(route.getRoute === undefined ? {} : { getRoute: route.getRoute }),
       ...(hooks.hooks === undefined ? {} : { anchorHooks: hooks.hooks }),
       ...(annotatable.canAnnotate === undefined ? {} : { canAnnotate: annotatable.canAnnotate }),
+      ...(registered.annotateSelectors === undefined ? {} : { annotateSelectors: registered.annotateSelectors }),
+      ...(keyboard.keymap === undefined ? {} : { keymap: keyboard.keymap }),
       ...(mountTarget ? { mount: mountTarget } : {}),
       onError: (error: unknown) => this.dispatchEvent(new CustomEvent("bp-error", { detail: error })),
     };

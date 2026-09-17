@@ -19,6 +19,7 @@ import { en } from "../../src/i18n/en";
 import type { MessageKey } from "../../src/i18n/en";
 import { applyTranslations, createTranslator, translate, type Messages } from "../../src/i18n";
 import { createLayer, type LayerHandle, type LayerOptions } from "../../src/ui/layer";
+import { SHORTCUTS, legendGroups } from "../../src/ui/keymap";
 import { noteCounters } from "../../src/ui/panel";
 import { STYLES } from "../../src/ui/styles";
 
@@ -143,9 +144,16 @@ function installStorage(): { storage: Storage; restore(): void } {
   };
 }
 
+/**
+ * Handles created by `startLayer`. A failing assertion must not leak a live layer — and with it a
+ * document-level key listener — into the next test, which would fail for the wrong reason.
+ */
+const liveHandles: LayerHandle[] = [];
+
 function startLayer(store: Store, extra: Partial<LayerOptions> = {}): LayerHandle {
   const handle = createLayer({ store, document, ...extra });
   handle.enable();
+  liveHandles.push(handle);
   return handle;
 }
 
@@ -280,6 +288,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  for (const handle of liveHandles.splice(0)) {
+    try {
+      handle.disable();
+    } catch {
+      // Teardown must not mask the assertion that just failed.
+    }
+  }
   delete (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
   document.body.innerHTML = "";
 });
@@ -490,6 +505,164 @@ describe("capture UI", () => {
     if (paragraph === null) throw new Error("fixture missing");
     click(paragraph);
     expect(composer().hidden).toBe(false);
+
+    handle.disable();
+  });
+
+  it("uses a registered selector as the target, so the component is the anchor (FR-1.12, issue #3)", async () => {
+    document.body.innerHTML = `
+      <main id="host">
+        <article class="card" data-bluepencil="card-1">
+          <h3 class="card-title">Umsatz 42</h3>
+        </article>
+      </main>`;
+    const store = makeStore();
+    const handle = startLayer(store, { annotateSelectors: [".card"] });
+
+    pressKey("c");
+    click(query(".card-title"));
+    expect(composer().hidden).toBe(false);
+    await saveComposer("Karte prüfen");
+
+    const notes = store.notes();
+    expect(notes).toHaveLength(1);
+    const note = notes[0];
+    if (note === undefined) throw new Error("note was not stored");
+    // The registered `.card` wins over the "nearest text" heuristic: the anchor is the component,
+    // not the heading inside it.
+    expect(JSON.stringify(note.anchor)).toContain("card");
+    expect(JSON.stringify(note.anchor)).not.toContain("h3");
+
+    handle.disable();
+  });
+
+  it("bounds the unit in design mode too when the host registered it (FR-1.12)", async () => {
+    document.body.innerHTML = `
+      <main id="host">
+        <article class="card" data-bluepencil="card-1">
+          <h3 class="card-title">Umsatz 42</h3>
+        </article>
+      </main>`;
+    const store = makeStore();
+    const handle = startLayer(store, { annotateSelectors: [".card"] });
+
+    pressKey("d");
+    click(query(".card-title"));
+    expect(composer().hidden).toBe(false);
+    await saveComposer("Ganze Karte");
+
+    const notes = store.notes();
+    expect(notes).toHaveLength(1);
+    const note = notes[0];
+    if (note === undefined) throw new Error("note was not stored");
+    expect(JSON.stringify(note.anchor)).toContain("card");
+    expect(JSON.stringify(note.anchor)).not.toContain("h3");
+
+    handle.disable();
+  });
+
+  it("keeps a component whose text lives in children annotatable (issue #3)", async () => {
+    document.body.innerHTML = `
+      <main id="host">
+        <div class="tile" data-bluepencil="tile-1"><span>Umsatz</span></div>
+      </main>`;
+    const store = makeStore();
+    const handle = startLayer(store);
+
+    pressKey("c");
+    click(query(".tile"));
+
+    // Before the fallback this click ended as `null` — the component looked inert, without a message.
+    expect(composer().hidden).toBe(false);
+
+    handle.disable();
+  });
+
+  it("still passes links through inside a registered card (FR-1.9 before FR-1.12)", async () => {
+    document.body.innerHTML = `
+      <main id="host">
+        <article class="card" data-bluepencil="card-1">
+          <a href="#ziel" data-testid="card-link">weiter</a>
+        </article>
+      </main>`;
+    const store = makeStore();
+    const handle = startLayer(store, { annotateSelectors: [".card"] });
+
+    pressKey("c");
+    click(query('[data-testid="card-link"]'));
+
+    expect(composer().hidden).toBe(true);
+    expect(store.notes()).toHaveLength(0);
+
+    handle.disable();
+  });
+
+  it("acts on every key the registry documents (FR-1.11)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
+    const store = makeStore();
+    const handle = startLayer(store);
+
+    // Keep the layer owning the keyboard, so "swallowed" is the signal that it acted.
+    const ensureOwned = (): void => {
+      if (mode() === "off" && panelEl().hidden) pressKey("l");
+    };
+    const documented: string[] = [];
+    for (const shortcut of SHORTCUTS) {
+      if (shortcut.range !== undefined || (shortcut.scope ?? "document") === "composer") continue;
+      for (const key of shortcut.keys) {
+        ensureOwned();
+        const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+        document.body.dispatchEvent(event);
+        // A documented key must be owned by the layer: the prototype's legend advertised keys the
+        // handler did not accept, and nothing failed.
+        expect(event.defaultPrevented, `documented key "${key}" (${shortcut.id}) was ignored`).toBe(true);
+        documented.push(key);
+      }
+    }
+    expect(documented).toEqual(["c", "d", "l", "f", "b", "?", "Escape", "j", "k"]);
+
+    handle.disable();
+  });
+
+  it("renders the legend from the registry, not from a hand-written list (FR-1.11)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
+    const store = makeStore();
+    const handle = startLayer(store);
+
+    pressKey("?");
+    const rendered = Array.from(legendEl().querySelectorAll('[data-bp-part="legend-row"]')).map((row) => ({
+      keys: Array.from(row.querySelectorAll("kbd")).map((kbd) => kbd.textContent ?? ""),
+      label: row.querySelector("[data-bp-i18n]")?.getAttribute("data-bp-i18n") ?? "",
+    }));
+    const expected = legendGroups().flatMap((group) =>
+      group.rows.map((row) => ({ keys: [...row.keys], label: row.label })),
+    );
+    expect(rendered).toEqual(expected);
+
+    handle.disable();
+  });
+
+  it("lets the host remap a key — it acts and the legend shows the new one (FR-12.11)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
+    const store = makeStore();
+    const handle = startLayer(store, { keymap: { bar: "g" } });
+
+    pressKey("c"); // own the keyboard
+    const bar = query('[data-bp-part="bar"]');
+    expect(bar.hidden).toBe(false);
+
+    pressKey("g");
+    expect(bar.hidden).toBe(true);
+
+    // The old key does not do it any more — and it is documented nowhere either.
+    pressKey("b");
+    expect(bar.hidden).toBe(true);
+
+    pressKey("?");
+    const barRow = Array.from(legendEl().querySelectorAll('[data-bp-part="legend-row"]')).find(
+      (row) => row.querySelector("[data-bp-i18n]")?.getAttribute("data-bp-i18n") === "legend.key.bar",
+    );
+    expect(Array.from(barRow?.querySelectorAll("kbd") ?? []).map((kbd) => kbd.textContent)).toEqual(["G"]);
 
     handle.disable();
   });

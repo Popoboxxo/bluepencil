@@ -38,6 +38,7 @@ import { applyTranslations, createTranslator, normalizeLanguage, type Translate 
 import type { MessageKey } from "../i18n/en";
 import { createComposer, type Composer, type ComposerSaveInput, type ComposerSaveResult, type ComposerTarget } from "./composer";
 import { createLegend } from "./legend";
+import { normaliseKey, resolveKeymap, type KeymapOverrides } from "./keymap";
 import {
   createPanel,
   createSettings,
@@ -62,6 +63,18 @@ export interface LayerOptions {
   theme?: Record<string, string>;
   anchorHooks?: string[];
   canAnnotate?: (el: Element) => boolean;
+  /**
+   * Registered target selectors (FR-1.12, issue #3): a host that brings its own component vocabulary
+   * lists selectors here. The nearest match in the click path becomes the annotation target — the
+   * card itself, not the heading inside it — in text *and* design mode. Invalid selectors are
+   * reported once by `readAnnotateSelectors` (element path) and ignored here.
+   */
+  annotateSelectors?: readonly string[];
+  /**
+   * Shortcut overrides (FR-12.11): `{ bar: "g", panel: ["l", "p"] }`. Conflicts, unknown ids and
+   * keys that cannot be remapped are reported — the legend always shows the effective keymap.
+   */
+  keymap?: KeymapOverrides;
   getRoute?: (element?: Element) => string;
   identity?: { getUser?: () => { id?: string; name: string } } | "prompt" | "anonymous";
   markerStrategy?: "overlay" | "sibling";
@@ -295,6 +308,14 @@ export function createLayer(options: LayerOptions): LayerHandle {
   let panel: Panel | null = null;
   let composer: Composer | null = null;
   let legend: ReturnType<typeof createLegend> | null = null;
+
+  /**
+   * Resolved once (FR-1.11): the handler and the legend both read this — a shortcut that only exists
+   * in the help text, or only in the code, is impossible by construction.
+   */
+  const keymap = resolveKeymap(options.keymap);
+  // Conflicts are surfaced, never swallowed: the host hears about a lost shortcut (FR-12.11).
+  for (const issue of keymap.issues) reportError(new Error(issue));
   let settingsPopover: SettingsPopover | null = null;
 
   /** Marker node per annotated host element (one marker, count badge — FR-4.1). */
@@ -570,6 +591,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
       document: doc,
       t,
       instanceId,
+      keymap: options.keymap,
       onClose: () => applyUiState(),
     });
 
@@ -1044,12 +1066,42 @@ export function createLayer(options: LayerOptions): LayerHandle {
   }
 
   /** First element in the path that carries text, or a leaf block with its own text (FR-1.3). */
+  /**
+   * Registered selectors win over the built-in heuristic (FR-1.12): the host knows that `.card` is a
+   * meaningful unit, the layer cannot. The nearest match in the path is the target, so the anchor is
+   * the component and not the text node inside it.
+   */
+  function findRegisteredTarget(elements: readonly Element[]): Element | null {
+    const selectors = options.annotateSelectors;
+    if (selectors === undefined || selectors.length === 0) return null;
+    for (const node of elements) {
+      if (node.tagName === "BODY" || node.tagName === "HTML") break;
+      for (const selector of selectors) {
+        // Invalid selectors never reach here (they are filtered where the attribute is read) —
+        // and a throw here must not kill the click.
+        try {
+          if (node.matches(selector)) return node;
+        } catch {
+          continue;
+        }
+      }
+    }
+    return null;
+  }
+
   function findTextTarget(elements: readonly Element[]): Element | null {
     const deepest = elements[0];
     for (const node of elements) {
       if (node.tagName === "BODY" || node.tagName === "HTML") break;
       if (TEXT_TAGS.has(node.tagName)) return node;
       if (node === deepest && hasDirectText(node)) return node;
+    }
+    // Issue #3: a component whose text lives in children used to end here as `null` — the click did
+    // nothing and the component looked inert. The nearest element that *holds* text is still a
+    // sensible block; a host that wants a different unit registers `annotateSelectors`.
+    for (const node of elements) {
+      if (node.tagName === "BODY" || node.tagName === "HTML") break;
+      if (hasText(node)) return node;
     }
     return null;
   }
@@ -1059,6 +1111,10 @@ export function createLayer(options: LayerOptions): LayerHandle {
       if (child.nodeType === 3 && (child.textContent ?? "").trim() !== "") return true;
     }
     return false;
+  }
+
+  function hasText(element: Element): boolean {
+    return (element.textContent ?? "").trim() !== "";
   }
 
   function canAnnotate(element: Element): boolean {
@@ -1092,7 +1148,8 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (elements.some((element) => isPassThroughElement(element))) return;
     if (!canAnnotate(target)) return;
 
-    const picked = mode === "design" ? target : findTextTarget(elements);
+    // A registered component wins over the built-in heuristic in both modes (FR-1.12).
+    const picked = findRegisteredTarget(elements) ?? (mode === "design" ? target : findTextTarget(elements));
     if (picked === null || !canAnnotate(picked)) return;
 
     // Only while a mode is active do we swallow the click for the host.
@@ -1297,44 +1354,57 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (isEditableTarget(event.target)) return;
     if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
 
+    // The registry decides which key means what (FR-1.11): handler and legend read the same table, so
+    // a key cannot work without being documented — or be documented without working.
+    const shortcut = keymap.binding.get(normaliseKey(rawKey));
     let handled = true;
-    switch (key) {
-      case "c":
-        setMode(mode === "text" ? "off" : "text");
-        break;
-      case "d":
-        setMode(mode === "design" ? "off" : "design");
-        break;
-      case "l":
-        panel?.toggle();
-        applyUiState();
-        break;
-      case "f":
-        setFeedbackOnly(!settings.feedbackOnly);
-        break;
-      case "b":
-        setBarCollapsed(!settings.barCollapsed);
-        break;
-      case "?":
-        if (legend?.isOpen()) {
-          legend.close();
-        } else {
-          legend?.open();
-        }
-        applyUiState();
-        break;
-      case "j":
-        moveSelection(1);
-        break;
-      case "k":
-        moveSelection(-1);
-        break;
-      default:
-        if (/^[1-9]$/.test(key)) {
-          jumpToIndex(Number(key) - 1);
-        } else {
+    if (shortcut === undefined) {
+      if (/^[1-9]$/.test(key)) {
+        jumpToIndex(Number(key) - 1);
+      } else {
+        handled = false;
+      }
+    } else {
+      switch (shortcut.id) {
+        case "mode.text":
+          setMode(mode === "text" ? "off" : "text");
+          break;
+        case "mode.design":
+          setMode(mode === "design" ? "off" : "design");
+          break;
+        case "panel":
+          panel?.toggle();
+          applyUiState();
+          break;
+        case "feedback-only":
+          setFeedbackOnly(!settings.feedbackOnly);
+          break;
+        case "bar":
+          setBarCollapsed(!settings.barCollapsed);
+          break;
+        case "legend":
+          if (legend?.isOpen()) {
+            legend.close();
+          } else {
+            legend?.open();
+          }
+          applyUiState();
+          break;
+        case "next":
+          moveSelection(1);
+          break;
+        case "previous":
+          moveSelection(-1);
+          break;
+        case "cancel":
+          // `Esc` is consumed by `escape()` above; this branch keeps the switch exhaustive.
+          break;
+        case "jump":
+        case "save":
+          // Range and composer-scoped shortcuts never reach the document handler.
           handled = false;
-        }
+          break;
+      }
     }
     if (!handled || idle) return;
     event.preventDefault();
