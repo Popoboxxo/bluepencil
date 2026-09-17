@@ -157,6 +157,7 @@ export const en = {
   "legend.key.panel": "Open/close the note list",
   "legend.key.feedbackOnly": "Feedback-only mode on/off",
   "legend.key.bar": "Show/hide the bar",
+  "legend.key.chrome": "Cycle chrome: full / quiet / off",
   "legend.key.legend": "Show this legend",
   "legend.key.cancel": "Cancel / close",
   "legend.key.next": "Next note",

@@ -151,6 +151,8 @@
 | FR-12.7 | **Documented host variety**: worked examples for at least a static page, a framework SPA, a micro-frontend/web-component host and a Home Assistant custom card | P1 | M3 | N | Each example in `examples/` runs and is covered by an E2E smoke test |
 | FR-12.8 | **Config-driven identity** (D3): `identity` accepts a hook, `"prompt"` or `"anonymous"`; unset falls back to `"prompt"` | P0 | M1 | N | All three modes verified in the fixture app |
 | FR-12.11 | **Configurable keymap**: shortcuts are overridable, conflicts are detectable, and host shortcuts are only overridden while the layer owns the keyboard | P0 | M2 | P | `keymap="bar=g"` remaps and the legend follows; a conflict is reported through `element.issues` instead of last-one-wins; typing in a host field never triggers layer shortcuts |
+| FR-12.9 | **Runtime chrome levels**: the layer's own chrome can be switched between *full*, *quiet* and *off* at runtime, the choice is persisted per user, and `disable()`/`destroy()` removes it regardless of the level | P0 | M2 | P | `setChrome()`/`handle.chrome()` plus the `h` shortcut cycle full→quiet→off→full; the level survives a reload; *off* leaves annotations and markers but no chrome, `disable()` removes the nodes |
+| FR-12.12 | **Addressable chrome state**: the chrome level is settable per load through a documented URL parameter, read-only — it is never written back | P1 | M2 | P | `?bp-chrome=off` sets the level for that load only; automated tests and handovers can rely on it; an explicit change at runtime wins and is the only thing persisted |
 
 ## FR-13 Developer systems: read *and* write during debugging
 
