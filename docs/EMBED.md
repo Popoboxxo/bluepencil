@@ -83,6 +83,7 @@ equivalent (`data-*`). The loader mirrors every element attribute
 | `gate` | – | Global path to a function (or boolean) that decides whether the layer may exist; ANDed with `enabled != "false"`. Re-evaluated on every `enable()`. |
 | `can-annotate` | – | Global path to a function that decides per element whether it may be annotated (FR-1.10): `fn(element)` returning `false` rejects it. The extension point for a host's own component vocabulary. |
 | `annotate-selectors` | – | Comma-separated CSS selectors the host declares as annotation targets (FR-1.12): the nearest match in the click path becomes the target, so the anchor is the component and not the text node inside it. Applies in text *and* design mode; a selector the DOM rejects is reported through `element.issues`. |
+| `dock` | `"top"` | The edge the strip and its handle dock to (FR-12.13): `"top"` or `"bottom"`. The mode hint moves to the opposite edge, so a docked layer cannot collide with itself. |
 | `keymap` | – | Remap the layer's shortcuts: `"bar=g, panel=p"` (FR-12.11). A conflict, an unknown id or a key that cannot be remapped (the `1…9` range, the composer-scoped save) is reported through `element.issues` — never resolved silently. The help legend shows the effective keys. |
 
 A note's route comes from the element that was annotated, not from the scroll position: with

@@ -21,6 +21,7 @@ import {
   readAnnotateSelectors,
   readAttribute,
   readCanAnnotate,
+  readDock,
   readEnvironment,
   readGate,
   readHeaders,
@@ -498,6 +499,26 @@ describe("identity and can-annotate as host paths", () => {
       accepted.remove();
     } finally {
       delete (globalThis as { hostApp?: unknown }).hostApp;
+    }
+  });
+
+  it("reads dock and reports an edge it cannot honour", () => {
+    expect(ALL_ATTRIBUTES).toContain("dock");
+    expect(readDock(source({ dock: "bottom" })).dock).toBe("bottom");
+    expect(readDock(source({ dock: "top" })).dock).toBe("top");
+    expect(readDock(source({})).dock).toBeUndefined();
+    expect(readDock(source({ dock: "left" })).issues[0]).toContain('dock must be "top" or "bottom"');
+  });
+
+  it("reaches the layer through the element: the layer docks where the host says", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
+    const element = mount({ adapter: "memory", dock: "bottom" });
+    try {
+      expect(element.issues).toEqual([]);
+      expect(document.querySelector(".bp-root")?.getAttribute("data-bp-dock")).toBe("bottom");
+    } finally {
+      element.destroy();
+      element.remove();
     }
   });
 

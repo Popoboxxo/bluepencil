@@ -212,6 +212,79 @@ export const STYLES: string = `
   box-shadow: var(--bp-shadow, 0 6px 24px rgba(15, 18, 28, 0.18));
 }
 
+/* -- slots, docking and narrow viewports (FR-12.10, FR-12.13, NFR-20) ------ */
+
+/**
+ * Chrome slots (FR-12.10): the attribute data-bp-slot names the corner or edge a surface occupies, and
+ * these rules are the only place that knows geometry — so "no two surfaces overlap" is a property of
+ * the sheet, not of the order the surfaces happen to be appended in.
+ */
+.bp-root [data-bp-slot="top-end"] {
+  top: ${SPACE};
+  right: ${SPACE};
+}
+
+.bp-root [data-bp-slot="bottom-end"] {
+  bottom: ${SPACE};
+  right: ${SPACE};
+}
+
+.bp-root [data-bp-slot="top-center"] {
+  top: ${SPACE};
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.bp-root [data-bp-slot="bottom-center"] {
+  bottom: ${SPACE};
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Docking moves the strip and its handle together and sends the mode hint to the opposite edge. */
+.bp-root[data-bp-dock="bottom"] .bp-bar,
+.bp-root[data-bp-dock="bottom"] .bp-handle {
+  top: auto;
+  bottom: ${SPACE};
+}
+
+.bp-root[data-bp-dock="bottom"] .bp-mode-hint {
+  top: ${SPACE};
+  bottom: auto;
+}
+
+/* Long words, generated labels and host-supplied paths wrap instead of widening the chrome. */
+.bp-bar,
+.bp-handle,
+.bp-panel,
+.bp-composer,
+.bp-legend,
+.bp-mode-hint {
+  overflow-wrap: anywhere;
+}
+
+.bp-bar-title,
+.bp-counters,
+.bp-legend-label,
+.bp-legend-keys {
+  min-width: 0;
+}
+
+/**
+ * Narrow viewports (FR-12.13): what cannot fit is dropped, not squeezed. The layer also drops to quiet
+ * by itself at this width — that part is JavaScript, because a media query could hide the bar while
+ * its handle stays hidden and leave the host with no chrome at all.
+ */
+@media (max-width: 719px) {
+  .bp-bar {
+    max-width: calc(100vw - ${SPACE} * 2);
+  }
+
+  .bp-bar-title {
+    display: none;
+  }
+}
+
 /* -- markers (FR-4.1, D2) -------------------------------------------------- */
 
 .bp-markers {

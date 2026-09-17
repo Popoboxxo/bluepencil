@@ -763,6 +763,49 @@ describe("capture UI", () => {
     handle.disable();
   });
 
+  it("shows every chrome surface in a declared slot (FR-12.10)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
+    const store = makeStore();
+    const handle = startLayer(store, { dock: "bottom" });
+
+    expect(query('[data-bp-part="bar"]').getAttribute("data-bp-slot")).toBe("top-end");
+    expect(query('[data-bp-part="handle"]').getAttribute("data-bp-slot")).toBe("top-end");
+    expect(query('[data-bp-part="mode-hint"]').getAttribute("data-bp-slot")).toBe("bottom-center");
+    expect(document.querySelector(".bp-root")?.getAttribute("data-bp-dock")).toBe("bottom");
+
+    handle.disable();
+  });
+
+  it("drops to quiet on a narrow viewport and back when it grows (FR-12.13)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
+    const store = makeStore();
+    const original = Object.getOwnPropertyDescriptor(window, "innerWidth");
+    const setWidth = (width: number): void => {
+      Object.defineProperty(window, "innerWidth", { value: width, configurable: true, writable: true });
+    };
+    try {
+      setWidth(1280);
+      const handle = startLayer(store);
+      expect(query('[data-bp-part="bar"]').hidden).toBe(false);
+      expect(handle.chrome()).toBe("full"); // the preference is untouched by the viewport
+
+      setWidth(390);
+      window.dispatchEvent(new Event("resize"));
+      expect(query('[data-bp-part="bar"]').hidden).toBe(true);
+      expect(query('[data-bp-part="handle"]').hidden).toBe(false);
+      expect(handle.chrome()).toBe("full"); // narrow is a viewport fact, not a stored choice
+
+      setWidth(1024);
+      window.dispatchEvent(new Event("resize"));
+      expect(query('[data-bp-part="bar"]').hidden).toBe(false);
+      expect(query('[data-bp-part="handle"]').hidden).toBe(true);
+
+      handle.disable();
+    } finally {
+      if (original !== undefined) Object.defineProperty(window, "innerWidth", original);
+    }
+  });
+
   it("captures the element state in design mode (FR-1.4)", async () => {
     document.body.innerHTML = `<main id="host"><div class="card" data-bluepencil="card">card</div></main>`;
     const card = byId("host").querySelector(".card");

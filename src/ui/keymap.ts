@@ -1,15 +1,7 @@
 /**
- * The single source of truth for the layer's keyboard (FR-1.11, FR-12.11, issue #4 findings 3 and 8).
- *
- * One registry, three consumers:
- *  - the document key handler dispatches from it,
- *  - the legend overlay renders from it,
- *  - `keymap` overrides are applied to it.
- *
- * That is what makes the prototype's bug structurally impossible: there the digit handler accepted
- * `0–6` while nine chapters were reachable and the legend advertised `0–6`. Here a shortcut cannot
- * exist in the help text without existing in the handler, and `resolveKeymap()` reports a conflict
- * instead of silently letting the last registration win.
+ * The single source of truth for the layer's keyboard (FR-1.11, FR-12.11): the key handler dispatches
+ * from it, the legend renders from it, `keymap` overrides map onto it — so a shortcut cannot exist in
+ * the help text without existing in the handler, and a conflict is reported instead of silently won.
  */
 
 import type { MessageKey } from "../i18n/en";

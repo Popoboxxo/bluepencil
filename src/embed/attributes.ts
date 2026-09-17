@@ -46,6 +46,7 @@ export const EMBED_ATTRIBUTES = [
   "can-annotate",
   "annotate-selectors",
   "keymap",
+  "dock",
 ] as const;
 
 /** Every attribute the element observes and documents. */
@@ -310,6 +311,18 @@ export function readKeymap(source: AttributeSource): { keymap?: KeymapOverrides;
   }
   if (Object.keys(overrides).length === 0) return { issues };
   return { keymap: overrides, issues: [...issues, ...resolveKeymap(overrides).issues] };
+}
+
+/**
+ * `dock="bottom"` — the edge the strip and its handle dock to (FR-12.13). The mode hint moves to the
+ * opposite edge, so a docked layer never collides with itself. Anything but `top`/`bottom` is
+ * reported instead of quietly falling back.
+ */
+export function readDock(source: AttributeSource): { dock?: "top" | "bottom"; issues: string[] } {
+  const raw = readAttribute(source, "dock");
+  if (raw === undefined) return { issues: [] };
+  if (raw === "top" || raw === "bottom") return { dock: raw, issues: [] };
+  return { issues: [`dock must be "top" or "bottom" (got ${JSON.stringify(raw)})`] };
 }
 
 /**

@@ -163,8 +163,8 @@ class Browser {
     });
   }
 
-  static async launch(executable, userDataDir) {
-    return Browser.#launchWithRetry(executable, userDataDir, LAUNCH_ATTEMPTS);
+  static async launch(executable, userDataDir, options = {}) {
+    return Browser.#launchWithRetry(executable, userDataDir, LAUNCH_ATTEMPTS, options);
   }
 
   /**
@@ -173,12 +173,12 @@ class Browser {
    * single attempt turned it into a red check for a green change (issue #18). Each retry uses a fresh
    * profile directory and the whole thing stays fail-closed: after the last attempt the caller fails.
    */
-  static async #launchWithRetry(executable, userDataDir, attempts) {
+  static async #launchWithRetry(executable, userDataDir, attempts, options = {}) {
     const problems = [];
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const dir = attempt === 1 ? userDataDir : `${userDataDir}-r${attempt}`;
       try {
-        return await Browser.#launchOnce(executable, dir);
+        return await Browser.#launchOnce(executable, dir, options);
       } catch (error) {
         problems.push(`attempt ${attempt}: ${error.message}`);
         if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
@@ -191,7 +191,7 @@ class Browser {
     throw failure;
   }
 
-  static async #launchOnce(executable, userDataDir) {
+  static async #launchOnce(executable, userDataDir, options = {}) {
     mkdirSync(userDataDir, { recursive: true });
     const child = spawn(
       executable,
@@ -200,6 +200,11 @@ class Browser {
         "--no-sandbox",
         "--disable-gpu",
         "--disable-dev-shm-usage",
+        // A real window of a given size is the only way to get a viewport in builds whose pipe session
+        // has no `Emulation` domain (the geometry case in issue #4 needs exactly that).
+        ...(typeof options.width === "number" && typeof options.height === "number"
+          ? [`--window-size=${options.width},${options.height}`]
+          : []),
         `--user-data-dir=${userDataDir}`,
         "--remote-debugging-pipe",
         "about:blank",
@@ -899,6 +904,127 @@ function cases() {
       assert(state.slides === 3, `expected the deck's three slides, got ${state.slides}`);
       assert(/bluepencil\.element\.min\.js$/.test(state.src), `unexpected element build: ${state.src}`);
       return `version=${state.version}, ${state.slides} slides`;
+    },
+
+    /**
+     * The layer's own chrome is geometry — and geometry cannot be asserted in jsdom, where every rect
+     * is zero. This case measures the real thing across the viewport matrix from issue #4: no chrome
+     * surface may scroll sideways (NFR-20), two visible surfaces may not overlap (FR-12.10), and on a
+     * narrow viewport the strip yields to its handle (FR-12.13).
+     */
+    "browser: chrome geometry across the viewport matrix": async (ctx) => {
+      requireBrowser(ctx);
+      prepareSite(ctx.site);
+
+      const viewports = [
+        { width: 360, height: 740, narrow: true },
+        { width: 390, height: 844, narrow: true },
+        { width: 768, height: 1024, narrow: false },
+        { width: 1024, height: 768, narrow: false },
+        { width: 1280, height: 800, narrow: false },
+        { width: 1440, height: 900, narrow: false },
+      ];
+      const PROBE = `(() => {
+        const names = ["bar", "handle", "mode-hint"];
+        const read = (name) => {
+          const node = document.querySelector('[data-bp-part="' + name + '"]');
+          if (node === null) return null;
+          const style = getComputedStyle(node);
+          if (style.display === "none" || style.visibility === "hidden") return null;
+          const box = node.getBoundingClientRect();
+          return { name: name, x: box.x, y: box.y, width: box.width, height: box.height,
+                   scrollWidth: node.scrollWidth, clientWidth: node.clientWidth,
+                   viewportWidth: window.innerWidth };
+        };
+        const root = document.querySelector(".bp-root");
+        return { dock: root === null ? null : root.getAttribute("data-bp-dock"),
+                 surfaces: names.map(read).filter((entry) => entry !== null) };
+      })()`;
+      const overlapArea = (a, b) => {
+        const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+        const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+        return width > 0 && height > 0 ? Math.round(width * height) : 0;
+      };
+
+      /**
+       * One measurement = one real window of that size. This Chrome build's pipe session has no
+       * `Emulation` domain at all, and a real viewport is the better measurement anyway.
+       */
+      const measure = async (viewport) => {
+        const browser = await Browser.launch(
+          ctx.browserPath,
+          join(WORKSPACE, `chrome-profile-${viewport.width}`),
+          { width: viewport.width, height: viewport.height },
+        );
+        try {
+          await browser.navigate(`${ctx.origin}/examples/attach/?selftest=1`);
+          await browser.waitFor(`document.querySelector('[data-bp-part="bar"]') !== null`);
+          // A mode makes the third chrome surface visible, so the overlap check has something to check.
+          await browser.evaluate(
+            `(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true })); return true; })()`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          return await browser.evaluate(PROBE);
+        } finally {
+          await browser.close();
+        }
+      };
+
+      const measurements = [];
+      const problems = [];
+      {
+        for (const viewport of viewports) {
+          const report = await measure(viewport);
+          assert(report !== null && typeof report === "object", `no measurement at ${viewport.width} px`);
+          const names = report.surfaces.map((surface) => surface.name);
+          measurements.push(`${viewport.width}px: ${names.length === 0 ? "none" : names.join("+")}`);
+
+          for (const surface of report.surfaces) {
+            if (surface.scrollWidth > surface.clientWidth + 1) {
+              problems.push(
+                `${viewport.width}px: ${surface.name} scrolls sideways (${surface.scrollWidth} > ${surface.clientWidth})`,
+              );
+            }
+            if (surface.x < -1 || surface.x + surface.width > surface.viewportWidth + 1) {
+              problems.push(
+                `${viewport.width}px: ${surface.name} leaves the viewport (x ${Math.round(surface.x)}, ` +
+                  `w ${Math.round(surface.width)}, vw ${surface.viewportWidth})`,
+              );
+            }
+            if (surface.width <= 0 || surface.height <= 0) {
+              problems.push(
+                `${viewport.width}px: ${surface.name} has no box (${Math.round(surface.width)}×${Math.round(surface.height)})`,
+              );
+            }
+          }
+          for (let i = 0; i < report.surfaces.length; i += 1) {
+            for (let j = i + 1; j < report.surfaces.length; j += 1) {
+              const area = overlapArea(report.surfaces[i], report.surfaces[j]);
+              if (area > 0) {
+                problems.push(
+                  `${viewport.width}px: ${report.surfaces[i].name} and ${report.surfaces[j].name} overlap (${area} px²)`,
+                );
+              }
+            }
+          }
+          if (viewport.narrow) {
+            if (names.includes("bar")) {
+              problems.push(`${viewport.width}px: the strip is still shown on a narrow viewport`);
+            }
+            if (!names.includes("handle")) {
+              problems.push(`${viewport.width}px: no handle to take over from the strip`);
+            }
+          } else if (!names.includes("bar")) {
+            problems.push(`${viewport.width}px: the strip is missing on a wide viewport`);
+          }
+        }
+      }
+
+      assert(
+        problems.length === 0,
+        `chrome geometry:\n${problems.map((line) => `    ${line}`).join("\n")}`,
+      );
+      return `${viewports.length} viewports — ${measurements.join(", ")}`;
     },
 
     /**
