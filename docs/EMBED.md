@@ -79,6 +79,7 @@ equivalent (`data-*`). The loader mirrors every element attribute
 | `token-scheme` | – | Prefixed scheme for `token` (e.g. `"Bearer"` → `Authorization: Bearer ***`). Default: none (verbatim). |
 | `route` | – | `"url"` → store `location.pathname + location.search` as the anchor route (SPA hosts). |
 | `route-from` | – | Global path to a function returning the route (router-aware hosts). It is called as `fn(element)` with the annotated element, so the route belongs to *that* note; a zero-parameter host keeps working. Wins over `route`. |
+| `anchor-hooks` | `"data-bluepencil,data-testid"` | Comma-separated attribute names used as the primary anchor, in priority order. For hosts with *other* stable hooks or a different priority, e.g. `"id,data-testid"` — `data-testid` is already a default, so a host with test hooks needs no configuration. |
 | `gate` | – | Global path to a function (or boolean) that decides whether the layer may exist; ANDed with `enabled != "false"`. Re-evaluated on every `enable()`. |
 
 A note's route comes from the element that was annotated, not from the scroll position: with
