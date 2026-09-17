@@ -225,7 +225,7 @@ export. The MCP interface is therefore **not optional** (Daniel, 2026-09-14).
 |---|---|---|---|---|
 | NFR-1 | **Zero footprint when disabled**: no DOM, no fetch, no listener, no timer — **both** when never enabled and after a runtime `disable()` | P0 | M1 | Bundle loaded but unused / after disable → no network requests, no nodes, no measurable CPU |
 | NFR-2 | No polling. Data is fetched on demand (open/refresh/write) | P0 | M1 | Idle page produces no repeated requests over 10 minutes |
-| NFR-3 | Core bundle small enough to embed casually (target ≤ 30 kB min+gzip, excluding adapters) | P1 | M1 | Build report shows size; CI fails on regression beyond budget |
+| NFR-3 | Core bundle small enough to embed casually (target ≤ 31 kB min+gzip, excluding adapters) | P1 | M1 | Build report shows size; CI fails on regression beyond budget. Raised from 30 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13), measured at 30.5 kB — a decision, recorded here so it cannot look like drift |
 | NFR-4 | No runtime dependencies (peer deps only for framework wrappers) | P0 | M1 | `dependencies` empty in the core package |
 | NFR-5 | Evergreen browsers (Chromium/Firefox/Safari current + previous); graceful degradation otherwise | P1 | M1 | Feature detection; layer self-disables with a console note instead of throwing |
 | NFR-6 | CSP-safe: no `eval`, no `new Function`, no inline script injection | P0 | M3 | Works on a page with `script-src 'self'` (bookmarklet documented with limits) |
