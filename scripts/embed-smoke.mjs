@@ -138,6 +138,13 @@ function findChrome() {
  * Node the repository is developed with — which is what keeps this leg inside the project's
  * "no runtime dependency" rule (NFR-4).
  */
+/**
+ * Chrome launch policy (issue #18). One attempt with a 20 s attach probe made a runner hiccup into a
+ * red check for an unchanged commit; three attempts with a fresh profile each are still fail-closed.
+ */
+const LAUNCH_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 1500;
+
 class Browser {
   #pending = new Map();
   #buffer = Buffer.alloc(0);
@@ -157,6 +164,34 @@ class Browser {
   }
 
   static async launch(executable, userDataDir) {
+    return Browser.#launchWithRetry(executable, userDataDir, LAUNCH_ATTEMPTS);
+  }
+
+  /**
+   * Chrome on a shared CI runner occasionally fails to come up — dbus noise, a leftover profile lock —
+   * and the attach probe times out. That is an environment hiccup, not a defect in the layer, but a
+   * single attempt turned it into a red check for a green change (issue #18). Each retry uses a fresh
+   * profile directory and the whole thing stays fail-closed: after the last attempt the caller fails.
+   */
+  static async #launchWithRetry(executable, userDataDir, attempts) {
+    const problems = [];
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const dir = attempt === 1 ? userDataDir : `${userDataDir}-r${attempt}`;
+      try {
+        return await Browser.#launchOnce(executable, dir);
+      } catch (error) {
+        problems.push(`attempt ${attempt}: ${error.message}`);
+        if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      }
+    }
+    const failure = new Error(
+      `could not attach to ${executable} after ${attempts} attempts:\n  ${problems.join("\n  ")}`,
+    );
+    failure.code = "BROWSER_UNAVAILABLE";
+    throw failure;
+  }
+
+  static async #launchOnce(executable, userDataDir) {
     mkdirSync(userDataDir, { recursive: true });
     const child = spawn(
       executable,
@@ -970,13 +1005,20 @@ async function main() {
         context.browser = browser;
         console.log(`browser: ${context.browserPath}`);
       } catch (error) {
-        console.log(`browser: could not start ${context.browserPath} — ${error.message}`);
+        const code = error?.code === "BROWSER_UNAVAILABLE" ? "BROWSER-UNAVAILABLE" : "BROWSER-START-FAILED";
+        console.log(`browser: ${code} — could not start ${context.browserPath}\n${error.message}`);
       }
     }
     if (context.browser === null && browserRequired) {
       total += 1;
       failed += 1;
-      console.log("FAIL browser: BP_REQUIRE_BROWSER=1 but no usable Chrome was available");
+      // Deliberately still a failure: the real-browser round is the only leg that loads the shipped
+      // `attach.js` as a script tag. But it says so in a way a reader can tell apart from a failed
+      // assertion, without opening the log (issue #18).
+      console.log(
+        "FAIL BROWSER-UNAVAILABLE (no assertion ran, the environment had no usable Chrome): " +
+          "BP_REQUIRE_BROWSER=1",
+      );
     }
 
     for (const [name, body] of Object.entries(cases())) {
