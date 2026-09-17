@@ -445,6 +445,55 @@ describe("capture UI", () => {
     handle.disable();
   });
 
+  it("keeps links operable in every annotation mode (FR-1.9, issue #2)", async () => {
+    document.body.innerHTML = `
+      <main id="host">
+        <p data-bluepencil="intro">See <a href="#ziel" data-testid="link">the harness list</a> for details</p>
+      </main>`;
+    const link = query('[data-testid="link"]');
+    const store = makeStore();
+    const handle = startLayer(store, {});
+
+    pressKey("c");
+    click(link);
+
+    // The link stays a link: no composer opens and nothing is stored.
+    expect(composer().hidden).toBe(true);
+    expect(store.notes()).toHaveLength(0);
+
+    // The surrounding text still opens it, so the mode itself is working.
+    const paragraph = byId("host").querySelector("p");
+    if (paragraph === null) throw new Error("fixture missing");
+    click(paragraph);
+    expect(composer().hidden).toBe(false);
+
+    handle.disable();
+  });
+
+  it("honours can-annotate: a rejected element opens nothing, an accepted one does (FR-1.10)", async () => {
+    document.body.innerHTML = `
+      <main id="host">
+        <p data-bluepencil="intro">Yes</p>
+        <aside data-bluepencil="side">No</aside>
+      </main>`;
+    const store = makeStore();
+    const handle = startLayer(store, { canAnnotate: (element) => element.tagName !== "ASIDE" });
+
+    pressKey("c");
+    const aside = byId("host").querySelector("aside");
+    if (aside === null) throw new Error("fixture missing");
+    click(aside);
+    expect(composer().hidden).toBe(true);
+    expect(store.notes()).toHaveLength(0);
+
+    const paragraph = byId("host").querySelector("p");
+    if (paragraph === null) throw new Error("fixture missing");
+    click(paragraph);
+    expect(composer().hidden).toBe(false);
+
+    handle.disable();
+  });
+
   it("captures the element state in design mode (FR-1.4)", async () => {
     document.body.innerHTML = `<main id="host"><div class="card" data-bluepencil="card">card</div></main>`;
     const card = byId("host").querySelector(".card");

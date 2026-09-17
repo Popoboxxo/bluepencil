@@ -19,6 +19,7 @@ import {
   collectDataAttributes,
   parseLoaderOptions,
   readAttribute,
+  readCanAnnotate,
   readEnvironment,
   readGate,
   readHeaders,
@@ -431,5 +432,103 @@ describe("element — the attach surface", () => {
     expect(element.blueprint).toBeNull();
     expect(document.querySelectorAll("style[data-bp-styles]").length).toBe(0);
     expect(document.querySelectorAll("[data-bp-part]").length).toBe(0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* host paths for identity and target resolution (issue #12, FR-1.10)          */
+/* -------------------------------------------------------------------------- */
+
+describe("identity and can-annotate as host paths", () => {
+  it("accepts a global path for identity that resolves to { getUser() }", () => {
+    const host = { getUser: () => ({ id: "u-1", name: "Anna" }) };
+    const resolved = readEnvironment(source({ identity: "hostApp.identity" }), (path) =>
+      path === "hostApp.identity" ? host : undefined,
+    );
+    // The object is handed through untouched — the layer asks it for the author per note.
+    expect(resolved.identity).toBe(host);
+    expect(resolved.issues).toEqual([]);
+  });
+
+  it("keeps the documented shorthands and still reports a value that resolves to nothing", () => {
+    expect(readEnvironment(source({ identity: "prompt" })).identity).toBe("prompt");
+    expect(readEnvironment(source({ identity: "anonymous" })).identity).toBe("anonymous");
+    const broken = readEnvironment(source({ identity: "hostApp.gone" }), () => undefined);
+    expect(broken.identity).toBeUndefined();
+    expect(broken.issues[0]).toContain('identity must be "prompt" or "anonymous"');
+    expect(broken.issues[0]).toContain("{ getUser() }");
+  });
+
+  it("reads can-annotate as a re-usable decision function", () => {
+    expect(ALL_ATTRIBUTES).toContain("can-annotate");
+    const decisions: string[] = [];
+    const read = readCanAnnotate(source({ "can-annotate": "hostApp.canAnnotate" }), () => (el: Element) => {
+      decisions.push(el.tagName);
+      return el.tagName !== "ASIDE";
+    });
+    const main = document.createElement("main");
+    const aside = document.createElement("aside");
+    expect(read.canAnnotate?.(main)).toBe(true);
+    expect(read.canAnnotate?.(aside)).toBe(false);
+    expect(decisions).toEqual(["MAIN", "ASIDE"]);
+    expect(read.issues).toEqual([]);
+  });
+
+  it("reports a can-annotate path that is not a function", () => {
+    const read = readCanAnnotate(source({ "can-annotate": "hostApp.missing" }), () => "kein function");
+    expect(read.canAnnotate).toBeUndefined();
+    expect(read.issues[0]).toContain('can-annotate "hostApp.missing" does not resolve to a function');
+  });
+
+  it("reaches the element: a broken can-annotate is reported, a valid identity is not", () => {
+    (globalThis as { hostApp?: unknown }).hostApp = {
+      identity: { getUser: () => ({ id: "u-1", name: "Anna" }) },
+    };
+    try {
+      const broken = mount({ adapter: "memory", "can-annotate": "hostApp.missing" });
+      expect(broken.issues.join(" | ")).toContain("can-annotate");
+      broken.destroy();
+      broken.remove();
+
+      const accepted = mount({ adapter: "memory", identity: "hostApp.identity" });
+      expect(accepted.issues).toEqual([]);
+      accepted.destroy();
+      accepted.remove();
+    } finally {
+      delete (globalThis as { hostApp?: unknown }).hostApp;
+    }
+  });
+
+  it("reaches the layer: the host decides which element may be annotated (FR-1.10)", async () => {
+    document.body.innerHTML = `
+      <main id="host">
+        <p data-bluepencil="a">Yes</p>
+        <aside data-bluepencil="b">No</aside>
+      </main>`;
+    (globalThis as { hostApp?: unknown }).hostApp = {
+      canAnnotate: (element: Element) => element.tagName !== "ASIDE",
+    };
+    const element = mount({ adapter: "memory", "can-annotate": "hostApp.canAnnotate" });
+    const composerVisible = (): boolean => {
+      const node = document.querySelector('[data-bp-part="composer"]') as HTMLElement | null;
+      return node !== null && node.hidden === false;
+    };
+    try {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+      const aside = document.querySelector("aside");
+      const paragraph = document.querySelector("p");
+      if (aside === null || paragraph === null) throw new Error("fixture missing");
+
+      aside.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+      expect(composerVisible()).toBe(false);
+
+      // The accepted element still opens it, so the rejection is the host's decision, not a dead mode.
+      paragraph.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+      expect(composerVisible()).toBe(true);
+    } finally {
+      element.destroy();
+      element.remove();
+      delete (globalThis as { hostApp?: unknown }).hostApp;
+    }
   });
 });

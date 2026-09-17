@@ -63,7 +63,7 @@ equivalent (`data-*`). The loader mirrors every element attribute
 | `enabled` | unset → the host's own `init()` call is the opt-in | `"false"` disables the layer; any other value enables it. |
 | `adapter` | unset → `"memory"` | Storage backend: `"memory"`, `"localStorage"`, `"file"`, or `"http"`. Presence of `endpoint` implies `"http"`. |
 | `language` | `"en"` | UI language (`"en"`, `"de"`). |
-| `identity` | `"prompt"` | Author identity: `{ getUser() }`, `"prompt"` (author field), or `"anonymous"`. |
+| `identity` | `"prompt"` | Author identity: a global path resolving to `{ getUser() }`, the literal JSON `{ getUser }` is not needed, `"prompt"` (author field) or `"anonymous"`. A path is the only way a statically wired host can pass its user — since issue #12. |
 | `session` | – | Session reference string, forwarded to the store. |
 | `environment` | – | Environment name; notes are scoped per environment (NFR-18). |
 | `show-done` | `"false"` | `"true"` to start with done notes visible. |
@@ -81,6 +81,7 @@ equivalent (`data-*`). The loader mirrors every element attribute
 | `route-from` | – | Global path to a function returning the route (router-aware hosts). It is called as `fn(element)` with the annotated element, so the route belongs to *that* note; a zero-parameter host keeps working. Wins over `route`. |
 | `anchor-hooks` | `"data-bluepencil,data-testid"` | Comma-separated attribute names used as the primary anchor, in priority order. For hosts with *other* stable hooks or a different priority, e.g. `"id,data-testid"` — `data-testid` is already a default, so a host with test hooks needs no configuration. |
 | `gate` | – | Global path to a function (or boolean) that decides whether the layer may exist; ANDed with `enabled != "false"`. Re-evaluated on every `enable()`. |
+| `can-annotate` | – | Global path to a function that decides per element whether it may be annotated (FR-1.10): `fn(element)` returning `false` rejects it. The extension point for a host's own component vocabulary. |
 
 A note's route comes from the element that was annotated, not from the scroll position: with
 `route-from` the host is asked as `fn(element)`. That is not a cosmetic detail — on a scroll-animated
@@ -110,6 +111,13 @@ recognises these additional keys:
 3. `token` → written last into the header named by `token-header` (wins)
 
 ## 3. Updates at runtime (optional)
+
+The tag needs **no** `data-*` attribute at all: `<script src="/bluepencil/attach.js"></script>` already
+attaches with the documented defaults. Before issue #11 a script was only recognised when it carried at
+least one known key, which made exactly that default path silently inert. A tag added **after**
+`DOMContentLoaded` — an SPA bootstrap, an nginx injection, a CMS — is picked up by
+`window.bluepencilAttach.check()`, which re-scans the document instead of only re-checking what it
+already attached.
 
 Bluepencil supports a **manifest-driven update path**: the loader polls a
 JSON manifest, compares versions, tears down the old layer, and mounts

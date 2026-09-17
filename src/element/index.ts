@@ -26,6 +26,7 @@ import {
   ALL_ATTRIBUTES,
   readAnchorHooks,
   readAttribute,
+  readCanAnnotate,
   readEnvironment,
   readGate,
   readHeaders,
@@ -204,10 +205,11 @@ export class BluepencilNotesElement extends HTMLElement {
     const headers = readHeaders(this, resolve);
     const theme = readTheme(this);
     const store = readStore(this);
-    const env = readEnvironment(this);
+    const env = readEnvironment(this, resolve);
     const route = readRoute(this, resolve, locationOrUndefined());
     const gate = readGate(this, resolve);
     const hooks = readAnchorHooks(this);
+    const annotatable = readCanAnnotate(this, resolve);
     this.#collect([
       ...headers.issues,
       ...theme.issues,
@@ -215,6 +217,7 @@ export class BluepencilNotesElement extends HTMLElement {
       ...route.issues,
       ...gate.issues,
       ...hooks.issues,
+      ...annotatable.issues,
     ]);
 
     const mountAttr = readAttribute(this, "mount");
@@ -242,6 +245,7 @@ export class BluepencilNotesElement extends HTMLElement {
       ...(env.environment === undefined ? {} : { environment: env.environment }),
       ...(route.getRoute === undefined ? {} : { getRoute: route.getRoute }),
       ...(hooks.hooks === undefined ? {} : { anchorHooks: hooks.hooks }),
+      ...(annotatable.canAnnotate === undefined ? {} : { canAnnotate: annotatable.canAnnotate }),
       ...(mountTarget ? { mount: mountTarget } : {}),
       onError: (error: unknown) => this.dispatchEvent(new CustomEvent("bp-error", { detail: error })),
     };

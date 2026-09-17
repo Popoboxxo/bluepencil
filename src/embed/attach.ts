@@ -390,8 +390,20 @@ export interface AttachApi {
   destroy(): void;
 }
 
-/** A script tag belongs to the loader when it carries any documented attribute. */
+/**
+ * A loader script is recognised by **what it is**, not only by what it carries.
+ *
+ * The documented defaults are valid without a single `data-*` attribute, so a bare
+ * `<script src="/bluepencil/attach.js">` must attach — that is the "one script tag" the docs promise.
+ * Requiring an attribute here made the documented default path silently inert (issue #11). The name
+ * check keeps unrelated scripts out; a script that carries any known key still counts, so renamed
+ * builds keep working.
+ */
 function isAttachScript(script: Element): boolean {
+  const source = (script as HTMLScriptElement).src ?? "";
+  if (/(^|\/)attach(\.[a-z0-9]+)*\.js(\?|#|$)/i.test(source)) {
+    return true;
+  }
   const data = collectDataAttributes(script as unknown as { getAttribute(name: string): string | null });
   return Object.keys(data).some(
     (key) =>
@@ -440,7 +452,10 @@ export async function attachFromDocument(
       return handle;
     },
     async check() {
-      let updated = 0;
+      // A host that adds the tag later — SPA bootstrap, nginx injection, a CMS — has to be able to
+      // pick it up without reloading: check() discovers scripts before it re-checks the handles
+      // (issue #11; before this it only ever looked at what was already attached).
+      let updated = await attachScripts();
       for (const handle of api.handles) {
         if (await handle.check()) updated += 1;
       }
@@ -457,19 +472,29 @@ export async function attachFromDocument(
     },
   };
 
-  for (const script of [...target.querySelectorAll("script")].filter(isAttachScript)) {
-    const source = (script as HTMLScriptElement).src ?? "";
-    try {
-      await api.attach({
-        ...parseLoaderOptions(
-          collectDataAttributes(script as unknown as { getAttribute(name: string): string | null }),
-        ),
-        scriptUrl: source === "" ? target.baseURI : source,
-      });
-    } catch (error) {
-      reportError(target, error);
+  const seen = new Set<Element>();
+  /** Attaches loader scripts that have not been seen yet; returns how many were added. */
+  const attachScripts = async (): Promise<number> => {
+    let added = 0;
+    for (const script of [...target.querySelectorAll("script")].filter(isAttachScript)) {
+      if (seen.has(script)) continue;
+      seen.add(script);
+      const source = (script as HTMLScriptElement).src ?? "";
+      try {
+        await api.attach({
+          ...parseLoaderOptions(
+            collectDataAttributes(script as unknown as { getAttribute(name: string): string | null }),
+          ),
+          scriptUrl: source === "" ? target.baseURI : source,
+        });
+        added += 1;
+      } catch (error) {
+        reportError(target, error);
+      }
     }
-  }
+    return added;
+  };
+  await attachScripts();
   return api;
 }
 
