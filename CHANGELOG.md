@@ -3,6 +3,55 @@
 All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org/).
 
+## [0.1.0-alpha.1] - 2026-09-17
+
+First release. Everything listed here is built, tested and green; the known gaps are listed with it
+rather than left to be discovered.
+
+### Added
+- **One-tag embedding (FR-17):** `attach.js` plus `<bluepencil-notes>` — no build step in the host and
+  no JavaScript to write. Configuration lives in attributes: remote store (`endpoint`, `headers`,
+  `headers-from`, `token`, `token-header`, `token-scheme`), routing (`route`, `route-from`), host gate
+  (`gate`), theming (`theme`, `theme-accent`, `theme-surface`), manifest-driven runtime updates
+  (`data-manifest`, `data-integrity`, `data-watch`) and the `window.bluepencilAttach` surface.
+- **Store journal (FR-18):** every accepted mutation is recorded — as a coalesced commit inside the
+  git work tree, as a hash-chained `journal.jsonl` without git, or not at all (`--journal none`).
+  `GET {base}/journal?since=<seq>` answers "what changed since my last round" for agents. The commit
+  identity is configurable (`--journal-author`, `BLUEPENCIL_JOURNAL_AUTHOR`) and reported in the
+  journal status.
+- **The version is visible everywhere (FR-19):** `data-bp-version` on the element,
+  `window.bluepencilAttach.version`, `attach-version`, the sidecar's `/health` and `--version`, the
+  CLI and the MCP handshake — one source, `package.json`.
+- Examples for both embedding paths (`examples/presentation`, `examples/attach` with a self-test
+  probe) and the sidecar's static mode, so one origin serves the page and the API.
+
+### Changed
+- `route-from` calls the host function with the annotated element (`fn(element)`), so a note's route
+  belongs to that note instead of to whatever happens to be scrolled into view. `route="url"` and
+  zero-parameter hosts behave exactly as before.
+- The journal's commit is path-limited (`git add -- <paths>`, `git commit --only -- <paths>`): work
+  somebody else staged in the same work tree can no longer ride along in a notes commit.
+
+### Verified
+- 444 unit tests in 18 files, typecheck, build, size guard, CLI/MCP/packaging smoke, secret scan.
+- Embed smoke in a real browser: 13 cases, and the browser leg is mandatory in CI — a missing browser
+  fails the job instead of skipping silently.
+- Run against a real third-party SPA (ReqogniLoom, React 18 + Vite build): layer mounted, note
+  round-trip against the sidecar answered 200, zero console errors, zero long tasks. That run is also
+  where the two gaps below were found.
+
+### Not in this alpha
+- PR #10 (configurable `anchor-hooks` attribute) is not merged yet, so it is not part of this tag.
+  The release commit is cut from `main` and reaches it through the release PR — only what is on `main`
+  is released, which is exactly why the unmerged feature is absent.
+- `can-annotate` is a library-only option without an attribute — the same class as issue #12.
+
+### Known gaps (documented, not hidden)
+- [#11](https://github.com/Popoboxxo/bluepencil/issues/11) — a loader tag injected after
+  `DOMContentLoaded` stays silent, even after `check()`; the module path works.
+- [#12](https://github.com/Popoboxxo/bluepencil/issues/12) — `identity` accepts no global path, so a
+  tag-wired host cannot hand over its user and notes fall back to `"prompt"`.
+
 ## [Unreleased]
 
 ### Added
