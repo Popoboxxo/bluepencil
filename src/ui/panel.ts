@@ -594,6 +594,11 @@ export interface LayerSettings {
   language: string;
   /** Bar collapsed to its handle (FR-1.2). */
   barCollapsed: boolean;
+  /**
+   * Chrome level (FR-12.9): how much of the layer's own chrome is shown. Spelled out here instead of
+   * importing the layer's type, because the layer imports `DEFAULT_SETTINGS` from this module.
+   */
+  chromeLevel: "full" | "quiet" | "off";
 }
 
 export const DEFAULT_SETTINGS: LayerSettings = {
@@ -602,6 +607,7 @@ export const DEFAULT_SETTINGS: LayerSettings = {
   author: "",
   language: "en",
   barCollapsed: false,
+  chromeLevel: "full",
 };
 
 export interface SettingsOptions {

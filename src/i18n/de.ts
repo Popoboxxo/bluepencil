@@ -155,6 +155,7 @@ export const de: Messages = {
   "legend.key.panel": "Notizliste öffnen/schließen",
   "legend.key.feedbackOnly": "Nur-Feedback-Modus ein/aus",
   "legend.key.bar": "Leiste ein-/ausblenden",
+  "legend.key.chrome": "Chrome-Stufen: voll / ruhig / aus",
   "legend.key.legend": "Diese Legende anzeigen",
   "legend.key.cancel": "Abbrechen / schließen",
   "legend.key.next": "Nächste Notiz",

@@ -21,6 +21,7 @@ export type ShortcutId =
   | "panel"
   | "feedback-only"
   | "bar"
+  | "chrome"
   | "legend"
   | "next"
   | "previous"
@@ -83,6 +84,12 @@ export const SHORTCUTS: readonly Shortcut[] = Object.freeze([
     id: "bar",
     keys: ["b"],
     label: "legend.key.bar",
+    group: SHORTCUT_GROUPS.view,
+  },
+  {
+    id: "chrome",
+    keys: ["h"],
+    label: "legend.key.chrome",
     group: SHORTCUT_GROUPS.view,
   },
   {

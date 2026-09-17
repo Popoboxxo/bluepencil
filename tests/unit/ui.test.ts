@@ -597,6 +597,102 @@ describe("capture UI", () => {
     handle.disable();
   });
 
+  it("switches the layer's own chrome between full, quiet and off (FR-12.9)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
+    const store = makeStore();
+    const handle = startLayer(store);
+    const bar = query('[data-bp-part="bar"]');
+    const chromeHandle = query('[data-bp-part="handle"]');
+
+    expect(handle.chrome()).toBe("full");
+    expect(bar.hidden).toBe(false);
+    expect(chromeHandle.hidden).toBe(true);
+
+    handle.setChrome("quiet");
+    expect(bar.hidden).toBe(true);
+    expect(chromeHandle.hidden).toBe(false);
+
+    handle.setChrome("off");
+    expect(bar.hidden).toBe(true);
+    expect(chromeHandle.hidden).toBe(true);
+
+    handle.setChrome("full");
+    expect(bar.hidden).toBe(false);
+    expect(chromeHandle.hidden).toBe(true);
+
+    // "off" is not teardown: disable() is what removes the nodes (NFR-15).
+    handle.disable();
+    expect(document.querySelector('[data-bp-part="bar"]')).toBeNull();
+  });
+
+  it("cycles the chrome level with the registry key (FR-12.9)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
+    const store = makeStore();
+    const handle = startLayer(store);
+
+    pressKey("c"); // own the keyboard
+    expect(handle.chrome()).toBe("full");
+    pressKey("h");
+    expect(handle.chrome()).toBe("quiet");
+    pressKey("h");
+    expect(handle.chrome()).toBe("off");
+    pressKey("h");
+    expect(handle.chrome()).toBe("full");
+
+    handle.disable();
+  });
+
+  it("persists the level across a reload (FR-12.9)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
+    const { storage, restore } = installStorage();
+    try {
+      const first = startLayer(makeStore());
+      first.setChrome("quiet");
+      first.disable();
+
+      const stored = Array.from({ length: storage.length }, (_, index) => storage.key(index))
+        .map((key) => (key === null ? "" : String(storage.getItem(key))))
+        .join(" ");
+      expect(stored).toContain('"chromeLevel":"quiet"');
+
+      const second = startLayer(makeStore());
+      expect(second.chrome()).toBe("quiet");
+      expect(query('[data-bp-part="bar"]').hidden).toBe(true);
+      second.disable();
+    } finally {
+      restore();
+    }
+  });
+
+  it("applies ?bp-chrome= for one load without persisting it (FR-12.12)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
+    const { storage, restore } = installStorage();
+    try {
+      window.history.replaceState({}, "", "?bp-chrome=off");
+
+      const handle = startLayer(makeStore());
+      expect(handle.chrome()).toBe("off");
+      expect(query('[data-bp-part="bar"]').hidden).toBe(true);
+      expect(query('[data-bp-part="handle"]').hidden).toBe(true);
+
+      // Read-only for this load: nothing was written back.
+      const written = Array.from({ length: storage.length }, (_, index) => storage.key(index))
+        .map((key) => (key === null ? "" : String(storage.getItem(key))))
+        .join(" ");
+      expect(written).not.toContain("chromeLevel");
+
+      // An explicit change wins over the parameter — and only that one is persisted.
+      handle.setChrome("full");
+      expect(handle.chrome()).toBe("full");
+      expect(query('[data-bp-part="bar"]').hidden).toBe(false);
+
+      handle.disable();
+    } finally {
+      window.history.replaceState({}, "", "/");
+      restore();
+    }
+  });
+
   it("acts on every key the registry documents (FR-1.11)", () => {
     document.body.innerHTML = `<main id="host"><p data-bluepencil="a">Text</p></main>`;
     const store = makeStore();
@@ -619,7 +715,7 @@ describe("capture UI", () => {
         documented.push(key);
       }
     }
-    expect(documented).toEqual(["c", "d", "l", "f", "b", "?", "Escape", "j", "k"]);
+    expect(documented).toEqual(["c", "d", "l", "f", "b", "h", "?", "Escape", "j", "k"]);
 
     handle.disable();
   });

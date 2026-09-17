@@ -75,6 +75,8 @@ export interface LayerOptions {
    * keys that cannot be remapped are reported — the legend always shows the effective keymap.
    */
   keymap?: KeymapOverrides;
+  /** Initial chrome level (FR-12.9); the user's choice is persisted on top of it. */
+  chrome?: ChromeLevel;
   getRoute?: (element?: Element) => string;
   identity?: { getUser?: () => { id?: string; name: string } } | "prompt" | "anonymous";
   markerStrategy?: "overlay" | "sibling";
@@ -90,6 +92,14 @@ export interface LayerHandle {
   refresh(): void;
   setShowDone(value: boolean): void;
   /**
+   * Chrome level at runtime (FR-12.9): `full` keeps the bar/handle pair, `quiet` leaves only the
+   * handle, `off` leaves the annotations without chrome of their own. Persisted; `disable()` removes
+   * everything regardless of the level.
+   */
+  setChrome(level: ChromeLevel): void;
+  /** The current chrome level (FR-12.9), as persisted. */
+  chrome(): ChromeLevel;
+  /**
    * Resolves when the store hydration kicked off by `enable()` has settled (additive; `ready()`
    * of the public `Blueprint` awaits it instead of starting a second read). Never rejects: a
    * failed load is reported through `options.onError` and the store simply stays as it is.
@@ -99,6 +109,13 @@ export interface LayerHandle {
 
 /** Annotation modes (FR-1.3 text / FR-1.4 design). */
 type Mode = "off" | "text" | "design";
+
+/**
+ * How much chrome the layer shows (FR-12.9): `full` = bar + handle, `quiet` = handle only, `off` =
+ * neither. Deliberately *not* `disable()`: the annotations and their markers stay, only the layer's
+ * own controls go — `disable()` is what removes every node (NFR-15).
+ */
+export type ChromeLevel = "full" | "quiet" | "off";
 
 /* -------------------------------------------------------------------------- */
 /* style node registry — one <style> per document, removed with the last layer */
@@ -247,11 +264,24 @@ function readStoredSettings(view: Window | undefined): Partial<LayerSettings> {
     if (typeof source.author === "string") result.author = source.author;
     if (typeof source.language === "string") result.language = source.language;
     if (typeof source.barCollapsed === "boolean") result.barCollapsed = source.barCollapsed;
+    if (source.chromeLevel === "full" || source.chromeLevel === "quiet" || source.chromeLevel === "off") {
+      result.chromeLevel = source.chromeLevel;
+    }
     return result;
   } catch (error) {
     // Private mode / disabled storage must degrade, never break (NFR-5).
     return {};
   }
+}
+
+/**
+ * `?bp-chrome=quiet|full|off` — the level for one load, never persisted (FR-12.12). For screenshots,
+ * QA runs and handovers: whoever takes over can set the state without touching a stored preference.
+ */
+function chromeFromUrl(view: Window | undefined): ChromeLevel | null {
+  const search = view?.location?.search ?? "";
+  const match = /[?&]bp-chrome=(quiet|full|off)(&|$)/.exec(search);
+  return match === null ? null : (match[1] as ChromeLevel);
 }
 
 export function createLayer(options: LayerOptions): LayerHandle {
@@ -264,9 +294,15 @@ export function createLayer(options: LayerOptions): LayerHandle {
   /* -- state --------------------------------------------------------------- */
 
   const stored = readStoredSettings(view);
+  /**
+   * A `?bp-chrome=` level is good for this load only (FR-12.12): it is never written back, and an
+   * explicit change at runtime wins over it (then it is gone).
+   */
+  let chromeOverride = chromeFromUrl(view);
   const settings: LayerSettings = {
     ...DEFAULT_SETTINGS,
     showDone: options.defaultShowDone ?? false,
+    ...(options.chrome === undefined ? {} : { chromeLevel: options.chrome }),
     ...stored,
   };
   // An explicit host language always wins over the persisted one (FR-10.3); without it the
@@ -766,8 +802,11 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (!enabled || !root) return;
     root.setAttribute("data-bp-mode", mode);
     root.setAttribute("data-bp-instance", instanceId);
-    if (bar) bar.hidden = settings.barCollapsed;
-    if (handle) handle.hidden = !settings.barCollapsed;
+    // Chrome level (FR-12.9): full keeps the bar/handle pair as before, quiet leaves only the
+    // handle, off leaves the annotations without any chrome of their own.
+    const level = chromeOverride ?? settings.chromeLevel;
+    if (bar) bar.hidden = settings.barCollapsed || level !== "full";
+    if (handle) handle.hidden = level === "off" || (level === "full" && !settings.barCollapsed);
     if (barCollapseButton) {
       barCollapseButton.setAttribute("data-bp-i18n", settings.barCollapsed ? "bar.expand" : "bar.collapse");
     }
@@ -804,12 +843,28 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (liveRegion) liveRegion.textContent = t(key);
   }
 
+  /**
+   * Set the chrome level and persist it (FR-12.9). `off` also closes the layer's own surfaces, so
+   * "off" really means off; `disable()` remains the call that removes every node (NFR-15).
+   */
+  function setChromeLevel(level: ChromeLevel): void {
+    chromeOverride = null; // an explicit choice wins over the one-load URL parameter
+    applySettingsPatch({ chromeLevel: level });
+    if (level === "off") {
+      if (legend?.isOpen()) legend.close();
+      if (settingsPopover?.isOpen()) settingsPopover.close();
+      if (panel?.isOpen()) panel.close();
+    }
+    applyUiState();
+  }
+
   function applySettingsPatch(patch: Partial<LayerSettings>): void {
     let languageChanged = false;
     if (patch.showDone !== undefined) settings.showDone = patch.showDone;
     if (patch.feedbackOnly !== undefined) settings.feedbackOnly = patch.feedbackOnly;
     if (patch.author !== undefined) settings.author = patch.author;
     if (patch.barCollapsed !== undefined) settings.barCollapsed = patch.barCollapsed;
+    if (patch.chromeLevel !== undefined) settings.chromeLevel = patch.chromeLevel;
     if (patch.language !== undefined) {
       const next = normalizeLanguage(patch.language);
       languageChanged = next !== settings.language;
@@ -1382,6 +1437,11 @@ export function createLayer(options: LayerOptions): LayerHandle {
         case "bar":
           setBarCollapsed(!settings.barCollapsed);
           break;
+        case "chrome":
+          setChromeLevel(
+            settings.chromeLevel === "full" ? "quiet" : settings.chromeLevel === "quiet" ? "off" : "full",
+          );
+          break;
         case "legend":
           if (legend?.isOpen()) {
             legend.close();
@@ -1651,6 +1711,8 @@ export function createLayer(options: LayerOptions): LayerHandle {
   return {
     enable,
     disable,
+    chrome: () => chromeOverride ?? settings.chromeLevel,
+    setChrome: setChromeLevel,
     isEnabled: () => enabled,
     /** Store hydration of the last `enable()` (additive; used by `Blueprint.ready()`). */
     hydrated: () => hydration,
