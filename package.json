@@ -1,8 +1,16 @@
 {
   "name": "bluepencil",
-  "version": "0.1.0",
+  "version": "0.1.0-alpha.1",
   "description": "Annotate any web app — text and design notes, anchored to the element, readable by humans and agents.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Popoboxxo/bluepencil.git"
+  },
+  "homepage": "https://github.com/Popoboxxo/bluepencil#readme",
+  "bugs": {
+    "url": "https://github.com/Popoboxxo/bluepencil/issues"
+  },
   "type": "module",
   "engines": {
     "node": ">=20"
