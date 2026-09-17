@@ -42,6 +42,7 @@ export const EMBED_ATTRIBUTES = [
   "route-from",
   "gate",
   "anchor-hooks",
+  "can-annotate",
 ] as const;
 
 /** Every attribute the element observes and documents. */
@@ -208,6 +209,37 @@ export function readTheme(source: AttributeSource): { theme: Record<string, stri
   return { theme, issues };
 }
 
+/** What `identity` may be: the documented shorthands, or a host object with a `getUser()`. */
+type IdentityKind = "prompt" | "anonymous" | { getUser?: () => { id?: string; name: string } };
+
+/**
+ * `can-annotate="hostApp.canAnnotate"` — the host decides which elements may be annotated (FR-1.10).
+ *
+ * A generic layer cannot know a host's component vocabulary, so target resolution has to be an
+ * extension point instead of a growing selector list. The function is called with the candidate
+ * element; `false` rejects it, anything else accepts. Before this, the option existed in the library
+ * but a host wiring bluepencil with the tag could not reach it.
+ */
+export function readCanAnnotate(
+  source: AttributeSource,
+  resolve: GlobalResolver,
+): { canAnnotate?: (element: Element) => boolean; issues: string[] } {
+  const issues: string[] = [];
+  const path = readAttribute(source, "can-annotate");
+  if (path === undefined) {
+    return { issues };
+  }
+  const resolved = resolve(path);
+  if (typeof resolved === "function") {
+    return {
+      canAnnotate: (element: Element) => (resolved as (el: Element) => unknown)(element) !== false,
+      issues,
+    };
+  }
+  issues.push(`can-annotate "${path}" does not resolve to a function`);
+  return { issues };
+}
+
 /**
  * `anchor-hooks="data-testid,id"` — the attribute names `deriveAnchor` may use as the primary anchor.
  *
@@ -319,7 +351,8 @@ export function readStore(source: AttributeSource): { endpoint?: string; adapter
 /** Environment + session, validated so a typo cannot silently cross the environment boundary. */
 export function readEnvironment(
   source: AttributeSource,
-): { environment?: Environment; sessionRef?: string; identity?: "prompt" | "anonymous"; showDone?: boolean; issues: string[] } {
+  resolve?: GlobalResolver,
+): { environment?: Environment; sessionRef?: string; identity?: IdentityKind; showDone?: boolean; issues: string[] } {
   const issues: string[] = [];
   const raw = readAttribute(source, "environment");
   let environment: Environment | undefined;
@@ -332,9 +365,21 @@ export function readEnvironment(
   }
   const sessionRef = readAttribute(source, "session");
   const identityRaw = readAttribute(source, "identity");
-  const identity = identityRaw === "prompt" || identityRaw === "anonymous" ? identityRaw : undefined;
-  if (identityRaw !== undefined && identity === undefined) {
-    issues.push(`identity must be "prompt" or "anonymous" (got ${JSON.stringify(identityRaw)})`);
+  let identity: IdentityKind | undefined;
+  if (identityRaw === "prompt" || identityRaw === "anonymous") {
+    identity = identityRaw;
+  } else if (identityRaw !== undefined) {
+    // Issue #12: a host that wires bluepencil with the tag cannot pass an object in markup, so a
+    // global path is accepted here exactly like for `gate`, `route-from` and `headers-from` — it has
+    // to resolve to `{ getUser() }`. The documented shorthand values keep working unchanged.
+    const resolved = resolve?.(identityRaw);
+    if (isRecord(resolved) && typeof (resolved as { getUser?: unknown }).getUser === "function") {
+      identity = resolved as IdentityKind;
+    } else {
+      issues.push(
+        `identity must be "prompt" or "anonymous" (got ${JSON.stringify(identityRaw)}) — or a global path that resolves to { getUser() }`,
+      );
+    }
   }
   return {
     ...(environment === undefined ? {} : { environment }),

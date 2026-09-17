@@ -77,6 +77,55 @@ afterEach(() => {
 /* attach()                                                                    */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* the documented default tag (issue #11)                                      */
+/* -------------------------------------------------------------------------- */
+
+describe("attachFromDocument — the documented default tag", () => {
+  it("attaches a bare loader script without a single data-* attribute", async () => {
+    const state = harness();
+    const script = document.createElement("script");
+    script.src = "https://c.example/bluepencil/attach.js";
+    document.head.append(script);
+
+    const api = await attachFromDocument(document, state.deps);
+
+    // The docs promise "one script tag" with defaults; requiring an attribute made that path inert.
+    expect(api.handles).toHaveLength(1);
+    expect(state.loaded).toEqual(["https://c.example/bluepencil/bluepencil.element.min.js"]);
+    api.destroy();
+  });
+
+  it("discovers a tag added later, so a late injection can call check()", async () => {
+    const state = harness();
+    const api = await attachFromDocument(document, state.deps);
+    expect(api.handles).toHaveLength(0);
+
+    const script = document.createElement("script");
+    script.src = "https://c.example/bluepencil/attach.js";
+    document.head.append(script);
+
+    expect(await api.check()).toBe(1);
+    expect(api.handles).toHaveLength(1);
+    // A second pass must not attach the same tag twice.
+    expect(await api.check()).toBe(0);
+    expect(api.handles).toHaveLength(1);
+    api.destroy();
+  });
+
+  it("leaves unrelated scripts alone", async () => {
+    const state = harness();
+    const script = document.createElement("script");
+    script.src = "https://c.example/app.js";
+    document.head.append(script);
+
+    const api = await attachFromDocument(document, state.deps);
+
+    expect(api.handles).toHaveLength(0);
+    api.destroy();
+  });
+});
+
 describe("attach — mounting", () => {
   it("reads the manifest, loads that build and mounts the forwarded attributes", async () => {
     const state = harness();
