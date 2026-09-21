@@ -27,7 +27,12 @@
  *    input, so a list render loop can never break on a half-built node.
  */
 
-import { BluepencilValidationError, type Anchor } from "./model";
+import {
+  BluepencilValidationError,
+  type Anchor,
+  type RevealContainer,
+  type RevealHint,
+} from "./model";
 
 /** Tree-scope separator used inside a stored CSS path (ARCHITECTURE §6b). */
 const SHADOW_BOUNDARY = " >> ";
@@ -438,7 +443,179 @@ export function deriveAnchor(
   if (route !== "") anchor.route = route;
 
   if (composed.degraded !== undefined) anchor.degraded = composed.degraded;
+
+  // Issue #20: remember how to bring a target inside a closed dialog/popover/tab back, so that a
+  // later jump can reveal the container instead of reporting a note as unreachable.
+  const reveal = captureReveal(el, options);
+  if (reveal !== undefined) anchor.reveal = reveal;
   return anchor;
+}
+
+/* -------------------------------------------------------------------------- */
+/* transient containers (issue #20)                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `data-*` attribute a host can set on its own container to name the trigger explicitly, e.g.
+ * `data-bluepencil-reveal="notification-bell"` (a hook value) or
+ * `data-bluepencil-reveal="[data-testid=\"bell\"]"` (a selector). Checked before the generic
+ * lookups, so a host whose markup does not follow the ARIA conventions can still be revealed.
+ */
+const REVEAL_ATTRIBUTE = "data-bluepencil-reveal";
+
+/** Attribute value of `el`, trimmed; `undefined` for missing/empty/Non-string values. */
+function attributeOf(el: Element, name: string): string | undefined {
+  const read = (el as { getAttribute?: (attribute: string) => string | null }).getAttribute;
+  if (typeof read !== "function") return undefined;
+  const value = read.call(el, name);
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function hasAttributeOf(el: Element, name: string): boolean {
+  const has = (el as { hasAttribute?: (attribute: string) => boolean }).hasAttribute;
+  if (typeof has === "function") {
+    try {
+      return has.call(el, name) === true;
+    } catch {
+      return false;
+    }
+  }
+  return attributeOf(el, name) !== undefined;
+}
+
+/** Parent element, or the shadow host when the element is the first child of an open root. */
+function parentOrHost(el: Element): Element | null {
+  const parent = (el as { parentElement?: Element | null }).parentElement ?? null;
+  if (parent) return parent;
+  const root = scopeRootOf(el);
+  return isShadowRootNode(root) ? root.host : null;
+}
+
+/** Element with `id` in the element's own document (for `aria-labelledby`/`aria-controls`). */
+function elementById(el: Element, id: string): Element | null {
+  const doc = (el as { ownerDocument?: Document | null }).ownerDocument;
+  if (!doc || typeof doc.getElementById !== "function") return null;
+  try {
+    return doc.getElementById(id) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Kind of transient container `el` is, or `undefined` for ordinary page content. Markers follow the
+ * platform vocabulary (native `dialog`/`popover`, ARIA roles), so a host does not have to learn a
+ * bluepencil-specific convention to be supported.
+ */
+export function containerKind(el: Element): RevealContainer | undefined {
+  if (!isElementLike(el)) return undefined;
+  const role = (attributeOf(el, "role") ?? "").toLowerCase();
+  if (selectorTag(el) === "dialog" || role === "dialog" || attributeOf(el, "aria-modal") === "true") {
+    return "dialog";
+  }
+  if (role === "tabpanel") return "tabpanel";
+  if (role === "menu" || role === "menubar" || role === "listbox") return "menu";
+  if (role === "tooltip" || hasAttributeOf(el, "popover")) return "popover";
+  return undefined;
+}
+
+/** Nearest ancestor of `el` (crossing open shadow roots) that is a transient container. */
+function nearestContainer(el: Element): { container: Element; kind: RevealContainer } | undefined {
+  let node = parentOrHost(el);
+  while (node) {
+    const kind = containerKind(node);
+    if (kind) return { container: node, kind };
+    node = parentOrHost(node);
+  }
+  return undefined;
+}
+
+/** Human-readable name of a container: its `aria-label`, else "". */
+function containerLabel(container: Element): string {
+  return attributeOf(container, "aria-label") ?? "";
+}
+
+/**
+ * The element that brings `container` back, in order of reliability: the host's explicit
+ * `data-bluepencil-reveal`, the native popover target, the tab of a tab panel, then any element
+ * declaring `aria-controls` for it. Returns `null` when the markup offers no way in — the hint then
+ * still names the container so a human can open it.
+ */
+function findRevealTrigger(
+  container: Element,
+  kind: RevealContainer,
+  hooks: readonly string[],
+  root: ParentNode | undefined,
+): Element | null {
+  const scope: ParentNode | undefined = root ?? defaultRoot() ?? undefined;
+  const query = (selector: string): Element | null =>
+    scope === undefined ? null : querySelectorSafe(scope, selector);
+
+  const explicit = attributeOf(container, REVEAL_ATTRIBUTE);
+  if (explicit) {
+    const byHook = findByHook(explicit, hooks, scope);
+    if (byHook) return byHook;
+    const bySelector = query(explicit);
+    if (bySelector) return bySelector;
+  }
+
+  const id = attributeOf(container, "id");
+  if (id) {
+    const byPopoverTarget = query(`[popovertarget="${escapeAttributeValue(id)}"]`);
+    if (byPopoverTarget) return byPopoverTarget;
+  }
+
+  if (kind === "tabpanel") {
+    const labelledBy = attributeOf(container, "aria-labelledby");
+    if (labelledBy) {
+      const tab = elementById(container, labelledBy);
+      if (tab) return tab;
+    }
+    if (id) {
+      const byControls = query(`[role="tab"][aria-controls="${escapeAttributeValue(id)}"]`);
+      if (byControls) return byControls;
+    }
+    // Last resort for a tab panel: the tab that is currently selected in its tab list.
+    const list = querySelectorSafe(parentOrHost(container) ?? container, '[role="tablist"]');
+    const selected = list ? querySelectorSafe(list, '[role="tab"][aria-selected="true"]') : null;
+    if (selected) return selected;
+  }
+
+  if (id) {
+    const byControls = query(`[aria-controls="${escapeAttributeValue(id)}"]`);
+    if (byControls) return byControls;
+  }
+  return null;
+}
+
+/**
+ * Capture how to bring the annotated element back when it only exists in a transient UI state
+ * (issue #20). Returns `undefined` for ordinary page content, so an anchor of an element that is
+ * always visible stays byte-identical to the version without this feature.
+ */
+export function captureReveal(el: Element, options?: AnchorOptions): RevealHint | undefined {
+  if (!isElementLike(el)) return undefined;
+  const hooks = normalizeHooks(options?.hooks);
+  const found = nearestContainer(el);
+  if (!found) return undefined;
+
+  const root = options?.root ?? defaultRoot() ?? undefined;
+  const trigger = findRevealTrigger(found.container, found.kind, hooks, root);
+  const hint: RevealHint = { container: found.kind };
+
+  if (trigger) {
+    const match = hookMatch(trigger, hooks);
+    if (match) hint.triggerHook = match.value;
+    const path = composePathSegments(trigger, hooks).segments.join(SHADOW_BOUNDARY);
+    if (path !== "") hint.triggerSelector = path;
+    const label = elementLabel(trigger);
+    if (label !== "") hint.triggerLabel = label;
+    return hint;
+  }
+
+  const label = containerLabel(found.container);
+  if (label !== "") hint.triggerLabel = label;
+  return hint;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -582,11 +759,19 @@ function scanForHook(el: Element, value: string, hooks: readonly string[]): Elem
   return null;
 }
 
+/** Which fallback of the documented order (hook -> selector -> quote) resolved the anchor. */
+export type AnchorStrategy = "hook" | "selector" | "quote";
+
 /** Result of one resolution: the element plus the degradation of an unreachable shadow boundary. */
 export interface AnchorResolution {
   element: Element | null;
   /** Path segment behind a closed shadow root — the caller flags the note (FR-2.4, §6b). */
   degraded?: string;
+  /**
+   * Fallback that matched, absent when nothing matched. Lets a host measure anchor health (how many
+   * notes still resolve through their hook, how many only through the quote fallback).
+   */
+  strategy?: AnchorStrategy;
 }
 
 /**
@@ -604,12 +789,12 @@ export function resolveAnchorDetailed(anchor: Anchor, options?: AnchorOptions): 
 
   if (typeof anchor.hook === "string" && anchor.hook !== "") {
     const byHook = findByHook(anchor.hook, hooks, root);
-    if (byHook) return { element: byHook };
+    if (byHook) return { element: byHook, strategy: "hook" };
   }
 
   if (typeof anchor.selector === "string" && anchor.selector !== "") {
     const resolution = resolvePathDetailed(anchor.selector, root);
-    if (resolution.element) return { element: resolution.element };
+    if (resolution.element) return { element: resolution.element, strategy: "selector" };
     if (resolution.blockedByShadowBoundary && resolution.failedSegment !== undefined) {
       degraded = resolution.failedSegment;
     }
@@ -617,7 +802,9 @@ export function resolveAnchorDetailed(anchor: Anchor, options?: AnchorOptions): 
 
   if (typeof anchor.quote === "string" && anchor.quote.trim() !== "") {
     const byQuote = findQuote(anchor.quote, root);
-    if (byQuote) return { element: byQuote, ...(degraded === undefined ? {} : { degraded }) };
+    if (byQuote) {
+      return { element: byQuote, strategy: "quote", ...(degraded === undefined ? {} : { degraded }) };
+    }
   }
 
   return { element: null, ...(degraded === undefined ? {} : { degraded }) };
@@ -630,4 +817,115 @@ export function resolveAnchorDetailed(anchor: Anchor, options?: AnchorOptions): 
  */
 export function resolveAnchor(anchor: Anchor, options?: AnchorOptions): Element | null {
   return resolveAnchorDetailed(anchor, options).element;
+}
+
+/* -------------------------------------------------------------------------- */
+/* revealing a transient container (issue #20)                                 */
+/* -------------------------------------------------------------------------- */
+
+/** Options of `revealAnchorDetailed`: how long the host may take to render after a click. */
+export interface RevealOptions extends AnchorOptions {
+  /** Upper bound of one settle window in ms (default 400). */
+  settleMs?: number;
+  /** Poll interval inside a settle window in ms (default 25). */
+  stepMs?: number;
+}
+
+/** Result of a reveal attempt: the ordinary resolution plus what had to be done for it. */
+export interface RevealResolution extends AnchorResolution {
+  /** `true` when a trigger was activated; `false` when the anchor resolved on its own (or has no hint). */
+  revealed: boolean;
+  /** The trigger that was activated, when the hint pointed at one that exists right now. */
+  trigger?: Element;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms > 0 ? ms : 0);
+  });
+}
+
+/**
+ * Activate a trigger the way a user would. A platform `click()` produces exactly the event a real
+ * interaction produces and is understood by every framework's event delegation; a constructed
+ * `MouseEvent` is only the fallback for nodes without `click()`.
+ *
+ * `view` is deliberately *not* part of the init: engines validate it against their own realm's
+ * `Window` type and refuse the event otherwise ("member view is not of type Window"), which would
+ * turn a working reveal into a silent no-op.
+ */
+function activateTrigger(el: Element): boolean {
+  const click = (el as { click?: () => void }).click;
+  if (typeof click === "function") {
+    try {
+      click.call(el);
+      return true;
+    } catch {
+      /* fall through to the constructed event */
+    }
+  }
+  const doc = (el as { ownerDocument?: Document | null }).ownerDocument;
+  const view = doc ? (doc as { defaultView?: Window | null }).defaultView : null;
+  const Ctor = (view as { MouseEvent?: typeof MouseEvent } | null)?.MouseEvent;
+  if (typeof Ctor !== "function") return false;
+  try {
+    el.dispatchEvent(new Ctor("click", { bubbles: true, cancelable: true }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve an anchor whose target only exists inside a transient container by entering the container
+ * first (issue #20): activate the stored trigger, wait for the host's DOM to settle, resolve again.
+ *
+ * Two attempts, because the first click can *close* a container that happened to be open while the
+ * target was still unreachable for another reason — a toggle would otherwise walk into the opposite
+ * direction.
+ *
+ * The anchor is never mutated and no resolution is invented: when the target still cannot be found
+ * the result stays `element: null` and the caller keeps the note flagged as orphaned. The difference
+ * is that the layer now tried the one thing a human would try before giving up.
+ */
+export async function revealAnchorDetailed(
+  anchor: Anchor,
+  options?: RevealOptions,
+): Promise<RevealResolution> {
+  const direct = resolveAnchorDetailed(anchor, options);
+  if (direct.element) return { ...direct, revealed: false };
+
+  const hint = anchor && typeof anchor === "object" ? anchor.reveal : undefined;
+  if (!hint) return { ...direct, revealed: false };
+
+  const hooks = normalizeHooks(options?.hooks);
+  const root = options?.root;
+  const trigger =
+    hint.triggerHook !== undefined
+      ? findByHook(hint.triggerHook, hooks, root)
+      : hint.triggerSelector !== undefined
+        ? resolvePath(hint.triggerSelector, root)
+        : null;
+  if (!trigger) return { ...direct, revealed: false };
+
+  const settleMs = options?.settleMs ?? 400;
+  const stepMs = options?.stepMs ?? 25;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!activateTrigger(trigger)) return { ...direct, revealed: false };
+    const deadline = Date.now() + settleMs;
+    for (;;) {
+      const after = resolveAnchorDetailed(anchor, options);
+      if (after.element) return { ...after, revealed: true, trigger };
+      if (Date.now() >= deadline) break;
+      await sleep(stepMs);
+    }
+  }
+  return { ...direct, revealed: true, trigger };
+}
+
+/** `revealAnchorDetailed(anchor, options).element` — the one-liner for a jump handler. */
+export async function revealAnchor(anchor: Anchor, options?: RevealOptions): Promise<Element | null> {
+  const result = await revealAnchorDetailed(anchor, options);
+  return result.element;
 }

@@ -438,7 +438,10 @@ export function createPanel(options: PanelOptions): Panel {
     entry.append(jump);
 
     if (orphaned) {
-      const hint = textNode(doc, "p", "bp-hint", "panel.orphanedHint");
+      // Issue #20: when the anchor knows which container holds the target, the hint says so —
+      // the note is not "unreachable", it is behind a closed dialog/popover/tab.
+      const key = note.anchor.reveal === undefined ? "panel.orphanedHint" : "panel.orphanedRevealHint";
+      const hint = textNode(doc, "p", "bp-hint", key);
       hint.setAttribute("data-bp-part", "orphan-hint");
       entry.append(hint);
     }

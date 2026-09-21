@@ -99,6 +99,8 @@ export const en = {
   "panel.status.done": "DONE",
   "panel.orphaned": "orphaned",
   "panel.orphanedHint": "The element cannot be found — jumping is not possible.",
+  "panel.orphanedRevealHint":
+    "The element sits in a dialog, popover or tab that is currently closed — jumping will open it.",
   "panel.degraded": "partly unresolvable",
   "panel.route": "Page",
   "panel.author": "Author",

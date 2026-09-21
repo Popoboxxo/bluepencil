@@ -97,6 +97,8 @@ export const de: Messages = {
   "panel.status.done": "ERLEDIGT",
   "panel.orphaned": "verwaist",
   "panel.orphanedHint": "Das Element ist nicht auffindbar – Springen ist nicht möglich.",
+  "panel.orphanedRevealHint":
+    "Das Element liegt in einem Dialog, Popup oder Tab, der gerade geschlossen ist – beim Springen wird er geöffnet.",
   "panel.degraded": "teilweise unauflösbar",
   "panel.route": "Seite",
   "panel.author": "Autor",

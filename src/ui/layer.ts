@@ -27,11 +27,17 @@
  *    panel or the composer, never into the page (NFR-14).
  */
 
-import { deriveAnchor, describeElement, resolveAnchor, resolveAnchorDetailed } from "../core/anchor";
+import {
+  deriveAnchor,
+  describeElement,
+  resolveAnchor,
+  resolveAnchorDetailed,
+  revealAnchor,
+} from "../core/anchor";
 import { captureContext, selectionQuote } from "../core/capture";
 import { toJson } from "../core/export/json";
 import { toMarkdown } from "../core/export/markdown";
-import type { Anchor, CapturedContext, MessageKind, Note, NoteStatus } from "../core/model";
+import type { Anchor, CapturedContext, Environment, MessageKind, Note, NoteStatus } from "../core/model";
 import { answerDecision } from "../core/protocol";
 import type { Store } from "../core/store";
 import { applyTranslations, createTranslator, normalizeLanguage, type Translate } from "../i18n";
@@ -76,6 +82,12 @@ export interface LayerOptions {
   markerStrategy?: "overlay" | "sibling";
   defaultShowDone?: boolean;
   buildRef?: string;
+  /** Name/build of the embedding app, stamped into an exported bundle (issue #21). */
+  app?: { name: string; buildRef?: string };
+  /** Exporter recorded in an exported bundle (issue #21); default `"unknown"`. */
+  exportedBy?: string;
+  /** Environment stamped into an exported bundle; a store scopes its notes by it (NFR-18). */
+  environment?: Environment;
   onError?: (err: unknown) => void;
 }
 
@@ -1058,6 +1070,21 @@ export function createLayer(options: LayerOptions): LayerHandle {
     }
     panel?.render();
     renderMarkers();
+
+    if (element !== null || note.anchor.reveal === undefined) return;
+
+    // Issue #20: the target may only exist inside a transient container (closed dialog/popover,
+    // inactive tab). Activate the trigger the anchor was captured with and jump to whatever the
+    // container then reveals — a note is never left unreachable while a way in is known.
+    void revealAnchor(note.anchor, anchorOptions())
+      .then((revealed) => {
+        if (revealed === null) return;
+        resolutions.set(note.id, revealed);
+        jumpTo(note, revealed);
+      })
+      .catch((error: unknown) => {
+        reportError(error);
+      });
   }
 
   /** Highlight overlay instead of touching host styles — the host box stays untouched (FR-1.8). */
@@ -1079,6 +1106,18 @@ export function createLayer(options: LayerOptions): LayerHandle {
   /* -- export (FR-7.1/7.2) ------------------------------------------------ */
 
   /**
+   * Bundle metadata the host configured (issue #21). Without it every export of a tag-embedded
+   * deployment said `app.name: "unknown"` / `exportedBy: "unknown"`, so two bundles from two
+   * products were indistinguishable for the reviewer/agent hand-off.
+   */
+  function bundleApp(): { name: string; buildRef?: string } | undefined {
+    const name = options.app?.name;
+    const buildRef = options.app?.buildRef ?? options.buildRef;
+    if (name === undefined && buildRef === undefined) return undefined;
+    return { name: name ?? "unknown", ...(buildRef === undefined ? {} : { buildRef }) };
+  }
+
+  /**
    * Export the whole set. Both formats can fail — a JSON bundle refuses notes of two environments
    * (FR-14.1), a Markdown export can hit a broken anchor — so the failure is caught here, reported
    * to the host and shown inline; nothing is thrown into the click path (NFR-14).
@@ -1087,8 +1126,13 @@ export function createLayer(options: LayerOptions): LayerHandle {
     const isJson = format === "json";
     try {
       const notes = options.store.notes();
+      const app = bundleApp();
       const text = isJson
-        ? toJson(notes)
+        ? toJson(notes, {
+            ...(app === undefined ? {} : { app }),
+            ...(options.exportedBy === undefined ? {} : { exportedBy: options.exportedBy }),
+            ...(options.environment === undefined ? {} : { environment: options.environment }),
+          })
         : toMarkdown(notes, {
             language: settings.language === "de" ? "de" : "en",
             includeDone: true,

@@ -58,6 +58,35 @@ export type NoteSource =
   | "cli:import"
   | (string & {});
 
+/**
+ * Kinds of container a target can live in when it is only visible in a transient UI state
+ * (issue #20): an inactive tab, a closed dialog, a closed popover or a collapsed menu.
+ */
+export const REVEAL_CONTAINERS = ["tabpanel", "dialog", "popover", "menu", "other"] as const;
+
+/** Kind of transient container — see `REVEAL_CONTAINERS`. */
+export type RevealContainer = (typeof REVEAL_CONTAINERS)[number];
+
+/**
+ * How to bring a target back that is only reachable through a transient UI state (issue #20).
+ *
+ * Such a target cannot be described by the anchor alone: in the default state of the very route it
+ * was captured on it is not in the DOM at all, so hook, selector *and* quote all fail and the note
+ * reads as orphaned although nothing is wrong with it. The hint records the container's kind and the
+ * trigger that opens it, so a jump can activate the trigger first and a human is told which view to
+ * open — without ever inventing a resolution that does not exist.
+ */
+export interface RevealHint {
+  /** Kind of container that has to be entered first. */
+  container: RevealContainer;
+  /** Hook value of the trigger element (preferred over the path, FR-2.1). */
+  triggerHook?: string;
+  /** CSS path of the trigger, same encoding as `Anchor.selector`. */
+  triggerSelector?: string;
+  /** Human-readable name of the trigger, or of the container when no trigger could be derived. */
+  triggerLabel?: string;
+}
+
 /** Resolution order: host hook → stored CSS path → text quote (FR-2.1). */
 export interface Anchor {
   /** Value of `data-bluepencil` / `data-testid` (FR-2.1, D6). */
@@ -68,6 +97,8 @@ export interface Anchor {
   quote?: string;
   /** Page/SPA route at capture time (FR-2.2). */
   route?: string;
+  /** How to bring a target inside a transient container back into the DOM (issue #20). */
+  reveal?: RevealHint;
   /** Set when resolution failed at read time; the note is never dropped (FR-2.4). */
   orphaned?: boolean;
   /** CSS path segments that could not be resolved (shadow root closed, etc.). */

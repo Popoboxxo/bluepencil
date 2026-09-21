@@ -47,6 +47,9 @@ export const EMBED_ATTRIBUTES = [
   "annotate-selectors",
   "keymap",
   "dock",
+  "app",
+  "build-ref",
+  "exported-by",
 ] as const;
 
 /** Every attribute the element observes and documents. */
@@ -270,6 +273,33 @@ export function readAnnotateSelectors(source: AttributeSource): {
   }
   if (selectors.length === 0) return { issues };
   return { annotateSelectors: Object.freeze(selectors), issues };
+}
+
+/**
+ * `app="ReqogniLoom"`, `build-ref="1.8.0-beta.12"`, `exported-by="dduchrow"` — the metadata an
+ * exported bundle carries (FR-14.2, issue #21).
+ *
+ * A bundle is the hand-off artifact between reviewer and agent. Without these attributes a
+ * tag-embedded deployment could not name itself, so every export said `app.name: "unknown"` /
+ * `exportedBy: "unknown"` and two bundles from two products were indistinguishable.
+ *
+ * `build-ref` doubles as the host's build identifier for a design note's `context.buildRef`, so a
+ * host declares its build once instead of twice.
+ */
+export function readAppInfo(source: AttributeSource): {
+  app?: { name: string; buildRef?: string };
+  exportedBy?: string;
+} {
+  const name = readAttribute(source, "app");
+  const buildRef = readAttribute(source, "build-ref");
+  const exportedBy = readAttribute(source, "exported-by");
+  return {
+    // A build reference without an app name is legal: the name then stays the documented default.
+    ...(name === undefined && buildRef === undefined
+      ? {}
+      : { app: { name: name ?? "unknown", ...(buildRef === undefined ? {} : { buildRef }) } }),
+    ...(exportedBy === undefined ? {} : { exportedBy }),
+  };
 }
 
 /** Ask the DOM's own parser rather than guessing at a selector's grammar. */

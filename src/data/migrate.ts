@@ -16,6 +16,7 @@ import {
   NOTE_INTENTS,
   NOTE_STATUSES,
   NOTE_TYPES,
+  REVEAL_CONTAINERS,
   SCHEMA_VERSION,
   newId,
   systemClock,
@@ -29,6 +30,8 @@ import type {
   Message,
   Note,
   NoteSource,
+  RevealContainer,
+  RevealHint,
   Session,
 } from "../core/model";
 import { assertBundle, assertNote } from "./schema";
@@ -133,6 +136,17 @@ function upgradeAnchor(value: unknown, path: string): Anchor {
   if (typeof value.route === "string") anchor.route = value.route;
   if (typeof value.orphaned === "boolean") anchor.orphaned = value.orphaned;
   if (typeof value.degraded === "string") anchor.degraded = value.degraded;
+  if (isObject(value.reveal)) {
+    const container = value.reveal.container;
+    if (typeof container === "string" && (REVEAL_CONTAINERS as readonly string[]).includes(container)) {
+      const reveal: RevealHint = { container: container as RevealContainer };
+      for (const key of ["triggerHook", "triggerSelector", "triggerLabel"] as const) {
+        const field = value.reveal[key];
+        if (typeof field === "string" && field !== "") reveal[key] = field;
+      }
+      anchor.reveal = reveal;
+    }
+  }
   return anchor;
 }
 
