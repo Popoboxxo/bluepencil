@@ -111,7 +111,7 @@ export interface ServerOptions {
   journalCoalesceMs?: number;
   /** `Name <mail>` used for the journal commits (`--journal-author`). */
   journalAuthor?: string;
-  /** Commit subject template (`--journal-subject`): `{count}`, `{op}`, `{app}` are substituted. */
+  /** Commit subject template (`--journal-subject`): `{count}`, `{op}`, `{actor}`, `{app}` are substituted. */
   journalSubject?: string;
   /** Injectable clock, so tests are deterministic (NFR-17). */
   now?: () => string;
@@ -482,6 +482,7 @@ function describeMutation(state: NoteStoreState, event: MutationEvent | undefine
   return {
     op,
     ...(event?.noteId === undefined ? {} : { noteId: event.noteId }),
+    ...(event?.actor === undefined ? {} : { actor: event.actor }),
     summary: `${detail} — ${state.notes.length} note(s) in the set`,
   };
 }

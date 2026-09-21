@@ -3,6 +3,26 @@
 All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `GET {base}/notes/{id}` — one note, canonically (`?environment=` gates the read, NFR-18). The MCP
+  server already exposed this as `get_note`; over HTTP a tool had to fetch the whole set and pick the
+  entry out of it.
+
+### Changed
+
+- `POST {base}/notes` refuses an unknown body field with `400 invalid_payload` instead of silently
+  dropping it. `{"route": "/cart"}` (or `"session": "s1"`) used to answer `200` while storing
+  nothing — the page belongs to `anchor.route`, the review round is `sessionRef` — and the note was
+  then invisible to the very `?route=` filter the caller believed it had set. The refusal names the
+  right place for the common near-misses.
+- The store journal records **who** asked for a change (FR-18): `X-Bluepencil-Actor`, otherwise the
+  payload's `author`. The `file` backend writes it into the entry, the `git` backend into an
+  `Actor:` commit trailer and `{actor}` in `--journal-subject`, and `GET {base}/journal` reports it.
+  Before, every entry carried no actor at all — the trail could say *what* changed, never *who*.
+
 ## [0.1.0-alpha.1] - 2026-09-17
 
 First release. Everything listed here is built, tested and green; the known gaps are listed with it
