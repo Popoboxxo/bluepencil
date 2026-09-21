@@ -3,6 +3,60 @@
 All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org/).
 
+## [0.2.0] - 2026-09-21
+
+The first release without an alpha suffix. Both changes come from a real review round against an
+embedded deployment rather than from reading the code: a reviewer's notes were reported as
+*orphaned* although nothing was wrong with them, and the exported bundle could not say which app
+it had come from. Neither change alters an existing contract — an anchor of an element that is
+always visible serialises byte-identically, and the bundle defaults stay `"unknown"`.
+
+### Added
+- **Transient container reveal (issue #20).** A target that only exists in a transient UI state
+  (a closed dialog or popover, an inactive tab, a collapsed menu) used to be unreachable: hook,
+  CSS path *and* quote all fail in the default state of the very route it was captured on, so the
+  panel said "not findable". `captureReveal` now records the container's kind and the element that
+  opens it — the host's explicit `data-bluepencil-reveal`, a native `popovertarget`, the
+  `role="tab"` of a tabpanel, or any element with `aria-controls` — and
+  `revealAnchor`/`revealAnchorDetailed(anchor)` activates that trigger, waits for the host to
+  settle and resolves again. Two attempts, because the first click can *close* a container that
+  happened to be open; a resolution is still never invented, and the panel distinguishes "behind a
+  closed container" from "unreachable". The hint travels as the new `reveal` field on the anchor
+  (validated, canonically ordered, migrated for older documents).
+- **Resolution strategy reported (FR-2.1).** `resolveAnchorDetailed` returns which fallback matched
+  (`hook`, `selector` or `quote`), so a host can measure how much of its anchor set still resolves
+  through the intended hook instead of the text fallback.
+- **Bundle metadata from a tag-embedded host (issue #21).** `app`, `build-ref` and `exported-by`
+  are element and loader attributes now and fill `app.name`, `app.buildRef` and `exportedBy` of an
+  exported bundle; `build-ref` doubles as `context.buildRef` for design notes, so a host declares
+  its build once. The layer also stamps the environment it was configured with into the export, so
+  a `live` deployment no longer exports `"dev"`.
+
+### Changed
+- **Core bundle budget raised from 31 kB to 33 kB (NFR-3)**, measured at 31.9 kB gzip for the
+  reveal capability and the bundle metadata. The reason is recorded in the guard header and in the
+  requirement row, as before, so the number reads as a decision and not as drift.
+
+### Fixed
+- Notes anchored to elements inside a closed dialog, popover or inactive tab are no longer reported
+  as orphaned. Measured on the real review round: 4 of 7 anchors of one session were unresolvable
+  in the default DOM state of their own route (issue #20).
+
+### Verified
+- 503 unit tests in 20 files, typecheck, build, size guard, CLI/MCP/packaging smoke and the
+  browser legs of the embed smoke (14 cases, real Chrome).
+
+### Known gaps
+- Not on npm yet: install from the tag (`npm i github:Popoboxxo/bluepencil#v0.2.0`) or use the
+  attached build artefacts.
+- The sidecar data-access work (`GET {base}/notes/{id}`, refusing unknown create fields, the actor
+  in the journal) is **not** part of this release — it is still on `feat/sidecar-data-access`
+  (PR #23).
+- No Playwright E2E suite against the fixture; the browser round is covered by the embed smoke and
+  the manual checklist in `examples/vanilla/README.md`.
+- Still pre-1.0: the adapter wire formats and the journal file layout may change between minor
+  releases; the API freezes at 1.0.0.
+
 ## [0.1.0-alpha.2] - 2026-09-17
 
 The alpha that makes the documented paths true. Everything here was found by running the library
