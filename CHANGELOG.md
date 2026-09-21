@@ -23,6 +23,64 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
   `Actor:` commit trailer and `{actor}` in `--journal-subject`, and `GET {base}/journal` reports it.
   Before, every entry carried no actor at all — the trail could say *what* changed, never *who*.
 
+## [0.1.0-alpha.2] - 2026-09-17
+
+The alpha that makes the documented paths true. Everything here was found by running the library
+against a real host application rather than by reading it — including three bugs that only showed up
+there. Nothing in this release changes an existing contract: `prompt`/`anonymous` identity, the
+existing attributes and the layer API behave as before.
+
+### Fixed
+- **The documented one-tag embedding actually embeds (issue #11).** `<script src="…/attach.js">` with no
+  `data-*` attribute at all never attached: script discovery required at least one known key, so the
+  path the guide recommends was silently inert — no error, no console note. Scripts are now recognised
+  by their source as well, and `bluepencilAttach.check()` re-scans the document, so a tag injected
+  after `DOMContentLoaded` (SPA bootstrap, nginx, CMS) is picked up without a reload.
+- **`identity` accepts a global path (issue #12).** A host wired through the tag can now pass its real
+  user: `identity="myApp.identity"` resolving to `{ getUser() }`, exactly like `gate`, `route-from` and
+  `headers-from`. Every note used to be attributed to `prompt` because the tag could not express this.
+- **Links stay links while annotating.** Not a new behaviour, but it had no test: a click on `a[href]`
+  follows its target in every mode instead of opening the composer. It is pinned now, with a
+  falsification, so it cannot regress quietly.
+
+### Added
+- **The host's own target vocabulary (FR-1.12, issue #3).** `annotate-selectors=".card, .tile"` makes
+  the nearest match in the click path the annotation target — in text *and* design mode, so the anchor
+  is the component and not the heading inside it. `can-annotate="myApp.canAnnotate"` is the per-element
+  veto. A component whose text lives in children is no longer silently inert.
+- **One shortcut registry (FR-1.11, issue #4 finding 3).** The key handler dispatches from it, the help
+  legend renders from it; a shortcut cannot exist in one and not the other, and a divergence fails a
+  test. The prototype accepted `0–6` while nine chapters were reachable and its legend advertised `0–6`.
+- **Configurable keymap (FR-12.11, issue #4 finding 8).** `keymap="bar=g, panel=p"` remaps shortcuts;
+  the legend follows. Conflicts, unknown ids and keys that cannot be remapped (the `1…9` range, the
+  composer-scoped save) are reported through `element.issues` instead of "last one wins".
+- **Runtime chrome levels (FR-12.9, issue #4 finding 1).** `full` / `quiet` / `off` via
+  `setChrome()`, the `h` shortcut or the host attribute; the choice is persisted, and `off` is
+  deliberately not `disable()` — annotations and markers stay, only the layer's own controls go.
+- **Addressable chrome state (FR-12.12, issue #4 finding 9).** `?bp-chrome=quiet` sets the level for one
+  load and is never written back — for screenshots, QA runs and handovers.
+- **Chrome slots, docking and the narrow rule (FR-12.10, FR-12.13, NFR-20, issue #4 findings 2/4/10).**
+  Every surface declares its slot, so "no two surfaces overlap" is a property of the stylesheet;
+  `dock="top"|"bottom"` moves the strip and its handle to the chosen edge and the mode hint to the
+  opposite one; below 720 px the strip yields to its handle on its own and returns when the viewport
+  grows. Verified by a new mandatory browser leg that measures boxes, overlap area and `scrollWidth`
+  across 360/390/768/1024/1280/1440 px — in real windows, one Chrome per viewport.
+
+### Changed
+- **Core bundle budget raised from 30 kB to 31 kB (NFR-3).** The host-facing capability set above added
+  real code (measured 30.5 kB gzip, 101.7 % of the old line). The reason is recorded in the guard
+  header and in the requirement row, so the number reads as a decision and not as drift.
+- **CI: the browser leg retries the Chrome launch** (three attempts, fresh profile each, still
+  fail-closed) and reports an unusable browser as `BROWSER-UNAVAILABLE` instead of looking like a
+  failed assertion (issue #18). A runner hiccup used to fail a run for an unchanged commit.
+
+### Known gaps in this alpha
+- No npm publish: install from the tag (`npm i github:Popoboxxo/bluepencil#v0.1.0-alpha.2`) or use the
+  attached build artefacts.
+- The geometry leg needs a Chrome that can be *started*; if the environment cannot provide one, the run
+  fails with `BROWSER-UNAVAILABLE` and says so — it skips nothing.
+- Still an alpha: the adapter wire formats and the journal file layout may change between alphas.
+
 ## [0.1.0-alpha.1] - 2026-09-17
 
 First release. Everything listed here is built, tested and green; the known gaps are listed with it
