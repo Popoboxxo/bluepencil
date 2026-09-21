@@ -13,6 +13,7 @@ import {
   resolveAnchor,
   resolveAnchorDetailed,
   resolvePath,
+  revealAnchorDetailed,
 } from "../../src/core/anchor";
 import { BluepencilValidationError, type Anchor } from "../../src/core/model";
 
@@ -336,5 +337,202 @@ describe("describeElement", () => {
     expect(label.endsWith('…"')).toBe(true);
     expect(label.length).toBeLessThan(60);
     expect(describeElement(null as unknown as Element)).toBe("");
+  });
+});
+
+/* Issue #20: anchors whose target only exists inside a transient container (dialog, popover,
+   inactive tab) used to be reported as unreachable although a human could simply open the
+   container. `captureReveal` records how to get in, `revealAnchor` walks that path before giving up. */
+
+describe("captureReveal (issue #20)", () => {
+  it("records the tab that opens a target inside an inactive tab panel", () => {
+    mount(`
+      <div role="tablist">
+        <button role="tab" id="tab-trace" aria-controls="panel-trace" aria-selected="false" data-testid="tab-trace">Traceability</button>
+        <button role="tab" id="tab-general" aria-controls="panel-general" aria-selected="true">Allgemein</button>
+      </div>
+      <div role="tabpanel" id="panel-trace" aria-labelledby="tab-trace">
+        <label data-testid="link-type">Standard-Linktyp</label>
+      </div>
+    `);
+
+    const anchor = deriveAnchor(first('[data-testid="link-type"]'));
+
+    expect(anchor.hook).toBe("link-type");
+    expect(anchor.reveal?.container).toBe("tabpanel");
+    expect(anchor.reveal?.triggerHook).toBe("tab-trace");
+    expect(anchor.reveal?.triggerLabel).toBe("Traceability");
+    expect(anchor.reveal?.triggerSelector).toEqual(expect.any(String));
+  });
+
+  it("records the control of a dialog target", () => {
+    mount(`
+      <button id="health-open" aria-controls="health-dialog" data-testid="system-health-open-btn">Systemstatus anzeigen</button>
+      <dialog id="health-dialog" aria-modal="true">
+        <p data-testid="health-line">LLM-Provider AUSGEFALLEN</p>
+      </dialog>
+    `);
+
+    const anchor = deriveAnchor(first('[data-testid="health-line"]'));
+
+    expect(anchor.reveal).toEqual({
+      container: "dialog",
+      triggerHook: "system-health-open-btn",
+      triggerSelector: expect.any(String),
+      triggerLabel: "Systemstatus anzeigen",
+    });
+  });
+
+  it("names the container when no trigger can be derived", () => {
+    mount(`
+      <dialog id="bare" aria-modal="true" aria-label="Systemstatus">
+        <p data-testid="bare-line">Zeile</p>
+      </dialog>
+    `);
+
+    const anchor = deriveAnchor(first('[data-testid="bare-line"]'));
+
+    expect(anchor.reveal).toEqual({ container: "dialog", triggerLabel: "Systemstatus" });
+  });
+
+  it("records the popover target of a native popover", () => {
+    mount(`
+      <button popovertarget="bell-popover" data-testid="notification-bell">Glocke</button>
+      <div id="bell-popover" popover>
+        <p data-testid="bell-empty">Keine neuen Benachrichtigungen</p>
+      </div>
+    `);
+
+    const anchor = deriveAnchor(first('[data-testid="bell-empty"]'));
+
+    expect(anchor.reveal?.container).toBe("popover");
+    expect(anchor.reveal?.triggerHook).toBe("notification-bell");
+  });
+
+  it("honours an explicit data-bluepencil-reveal on the container", () => {
+    mount(`
+      <div role="dialog" data-bluepencil-reveal="custom-open"><span data-testid="inner">x</span></div>
+      <button data-testid="custom-open">Open</button>
+    `);
+
+    const anchor = deriveAnchor(first('[data-testid="inner"]'));
+
+    expect(anchor.reveal).toEqual({
+      container: "dialog",
+      triggerHook: "custom-open",
+      triggerSelector: expect.any(String),
+      triggerLabel: "Open",
+    });
+  });
+
+  it("stays absent for ordinary page content", () => {
+    mount(`<main><p data-testid="plain">Text</p></main>`);
+
+    const anchor = deriveAnchor(first('[data-testid="plain"]'));
+
+    expect("reveal" in anchor).toBe(false);
+    expect(resolveAnchor(anchor)).toBe(first('[data-testid="plain"]'));
+  });
+});
+
+describe("revealAnchor (issue #20)", () => {
+  it("activates the stored trigger and resolves the target afterwards", async () => {
+    mount(`
+      <button id="open" aria-controls="box" data-testid="open-box">Open</button>
+      <div id="box" role="dialog" aria-modal="true"></div>
+    `);
+    const button = byId("open");
+    const box = byId("box");
+    button.addEventListener("click", () => {
+      box.innerHTML = '<p data-testid="inside">Standard-Linktyp</p>';
+    });
+
+    const anchor: Anchor = {
+      selector: '[data-testid="inside"]',
+      quote: "Standard-Linktyp",
+      reveal: { container: "dialog", triggerHook: "open-box" },
+    };
+    expect(resolveAnchor(anchor)).toBeNull();
+
+    const result = await revealAnchorDetailed(anchor, { settleMs: 200, stepMs: 5 });
+
+    expect(result.revealed).toBe(true);
+    expect(result.trigger).toBe(button);
+    expect(result.element).toBe(first('[data-testid="inside"]'));
+    expect(result.strategy).toBe("selector");
+  });
+
+  it("reports revealed=false when the anchor already resolves", async () => {
+    mount(`<p data-testid="here">Text</p>`);
+    const anchor: Anchor = { hook: "here", reveal: { container: "dialog" } };
+
+    const result = await revealAnchorDetailed(anchor);
+
+    expect(result.revealed).toBe(false);
+    expect(result.trigger).toBeUndefined();
+    expect(result.element).toBe(first("p"));
+    expect(result.strategy).toBe("hook");
+  });
+
+  it("gives up cleanly when the trigger is gone", async () => {
+    mount(`<div role="dialog"><p>x</p></div>`);
+    const anchor: Anchor = {
+      selector: '[data-testid="never"]',
+      reveal: { container: "dialog", triggerHook: "missing-trigger" },
+    };
+
+    const result = await revealAnchorDetailed(anchor, { settleMs: 20, stepMs: 5 });
+
+    expect(result.element).toBeNull();
+    expect(result.revealed).toBe(false);
+    expect(result.trigger).toBeUndefined();
+  });
+
+  it("reaches the target through the quote fallback once the container is open", async () => {
+    mount(`
+      <button id="open2" aria-controls="box2" data-testid="open-2">Open</button>
+      <div id="box2" role="dialog"></div>
+    `);
+    const box = byId("box2");
+    byId("open2").addEventListener("click", () => {
+      box.innerHTML = "<p>Save changes</p>";
+    });
+
+    const anchor: Anchor = {
+      selector: "div#gone",
+      quote: "Save changes",
+      reveal: { container: "dialog", triggerHook: "open-2" },
+    };
+
+    const result = await revealAnchorDetailed(anchor, { settleMs: 200, stepMs: 5 });
+
+    expect(result.element?.textContent).toBe("Save changes");
+    expect(result.strategy).toBe("quote");
+    expect(result.revealed).toBe(true);
+  });
+
+  it("round-trips capture -> orphan -> reveal for a tab panel target", async () => {
+    mount(`
+      <button id="tab-x" data-testid="tab-x" aria-controls="panel" aria-selected="true">Tab</button>
+      <div role="tabpanel" id="panel" aria-labelledby="tab-x">
+        <label data-testid="label-x">Standard-Linktyp</label>
+      </div>
+    `);
+    const anchor = deriveAnchor(first('[data-testid="label-x"]'));
+    expect(anchor.reveal?.triggerHook).toBe("tab-x");
+
+    // The host empties the inactive panel and refills it when its tab is activated.
+    const panel = byId("panel");
+    panel.innerHTML = "";
+    byId("tab-x").addEventListener("click", () => {
+      panel.innerHTML = '<label data-testid="label-x">Standard-Linktyp</label>';
+    });
+    expect(resolveAnchor(anchor)).toBeNull();
+
+    const result = await revealAnchorDetailed(anchor, { settleMs: 200, stepMs: 5 });
+
+    expect(result.element).toBe(first('[data-testid="label-x"]'));
+    expect(result.revealed).toBe(true);
+    expect(result.strategy).toBe("hook");
   });
 });

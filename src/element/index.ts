@@ -26,6 +26,7 @@ import {
   ALL_ATTRIBUTES,
   readAnchorHooks,
   readAnnotateSelectors,
+  readAppInfo,
   readAttribute,
   readCanAnnotate,
   readDock,
@@ -216,6 +217,7 @@ export class BluepencilNotesElement extends HTMLElement {
     const registered = readAnnotateSelectors(this);
     const keyboard = readKeymap(this);
     const docking = readDock(this);
+    const appInfo = readAppInfo(this);
     this.#collect([
       ...headers.issues,
       ...theme.issues,
@@ -258,6 +260,10 @@ export class BluepencilNotesElement extends HTMLElement {
       ...(registered.annotateSelectors === undefined ? {} : { annotateSelectors: registered.annotateSelectors }),
       ...(keyboard.keymap === undefined ? {} : { keymap: keyboard.keymap }),
       ...(docking.dock === undefined ? {} : { dock: docking.dock }),
+      ...(appInfo.app === undefined ? {} : { app: appInfo.app }),
+      ...(appInfo.app?.buildRef === undefined ? {} : { buildRef: appInfo.app.buildRef }),
+      ...(appInfo.exportedBy === undefined ? {} : { exportedBy: appInfo.exportedBy }),
+      ...(env.environment === undefined ? {} : { environment: env.environment }),
       ...(mountTarget ? { mount: mountTarget } : {}),
       onError: (error: unknown) => this.dispatchEvent(new CustomEvent("bp-error", { detail: error })),
     };

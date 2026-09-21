@@ -126,7 +126,13 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
   };
 
   const ensureLayer = (): LayerHandle => {
-    layer ??= createLayer({ ...layerOptions, store: ensureStore() } as LayerOptions);
+    layer ??= createLayer({
+      ...layerOptions,
+      // Issue #21: the layer stamps the bundle it exports, so the environment the store scopes by
+      // is also the one recorded in the export (before, a `live` deployment exported "dev").
+      ...(environment === undefined ? {} : { environment }),
+      store: ensureStore(),
+    } as LayerOptions);
     return layer;
   };
 

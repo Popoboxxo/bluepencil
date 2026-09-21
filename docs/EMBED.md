@@ -65,7 +65,10 @@ equivalent (`data-*`). The loader mirrors every element attribute
 | `language` | `"en"` | UI language (`"en"`, `"de"`). |
 | `identity` | `"prompt"` | Author identity: a global path resolving to `{ getUser() }`, the literal JSON `{ getUser }` is not needed, `"prompt"` (author field) or `"anonymous"`. A path is the only way a statically wired host can pass its user — since issue #12. |
 | `session` | – | Session reference string, forwarded to the store. |
-| `environment` | – | Environment name; notes are scoped per environment (NFR-18). |
+| `environment` | – | Environment name; notes are scoped per environment (NFR-18) and an exported bundle records it. |
+| `app` | – | Name of the embedding application; stamped into an exported bundle as `app.name`. Without it the export says `"unknown"` — since issue #21. |
+| `build-ref` | – | Build identifier of the host (commit, version, release). Stamped as `app.buildRef` in an exported bundle and as `context.buildRef` on a design note. |
+| `exported-by` | – | Name recorded as the exporter of an exported bundle (`exportedBy`). Without it the export says `"unknown"`. |
 | `show-done` | `"false"` | `"true"` to start with done notes visible. |
 | `theme-accent` | – | Accent colour override. |
 | `theme-surface` | – | Surface colour override. |

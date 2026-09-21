@@ -19,6 +19,7 @@ import {
   collectDataAttributes,
   parseLoaderOptions,
   readAnnotateSelectors,
+  readAppInfo,
   readAttribute,
   readCanAnnotate,
   readDock,
@@ -629,6 +630,35 @@ describe("identity and can-annotate as host paths", () => {
       element.destroy();
       element.remove();
       delete (globalThis as { hostApp?: unknown }).hostApp;
+    }
+  });
+});
+
+/* Issue #21: a bundle exported from a tag-embedded deployment must be able to name its app and its
+   exporter — before, every export said `app.name: "unknown"` / `exportedBy: "unknown"`. */
+
+describe("embed attributes — bundle metadata (issue #21)", () => {
+  it("reads app, build-ref and exported-by together", () => {
+    const info = readAppInfo(
+      source({ app: "ReqogniLoom", "build-ref": "1.8.0-beta.12", "exported-by": "dduchrow" }),
+    );
+
+    expect(info.app).toEqual({ name: "ReqogniLoom", buildRef: "1.8.0-beta.12" });
+    expect(info.exportedBy).toBe("dduchrow");
+  });
+
+  it("keeps a build reference without an app name and stays empty without configuration", () => {
+    expect(readAppInfo(source({ "build-ref": "abc1234" })).app).toEqual({
+      name: "unknown",
+      buildRef: "abc1234",
+    });
+    expect(readAppInfo(source({ app: "" })).app).toBeUndefined();
+    expect(readAppInfo(source({})).exportedBy).toBeUndefined();
+  });
+
+  it("documents every bundle-metadata attribute the element observes", () => {
+    for (const name of ["app", "build-ref", "exported-by"]) {
+      expect(ALL_ATTRIBUTES).toContain(name);
     }
   });
 });

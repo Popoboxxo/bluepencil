@@ -542,3 +542,52 @@ describe("migrations (FR-3.5)", () => {
     expect(inspectBundle(migrated).notes).toBe(0);
   });
 });
+
+/* Issue #20: the optional reveal hint of an anchor must survive validation, canonical form and
+   migration — a hint that is dropped on one of those steps would silently bring the "verwaist"
+   report back on the next import. */
+
+describe("anchor reveal hint (issue #20)", () => {
+  const hint = {
+    container: "tabpanel",
+    triggerHook: "tab-trace",
+    triggerSelector: "html > body:nth-of-type(1) > button:nth-of-type(1)",
+    triggerLabel: "Traceability",
+  };
+
+  function noteWithReveal(reveal: unknown): unknown {
+    const note = makeNote({ id: "n-reveal" });
+    return { ...note, anchor: { ...note.anchor, reveal } };
+  }
+
+  it("accepts a valid hint and keeps it canonical and through migration", () => {
+    const valid = noteWithReveal(hint);
+
+    expect(validateNote(valid)).toEqual([]);
+    expect(assertNote(valid).anchor.reveal).toEqual(hint);
+    expect(canonicalNote(assertNote(valid)).anchor.reveal).toEqual(hint);
+    expect(migrateNote(JSON.parse(JSON.stringify(valid)) as unknown).anchor.reveal).toEqual(hint);
+  });
+
+  it("rejects a malformed hint instead of dropping it silently", () => {
+    expect(validateNote(noteWithReveal({ container: "modal" })).join("|")).toContain(
+      "note.anchor.reveal.container must be one of tabpanel, dialog, popover, menu, other",
+    );
+    expect(validateNote(noteWithReveal({})).join("|")).toContain(
+      "note.anchor.reveal.container must be one of",
+    );
+    expect(validateNote(noteWithReveal("dialog")).join("|")).toContain(
+      "note.anchor.reveal must be an object",
+    );
+    expect(validateNote(noteWithReveal({ container: "dialog", triggerHook: 7 })).join("|")).toContain(
+      "note.anchor.reveal.triggerHook must be a string",
+    );
+  });
+
+  it("leaves an anchor without a hint untouched", () => {
+    const note = makeNote({ id: "n-plain" });
+
+    expect(canonicalNote(note).anchor).toEqual(note.anchor);
+    expect(migrateNote(JSON.parse(JSON.stringify(note)) as unknown).anchor).toEqual(note.anchor);
+  });
+});

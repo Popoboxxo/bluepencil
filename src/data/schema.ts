@@ -17,6 +17,7 @@ import {
   NOTE_INTENTS,
   NOTE_STATUSES,
   NOTE_TYPES,
+  REVEAL_CONTAINERS,
   SCHEMA_VERSION,
 } from "../core/model";
 import type { Bundle, Note } from "../core/model";
@@ -75,6 +76,28 @@ function anchorIssues(value: unknown, path: string): string[] {
   }
   if (value.orphaned !== undefined && typeof value.orphaned !== "boolean") {
     issues.push(`${path}.orphaned must be a boolean`);
+  }
+  issues.push(...revealIssues(value.reveal, `${path}.reveal`));
+  return issues;
+}
+
+/** Issue #20: the optional reveal hint, validated like every other part of an anchor. */
+function revealIssues(value: unknown, path: string): string[] {
+  if (value === undefined) return [];
+  if (!isObject(value)) return [`${path} must be an object`];
+  const issues: string[] = [];
+  const container = value.container;
+  if (
+    typeof container !== "string" ||
+    !(REVEAL_CONTAINERS as readonly string[]).includes(container)
+  ) {
+    issues.push(`${path}.container must be one of ${REVEAL_CONTAINERS.join(", ")}`);
+  }
+  for (const key of ["triggerHook", "triggerSelector", "triggerLabel"] as const) {
+    const field = value[key];
+    if (field !== undefined && typeof field !== "string") {
+      issues.push(`${path}.${key} must be a string`);
+    }
   }
   return issues;
 }
