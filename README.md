@@ -17,15 +17,22 @@ no "the second badge in the header".
         └─ thread → intent: implement | feedback   status: open | done | needs_decision
 ```
 
-**Status:** M1 (`0.1.0`) is implemented on `feat/m1-core-ui-adapters` — core model, anchoring,
-capture, store and the four adapters (with a conformance suite); the headless data library (schema,
-canonical bundles, merge modes, migrations); Markdown/JSON export; the collaboration protocol; the
-review layer with i18n; the public API and the `<bluepencil-notes>` element; the CLI and the MCP
-server (read-only by default); the vanilla fixture app, its seed bundle and the unit tests.
-Honest M1 gaps: no Playwright E2E suite, no reference HTTP server, no import/merge surface in the
-UI, no bulk delete or retention, i18n only `en`/`de` (milestones in
-[docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)). This repository is the home of the library; the
-interaction model itself is already proven in a production-used prototype (see
+![The review layer on the vanilla fixture: five notes from a review round, the bar with its counters, the marker on the annotated element and the note list](docs/images/fixture-review.png)
+
+**Status:** `0.2.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
+`main`: the core model, anchoring (now including **transient container reveal**), capture, store and
+the four adapters (with a conformance suite); canonical, diffable bundles with
+`merge`/`upsert`/`replace-session` and migrations; Markdown/JSON export; the collaboration protocol;
+the review layer with i18n; the public API and the `<bluepencil-notes>` element; the CLI, the MCP
+server (read-only by default) and the reference sidecar; the vanilla fixture app with its seed
+bundle, 503 unit tests and the browser legs of the embed smoke.
+
+Honest gaps: no Playwright E2E suite against the fixture, no import/merge surface in the UI, no bulk
+delete or retention control, i18n only `en`/`de`, and no npm publish — install from the tag
+(`npm i github:Popoboxxo/bluepencil#v0.2.0`) or use the release artefacts. Milestones and their
+state are tracked in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), the history in
+[CHANGELOG.md](CHANGELOG.md). This repository is the home of the library; the interaction model
+itself is already proven in a production-used prototype (see
 [docs/CONCEPT.md](docs/CONCEPT.md#7-proven-prior-art)).
 
 ## Why the name
