@@ -1791,3 +1791,61 @@ describe("i18n lookup fallbacks", () => {
   });
 });
 
+
+/* Issue #21: an exported bundle must name the app, the build and the exporter — a host that embeds
+   the layer with the tag had no way to stamp them, so every export said "unknown". */
+describe("layer — bundle metadata on export (issue #21)", () => {
+  it("stamps app, build ref, exporter and environment into the exported JSON", async () => {
+    const store = makeStore();
+    await addNote(store, { body: "with metadata", environment: "staging" });
+    const handle = startLayer(store, {
+      app: { name: "ReqogniLoom" },
+      buildRef: "1.8.0-beta.12",
+      exportedBy: "dduchrow",
+      environment: "staging",
+    });
+
+    const blobs: Blob[] = [];
+    const urlApi = globalThis.URL as unknown as {
+      createObjectURL?: (blob: Blob) => string;
+      revokeObjectURL?: (url: string) => void;
+    };
+    const originalCreate = urlApi.createObjectURL;
+    const originalRevoke = urlApi.revokeObjectURL;
+    urlApi.createObjectURL = (blob: Blob): string => {
+      blobs.push(blob);
+      return "#bluepencil-export";
+    };
+    urlApi.revokeObjectURL = (): void => undefined;
+
+    const readBlob = (blob: Blob): Promise<string> =>
+      new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(blob);
+      });
+
+    try {
+      click(query('[data-bp-action="export-json"]'));
+      await flush();
+      expect(blobs).toHaveLength(1);
+      const bundle = JSON.parse(await readBlob(blobs[0] as Blob)) as {
+        app?: { name?: string; buildRef?: string };
+        exportedBy?: string;
+        environment?: string;
+        notes?: unknown[];
+      };
+
+      expect(bundle.app).toEqual({ name: "ReqogniLoom", buildRef: "1.8.0-beta.12" });
+      expect(bundle.exportedBy).toBe("dduchrow");
+      expect(bundle.environment).toBe("staging");
+      expect(bundle.notes).toHaveLength(1);
+    } finally {
+      urlApi.createObjectURL = originalCreate;
+      urlApi.revokeObjectURL = originalRevoke;
+    }
+
+    handle.disable();
+  });
+});

@@ -1,6 +1,6 @@
 {
   "name": "bluepencil",
-  "version": "0.1.0-alpha.2",
+  "version": "0.2.0",
   "description": "Annotate any web app — text and design notes, anchored to the element, readable by humans and agents.",
   "license": "MIT",
   "repository": {

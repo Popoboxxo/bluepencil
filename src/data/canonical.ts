@@ -13,6 +13,7 @@ import type {
   DebugContext,
   Message,
   Note,
+  RevealHint,
   Session,
 } from "../core/model";
 
@@ -63,6 +64,16 @@ function canonicalAnchor(anchor: Anchor): Anchor {
   if (anchor.route !== undefined) out.route = anchor.route;
   if (anchor.orphaned !== undefined) out.orphaned = anchor.orphaned;
   if (anchor.degraded !== undefined) out.degraded = anchor.degraded;
+  if (anchor.reveal !== undefined) out.reveal = canonicalReveal(anchor.reveal);
+  return out;
+}
+
+/** Canonical field order of the reveal hint (issue #20) — same shape, stable key order. */
+function canonicalReveal(reveal: RevealHint): RevealHint {
+  const out: RevealHint = { container: reveal.container };
+  if (reveal.triggerHook !== undefined) out.triggerHook = reveal.triggerHook;
+  if (reveal.triggerSelector !== undefined) out.triggerSelector = reveal.triggerSelector;
+  if (reveal.triggerLabel !== undefined) out.triggerLabel = reveal.triggerLabel;
   return out;
 }
 
