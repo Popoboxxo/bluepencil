@@ -233,7 +233,7 @@ export. The MCP interface is therefore **not optional** (Daniel, 2026-09-14).
 | NFR-8 | Data survives reload and crash (adapter-dependent); no silent data loss | P0 | M1 | Reload after 20 notes keeps all 20; interrupted write leaves the previous state intact |
 | NFR-9 | Schema stability: additive changes within a major version; documented migration | P0 | M1 | Old export imports into a newer build |
 | NFR-10 | Deterministic exports (stable ordering) so exports can be diffed/committed | P1 | M2 | Two exports of an unchanged store are byte-identical |
-| NFR-11 | Testability: unit tests for model/anchor/adapters; Playwright E2E against a fixture app | P0 | M1 | CI runs both; a fixture app in-repo exercises every FR group |
+| NFR-11 | Testability: unit tests for model/anchor/adapters; E2E against a fixture app in a real browser. Runs on the repository's dependency-free CDP harness (no Playwright package — NFR-4 forbids a test-framework dependency, the browser is driven over the DevTools pipe) | P0 | M1 | CI runs both; a fixture app in-repo exercises every FR group |
 | NFR-12 | Versioning: semver, changelog per release, one release per milestone | P1 | M1+ | Tag + changelog present per release |
 | NFR-13 | No secrets in the repository or in stored notes; documented "no personal data" policy for debug use | P0 | M1 | Secret scan in CI; policy section in README |
 | NFR-14 | Observability: a debug flag writes to `console.debug` only; no user-visible errors on failure | P2 | M2 | Adapter failure shows one inline message, never a broken page |

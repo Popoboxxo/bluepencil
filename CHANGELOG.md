@@ -11,6 +11,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
   server already exposed this as `get_note`; over HTTP a tool had to fetch the whole set and pick the
   entry out of it.
 
+- **E2E suite against the fixture app (NFR-11).** `tests/e2e/vanilla.e2e.mjs` walks the manual
+  checklist of `examples/vanilla/README.md` in a real browser: mount and surfaces, the four
+  shortcuts, the seed import (counters, markers, idempotence), text/design/quote capture with a
+  reload, panel order and filters, done-hidden default, feedback-only, the decision thread on the
+  shadow-DOM card, byte-identical exports and enable/disable cycles without residue. Wired into
+  `npm run verify` and CI.
+- `scripts/lib/browser.mjs` — the CDP browser layer the embed smoke used internally, now shared and
+  extended with real input (mouse clicks at an element, key events, downloads). It activates the
+  page target before synthesizing input (a headless target is otherwise not focused and clicks land
+  nowhere) and types with key events, because `Input.insertText` is missing from some Chrome builds.
+
 ### Changed
 
 - `POST {base}/notes` refuses an unknown body field with `400 invalid_payload` instead of silently
@@ -18,10 +29,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
   nothing — the page belongs to `anchor.route`, the review round is `sessionRef` — and the note was
   then invisible to the very `?route=` filter the caller believed it had set. The refusal names the
   right place for the common near-misses.
+- The embed smoke now drives the browser through the shared `scripts/lib/browser.mjs` instead of a
+  private copy of the CDP client; its 14 cases are unchanged and still green.
 - The store journal records **who** asked for a change (FR-18): `X-Bluepencil-Actor`, otherwise the
   payload's `author`. The `file` backend writes it into the entry, the `git` backend into an
   `Actor:` commit trailer and `{actor}` in `--journal-subject`, and `GET {base}/journal` reports it.
   Before, every entry carried no actor at all — the trail could say *what* changed, never *who*.
+
+### Known gaps
+
+- `F` arms the feedback flag only; an element is picked while a mode (`C`/`D`) is armed. The fixture
+  checklist claimed otherwise and now says so — the layer behaviour is unchanged, the documentation
+  was one step short.
 
 ## [0.2.0] - 2026-09-21
 

@@ -87,7 +87,8 @@
     "smoke:pack": "node scripts/pack-smoke.mjs",
     "smoke:embed": "node scripts/embed-smoke.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
-    "verify": "npm run typecheck && npm run test && npm run build && npm run size && npm run smoke:pack && npm run smoke:embed"
+    "verify": "npm run typecheck && npm run test && npm run build && npm run size && npm run smoke:pack && npm run smoke:embed && npm run smoke:e2e",
+    "smoke:e2e": "node tests/e2e/vanilla.e2e.mjs"
   },
   "dependencies": {},
   "devDependencies": {
