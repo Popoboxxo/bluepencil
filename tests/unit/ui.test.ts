@@ -1558,6 +1558,35 @@ describe("multi-instance and i18n", () => {
     expect(byId("host").querySelector("[style]")).toBeNull();
     handle.disable();
   });
+
+  /* The dark palette must be a *fallback*, not an override: a host that sets --bp-* on :root (the
+     recipe in docs/INTEGRATION.md §8) kept its own values in light mode and lost them the moment
+     the OS turned dark, because the media block re-declared the tokens on .bp-root — and a custom
+     property set on the element beats an inherited one. Measured before: --bp-accent fell back to
+     the library's #7ba2ff instead of the host's #8c3b2e, with no warning. */
+  it("keeps the dark palette as a var() fallback so a host :root token still wins", () => {
+    const dark = STYLES.slice(STYLES.indexOf("@media (prefers-color-scheme: dark)"));
+    // Every dark token has to be self-referential in the fallback position, never a literal.
+    for (const token of [
+      "surface",
+      "surface-alt",
+      "ink",
+      "muted",
+      "line",
+      "accent",
+      "accent-ink",
+      "danger",
+      "decision",
+      "feedback",
+      "highlight",
+      "backdrop",
+      "shadow",
+    ]) {
+      expect(dark).toContain(`--bp-${token}: var(--bp-${token}, `);
+    }
+    // And no dark rule may hard-set a token to a literal any more.
+    expect(dark).not.toMatch(/--bp-[a-z-]+:\s*#/);
+  });
 });
 
 /* -------------------------------------------------------------------------- */

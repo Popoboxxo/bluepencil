@@ -128,7 +128,45 @@ The layer is styled exclusively through CSS custom properties with fallbacks:
 ```
 
 No colours, radii or sizes are hardcoded in the layer's own rules, so it can adopt any design
-system — including dark mode (`prefers-color-scheme`) and reduced motion.
+system — including reduced motion.
+
+### The full token list
+
+The table above shows the five that matter most. The stylesheet consumes 18; the rest are
+`--bp-surface-alt`, `--bp-accent-ink`, `--bp-danger`, `--bp-decision`, `--bp-feedback`,
+`--bp-highlight`, `--bp-backdrop`, `--bp-shadow`, `--bp-font`, `--bp-font-size`, `--bp-radius`,
+`--bp-space` and `--bp-z`.
+
+### Dark mode
+
+`@media (prefers-color-scheme: dark)` supplies a dark palette for every one of these tokens, and
+it is applied as a **fallback** (`--bp-accent: var(--bp-accent, #7ba2ff)`), not as an override.
+That distinction is what makes the recipe above work in both schemes: a value you set on `:root`
+or on any ancestor keeps winning, while a host that sets no token at all still gets the dark
+palette. (Before, the media block re-declared the tokens on the layer root, and a custom property
+set on an element beats an inherited one — so a host following the recipe above lost its palette
+the moment the OS turned dark.)
+
+Dark mode follows the **operating system**; the library ships no switch for it. To force a scheme,
+pin the tokens on the layer root yourself — through the `theme` option or the `theme-accent` /
+`theme-surface` attributes, which are written as inline custom properties and therefore win:
+
+```js
+init({ theme: { surface: "#ffffff", ink: "#14161c", muted: "#5a6072", line: "#d7dae2" } });
+```
+
+Pin the whole set, not a part of it. Mixing a pinned `--bp-surface` with an unpinned dark
+`--bp-ink` produces an unreadable layer (measured contrast 1.13:1).
+
+### What the layer does not inherit
+
+`--bp-font` and `--bp-font-size` are *not* `inherit` by default: the layer uses
+`system-ui, -apple-system, "Segoe UI", Roboto, sans-serif` at 13px unless you set the token
+explicitly. To follow the host's typography, pass the host's values:
+
+```js
+init({ theme: { font: "inherit", "font-size": "inherit" } });
+```
 
 ## 9. Security & privacy notes
 

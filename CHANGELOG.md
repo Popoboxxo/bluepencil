@@ -5,6 +5,51 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Fixed
+
+Six defects found by a review round against a real embedded deployment (0.2.0). All of them were
+reproduced against the shipped builds before the fix and carry a regression test.
+
+- **A mistyped filter field deleted every note.** `POST {base}/notes/bulk-delete` ignored unknown
+  keys in its `filter` object, so `{"filter": {"statuz": "open"}, "confirm": true}` became an
+  *empty* filter — and an empty filter matches every note. Measured: `200 {"removed": 4}` of 4
+  notes, no warning. An unknown field is now refused with `400 invalid_payload` and the list of
+  allowed names, and an empty `filter` object is refused instead of meaning "remove everything".
+- **The Markdown export could carry live HTML.** User text in the *inline* fields (the note id in
+  the heading, the author, captured style keys and values) was not escaped for `&`, `<` and `>`.
+  A note id of `n-<script>alert(1)</script>` rendered as six live `<script>` elements in a
+  conforming Markdown viewer (measured with mistune). Those fields are escaped now, and a value
+  containing a backtick keeps its code span instead of falling back to plain text.
+- **A failed runtime update removed the review layer.** The loader tore the old layer down *before*
+  importing the new build, so a 404, a CSP block or a corrupt file left the page with no layer and
+  no way back without a reload. The new build is loaded first now; the old one is only replaced
+  once the new one is known to import.
+- **One failed manifest poll disabled updating for the rest of the page's life.** `check()` re-armed
+  the watch only on its two success paths; a transient 500, a refused digest or a manifest without a
+  version cancelled the timer and nothing re-armed it. The watch is now re-armed on every exit.
+- **`destroy()` could be undone by an in-flight `check()`.** A check that was already past its
+  awaits re-mounted the layer after `destroy()` had run. A destroyed flag is now checked at every
+  await boundary.
+- **Dark mode overrode the host's design tokens.** The `@media (prefers-color-scheme: dark)` block
+  re-declared thirteen `--bp-*` tokens on the layer root, and a custom property set on the element
+  beats an inherited one — so a host following the documented `:root { --bp-accent: … }` recipe lost
+  its palette the moment the OS turned dark (measured: the library's `#7ba2ff` instead of the
+  host's `#8c3b2e`). The dark palette is now a `var()` fallback, so a host value always wins.
+
+### Changed
+
+- The CLI derives the export environment from the notes instead of inventing `dev`, and only
+  re-tags when `--environment` is given explicitly. A bare `Note[]` carrying a `live` note was
+  silently rewritten to `dev`; a mixed set is now refused with exit code 3, the same rule the
+  Blueprint/UI path already applied (FR-14.1, NFR-18).
+- The CLI export and merge paths pass the bundle's `sessions` through, so a human label
+  (`"Fixture smoke review"`) and a session without notes survive an export instead of being
+  replaced by the session ref or dropped.
+- `app.name` of a CLI export is the input file's basename, not its full path.
+- `docs/INTEGRATION.md` §8 documents all 18 theme tokens, the dark-mode precedence, how to force a
+  scheme, the partial-pin hazard, and the fact that font and font size are not inherited by default.
+
+
 ### Added
 
 - `GET {base}/notes/{id}` — one note, canonically (`?environment=` gates the read, NFR-18). The MCP

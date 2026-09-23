@@ -456,6 +456,31 @@ describe("sidecar handler — the documented endpoints", () => {
       expect(response.status).toBe(400);
       expect(jsonOf(response).error.message).toContain("ids must be an array of note ids");
     });
+
+    /* A mistyped filter key is the most likely caller error, and an ignored key becomes an EMPTY
+       filter — which matches every note. Without this refusal, `{"statuz": "open"}` removed the
+       whole store (measured: 200, {"removed": 4} of 4). */
+    it("refuses an unknown filter field instead of silently matching every note", () => {
+      const harness = createHarness({ notes: seedNotes() });
+      const response = harness.call(
+        request("POST", "/notes/bulk-delete", { body: { filter: { statuz: "open" }, confirm: true } }),
+      );
+      expect(response.status).toBe(400);
+      expect(jsonOf(response).error.code).toBe("invalid_payload");
+      expect(jsonOf(response).error.message).toContain("statuz");
+      expect(harness.state.notes).toHaveLength(4);
+      expect(harness.saves()).toBe(0);
+    });
+
+    it("refuses an empty filter object rather than treating it as match-all", () => {
+      const harness = createHarness({ notes: seedNotes() });
+      const response = harness.call(
+        request("POST", "/notes/bulk-delete", { body: { filter: {}, confirm: true } }),
+      );
+      expect(response.status).toBe(400);
+      expect(harness.state.notes).toHaveLength(4);
+      expect(harness.saves()).toBe(0);
+    });
   });
 
   describe("GET {base}/sessions", () => {

@@ -158,28 +158,53 @@ function flatten(value: string): string {
   return value.replace(/\r\n?/g, "\n").replace(/\s+/g, " ").trim();
 }
 
-/** Literal inline text: keeps the characters, escapes the two that could open markup. */
+/**
+ * Literal inline text for the fields that are NOT code spans (note id in the heading, author,
+ * captured style key/value, document title). Three classes have to be neutralised (FR-9.3), and
+ * before this only the first was handled:
+ *
+ *  - **HTML** — `&`, `<` and `>` become entities, so a note id, an author or a style value can
+ *    never turn into a live element when the export is rendered. A rendered test with mistune
+ *    proved the hole: `#### n-<script>alert('id')</script>` was six live `<script>` elements in
+ *    the output HTML. The fenced body path was never affected (it already used a grown fence).
+ *  - **Markdown inline syntax** — a leading `#` would start a heading, a leading `-`/`+` a list,
+ *    a `>` a blockquote, and a run of `*`/`_` emphasis. Escaping the opening character of each
+ *    construct keeps the value readable and inert.
+ *  - **Pipes** — no table is emitted today, but a pipe stays literal so a downstream consumer
+ *    that embeds a value in a table does not get a column break.
+ */
 function inline(value: string): string {
-  return flatten(value).replace(/`/g, "\\`").replace(/\|/g, "\\|");
+  return flatten(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/`/g, "\\`")
+    .replace(/\|/g, "\\|")
+    .replace(/(^|[^\\])([*_~])/g, "$1\\$2")
+    .replace(/(^|\s)([#>+-])/g, "$1\\$2");
 }
 
 /**
- * Markdown code span for short machine values. A value containing a backtick cannot be put in
- * a code span unambiguously, so it falls back to escaped literal text.
+ * Markdown code span for short machine values. A value containing backticks is wrapped in a
+ * *longer* run of backticks (CommonMark allows any run length as the delimiter) instead of
+ * falling back to plain text — the value therefore keeps its code-span containment, which is
+ * what a reader (and a parser) can rely on.
  */
 function code(value: string): string {
   const flat = flatten(value);
   if (flat === "") {
     return "";
   }
-  if (flat.includes("`")) {
-    return inline(flat);
-  }
-  return `\`${flat}\``;
+  const longest = longestBacktickRun(flat);
+  const fence = "`".repeat(longest + 1);
+  // A code span whose content starts or ends with a backtick needs one space of padding, or the
+  // delimiter would be read as part of the content (CommonMark: "strip one leading/trailing space").
+  const padded = flat.startsWith("`") || flat.endsWith("`") ? ` ${flat} ` : flat;
+  return `${fence}${padded}${fence}`;
 }
 
-/** A fence that is longer than the longest backtick run in `text`, so it can never be closed. */
-function fenceFor(text: string): string {
+/** Length of the longest consecutive backtick run in `text`. */
+function longestBacktickRun(text: string): number {
   let longest = 0;
   let run = 0;
   for (const ch of text) {
@@ -192,7 +217,12 @@ function fenceFor(text: string): string {
       run = 0;
     }
   }
-  return "`".repeat(Math.max(3, longest + 1));
+  return longest;
+}
+
+/** A fence that is longer than the longest backtick run in `text`, so it can never be closed. */
+function fenceFor(text: string): string {
+  return "`".repeat(Math.max(3, longestBacktickRun(text) + 1));
 }
 
 /**

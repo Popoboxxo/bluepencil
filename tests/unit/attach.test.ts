@@ -299,6 +299,125 @@ describe("attach — runtime updates", () => {
     handle.destroy();
   });
 
+  /* A failed update must never leave the page without a review layer, and it must not kill the
+     update path either. Both were broken: teardown() ran before the import, so a 404/CSP-blocked
+     new build removed the layer for good (0 elements, no way back without a reload), and only
+     the two success paths re-armed the watch, so one transient 5xx ended updating for the rest
+     of the page's life. */
+  it("keeps the layer mounted when the new build cannot be imported", async () => {
+    const state = harness();
+    // resolveDeps() copies the injected deps, so the failing import has to be in place BEFORE
+    // attach() — a later mutation of state.deps would never be seen.
+    const originalImport = state.deps.importModule as (url: string) => Promise<void>;
+    state.deps.importModule = async (url: string) => {
+      if (url.includes("0.3.0")) throw new Error("could not load " + url);
+      return originalImport(url);
+    };
+    const handle = await attach({
+      scriptUrl: "https://c.example/attach.js",
+      manifest: "latest.json",
+      integrity: false,
+      watchSeconds: 0,
+      tag: "bluepencil-notes",
+      auto: true,
+      attributes: { adapter: "memory" },
+      deps: state.deps,
+    });
+    const mounted = attachedElements()[0];
+    state.manifest = { version: "0.3.0", element: "/bp/0.3.0/e.js" };
+
+    await expect(handle.check()).rejects.toThrow(/could not load/);
+    // The old layer is still there, still the same node, and the version did not move.
+    const after = attachedElements();
+    expect(after).toHaveLength(1);
+    expect(after[0]).toBe(mounted);
+    expect(handle.version).toBe("0.2.0");
+    handle.destroy();
+  });
+
+  it("re-arms the watch after a failed check, so a transient error does not end updating", async () => {
+    const state = harness();
+    // The first manifest read (during attach) must succeed; only the first *poll* fails.
+    const originalFetch = state.deps.fetchImpl as (input: RequestInfo | URL) => Promise<Response>;
+    let pollCount = 0;
+    state.deps.fetchImpl = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("latest.json")) {
+        pollCount += 1;
+        if (pollCount === 2) return new Response("nope", { status: 500 });
+      }
+      return originalFetch(input);
+    }) as unknown as typeof fetch;
+
+    const handle = await attach({
+      scriptUrl: "https://c.example/attach.js",
+      manifest: "latest.json",
+      integrity: false,
+      watchSeconds: 30,
+      tag: "bluepencil-notes",
+      auto: true,
+      attributes: { adapter: "memory" },
+      deps: state.deps,
+    });
+    expect(state.timers).toHaveLength(1);
+
+    // First poll fails with a 500.
+    state.runTimers();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // …and a timer is armed again anyway — before, the failing path left none.
+    expect(state.timers).toHaveLength(1);
+    // The layer survived the failed check.
+    expect(attachedElements()).toHaveLength(1);
+
+    // The next poll sees a real new version and updates.
+    state.manifest = { version: "9.9.9", element: "/bp/9.9.9/bluepencil.element.min.js" };
+    state.runTimers();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(handle.version).toBe("9.9.9");
+    handle.destroy();
+  });
+
+  it("destroy() wins over a check that is already in flight", async () => {
+    const state = harness();
+    let release: (() => void) | undefined;
+    let gateNext = false;
+    const originalImport = state.deps.importModule as (url: string) => Promise<void>;
+    // Set before attach(): resolveDeps() copies the injected deps.
+    state.deps.importModule = async (url: string) => {
+      if (gateNext) {
+        gateNext = false;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return originalImport(url);
+    };
+
+    const handle = await attach({
+      scriptUrl: "https://c.example/attach.js",
+      manifest: "latest.json",
+      integrity: false,
+      watchSeconds: 0,
+      tag: "bluepencil-notes",
+      auto: true,
+      attributes: { adapter: "memory" },
+      deps: state.deps,
+    });
+    gateNext = true;
+    state.manifest = { version: "0.3.0", element: "/bp/0.3.0/e.js" };
+    const pending = handle.check();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    handle.destroy();
+    expect(attachedElements()).toHaveLength(0);
+    release?.();
+
+    await pending;
+    // A late completion must not re-mount the layer after destroy().
+    expect(attachedElements()).toHaveLength(0);
+  });
+
   it("reload() is check() and does nothing without a manifest", async () => {
     const state = harness();
     const handle = await attach({

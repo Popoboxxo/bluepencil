@@ -742,22 +742,38 @@ export const STYLES: string = `
 
 /* -- dark scheme (FR-11.3, ARCHITECTURE §7) ------------------------------- */
 
+/*
+ * The dark palette is applied through the SAME var(--bp-x, <light>) slots as the light one, as
+ * a second .bp-root rule inside the media query. It is deliberately NOT a plain re-declaration of
+ * --bp-x on .bp-root: that would beat a value inherited from a host rule on :root (a custom
+ * property set on the element itself wins over an inherited one), so a host that follows
+ * docs/INTEGRATION.md lost its palette the moment the OS turned dark — measured: --bp-accent
+ * fell back to #7ba2ff instead of the host's #8c3b2e, with no warning.
+ *
+ * With the rule below the host token wins, and a host that sets no token still gets the dark
+ * palette through the var() fallback. A host that wants to force light on a dark OS pins the
+ * tokens itself (or passes them via theme / data-theme-*, which are inline on the root and win
+ * here). Dark mode stays an OS default, not a per-host switch.
+ */
 @media (prefers-color-scheme: dark) {
   .bp-root {
-    --bp-surface: #1c1f27;
-    --bp-surface-alt: #242833;
-    --bp-ink: #eceef4;
-    --bp-muted: #a3a9bb;
-    --bp-line: #343a48;
-    --bp-accent: #7ba2ff;
-    --bp-accent-ink: #10131a;
-    --bp-danger: #ff8a80;
-    --bp-decision: #ff8a80;
-    --bp-feedback: #c3a6ff;
-    --bp-highlight: rgba(123, 162, 255, 0.18);
-    --bp-backdrop: rgba(4, 5, 8, 0.6);
-    --bp-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+    color: var(--bp-ink, #eceef4);
     color-scheme: dark;
+  }
+  .bp-root {
+    --bp-surface: var(--bp-surface, #1c1f27);
+    --bp-surface-alt: var(--bp-surface-alt, #242833);
+    --bp-ink: var(--bp-ink, #eceef4);
+    --bp-muted: var(--bp-muted, #a3a9bb);
+    --bp-line: var(--bp-line, #343a48);
+    --bp-accent: var(--bp-accent, #7ba2ff);
+    --bp-accent-ink: var(--bp-accent-ink, #10131a);
+    --bp-danger: var(--bp-danger, #ff8a80);
+    --bp-decision: var(--bp-decision, #ff8a80);
+    --bp-feedback: var(--bp-feedback, #c3a6ff);
+    --bp-highlight: var(--bp-highlight, rgba(123, 162, 255, 0.18));
+    --bp-backdrop: var(--bp-backdrop, rgba(4, 5, 8, 0.6));
+    --bp-shadow: var(--bp-shadow, 0 6px 24px rgba(0, 0, 0, 0.5));
   }
 }
 

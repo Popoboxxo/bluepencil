@@ -283,6 +283,34 @@ describe("toMarkdown note rendering", () => {
 });
 
 describe("toMarkdown safety and language", () => {
+  it("escapes HTML in the inline fields, so a note id/author/style value cannot inject markup", () => {
+    // FR-9.3 requires user text to be rendered as text, never as HTML. The *body* was always
+    // safe (grown fence), but note id, author and captured style values are emitted inline —
+    // `#### n-<script>alert('id')</script>` produced six live <script> elements in a real
+    // Markdown render (measured with mistune).
+    const evil = makeNote({
+      id: "n-<script>alert('id')</script>",
+      author: "**bold** <img src=x onerror=alert('a')>",
+      context: {
+        ...captured,
+        styles: { color: "</script><script>alert('style')</script>" },
+      },
+    });
+    const md = toMarkdown([evil]);
+
+    expect(md).toContain("#### n-&lt;script&gt;alert('id')&lt;/script&gt;");
+    expect(md).toContain("- Author: \\**bold\\** &lt;img src=x onerror=alert('a')&gt; (human)");
+    expect(md).toContain("  - style.color: &lt;/script&gt;&lt;script&gt;");
+    // Every field that is NOT a fenced code block must be free of raw angle brackets. The two
+    // places raw text survives on purpose are the fenced body (a code block renders as text) and
+    // the code spans (`#n-<script>…` — a code span is escaped by the renderer), both asserted below.
+    const outsideBlocks = md.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`/g, "");
+    expect(outsideBlocks).not.toContain("<script");
+    expect(outsideBlocks).not.toContain("<img");
+    // The fenced body still carries the raw text — that is the point of a code block.
+    expect(md).toContain("body of n-<script>alert('id')</script>");
+  });
+
   it("keeps user text literal and cannot be closed by backticks or break tables with pipes", () => {
     const tricky = makeNote({
       id: "n-tricky",
@@ -295,8 +323,8 @@ describe("toMarkdown safety and language", () => {
 
     // fenced body: the single backtick run cannot end the three backticks of the fence
     expect(md).toContain("  ```\n  Use `code` | table | <script>alert(1)</script>\n  ```");
-    // a value containing a backtick falls back to escaped literal text, never a broken code span
-    expect(md).toContain("- Quote: a \\` b \\| c");
+    // a value with a backtick keeps its code span, now with a grown delimiter
+    expect(md).toContain("- Quote: ``a ` b | c``");
     // inside a code span a pipe needs no escaping, outside one it does
     expect(md).toContain("selector `div|p`");
     expect(md).toContain("  - style.color: red\\|blue");
