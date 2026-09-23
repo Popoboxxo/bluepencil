@@ -204,8 +204,8 @@ function parseOnConflict(
 
 function parseEnvironmentFlag(
   flags: Record<string, FlagValue>,
-  fallback: Environment,
-): Environment {
+  fallback: Environment | undefined,
+): Environment | undefined {
   const raw = flags.environment;
   if (raw === undefined) return fallback;
   if (isEnvironment(raw)) return raw;
@@ -351,13 +351,17 @@ function readNoteArray(path: string, entries: readonly unknown[]): NoteSet {
     else notes.push(entry as Note);
   });
   refuseIssues(path, issues);
+  // A bare `Note[]` carries its own environment tags; inventing `dev` for them would silently
+  // re-tag a `live` note (FR-14.1/NFR-18). Derive it from the notes instead and let
+  // createBundle refuse a mixed set — the same rule the UI/Blueprint path already applies.
+  const found = [...new Set(notes.map((note) => note.environment))];
   const bundle: Bundle = {
     kind: BUNDLE_KIND,
     schemaVersion: SCHEMA_VERSION,
     exportedAt: systemClock.now(),
     exportedBy: EXPORTED_BY,
-    environment: DEFAULT_ENVIRONMENT,
-    app: { name: path },
+    environment: found.length === 1 ? (found[0] as Environment) : DEFAULT_ENVIRONMENT,
+    app: { name: basename(path) },
     sessions: deriveSessions(notes),
     notes,
   };
@@ -523,9 +527,15 @@ async function main(argv: string[]): Promise<void> {
         format === "json"
           ? bundleToJson(
               createBundle(selected, {
-                environment: parseEnvironmentFlag(flags, set.environment),
+                // Only an explicit --environment re-tags the notes (a deliberate promotion,
+                // FR-14.8); without the flag the notes' own tags decide, and a mixed set is
+                // refused with exit 3 instead of being silently flattened to one environment.
+                ...(parseEnvironmentFlag(flags, undefined) === undefined
+                  ? {}
+                  : { environment: parseEnvironmentFlag(flags, undefined) as Environment }),
                 app: set.app,
                 exportedBy: EXPORTED_BY,
+                sessions: set.bundle.sessions,
               }),
               { pretty: true },
             )
@@ -549,7 +559,9 @@ async function main(argv: string[]): Promise<void> {
       }
       const base = readSet(basePath);
       const incoming = readSet(incomingPath);
-      const targetEnvironment = parseEnvironmentFlag(flags, base.environment);
+      // A merge/import always has a target, so a missing --environment falls back to the base
+      // set's own environment (which readSet derived from the notes, not invented).
+      const targetEnvironment = parseEnvironmentFlag(flags, base.environment) ?? DEFAULT_ENVIRONMENT;
       const mode = parseMode(flags);
       const onConflict = parseOnConflict(flags);
       const allowEnvMismatch = flags["allow-env-mismatch"] === true;
@@ -672,8 +684,12 @@ async function run(): Promise<void> {
     await main(argv.filter((arg) => arg !== "--debug"));
   } catch (error) {
     if (debug) throw error;
-    process.stderr.write(`bluepencil: ${messageOf(error)}\n`);
-    process.exit(EXIT.usage);
+    const message = messageOf(error);
+    process.stderr.write(`bluepencil: ${message}\n`);
+    // An environment refusal is a documented pipeline outcome (exit 3), not a usage error: the
+    // command was well-formed, the *data* spanned two environments. Before, exporting a mixed set
+    // exited 1 even though `--help` promises 3 for exactly this case.
+    process.exit(/environment/i.test(message) ? EXIT.envMismatch : EXIT.usage);
   }
 }
 
@@ -683,7 +699,7 @@ function failStream(error: unknown, debug: boolean): never {
   try {
     process.stderr.write(`bluepencil: ${messageOf(error)}\n`);
   } catch {
-    // stderr is broken as well — the exit code still has to be the documented one.
+    // stderr is broken as well; the exit code still has to be the documented one.
   }
   process.exit(EXIT.usage);
 }

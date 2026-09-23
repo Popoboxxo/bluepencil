@@ -313,8 +313,11 @@ export async function attach(options: AttachOptions): Promise<AttachHandle> {
     element = null;
   }
 
+  /** `destroy()` must win over a check() that is already in flight (a late mount would undo it). */
+  let destroyed = false;
+
   function armWatch(): void {
-    if (options.watchSeconds <= 0) {
+    if (destroyed || options.watchSeconds <= 0) {
       return;
     }
     if (timer !== null) {
@@ -337,33 +340,50 @@ export async function attach(options: AttachOptions): Promise<AttachHandle> {
       return element;
     },
     async check(): Promise<boolean> {
+      if (destroyed) {
+        return false;
+      }
       if (options.manifest === undefined) {
         return false;
       }
-      const next = await resolveTarget(options, deps);
-      if (!shouldReload(target.version, next.version)) {
+      try {
+        const next = await resolveTarget(options, deps);
+        if (destroyed) {
+          return false;
+        }
+        if (!shouldReload(target.version, next.version)) {
+          return false;
+        }
+        // Verified *before* anything is torn down: a refused update leaves the running layer alone.
+        await assertIntegrity(options, next, deps);
+        const from = target.version;
+        // Load the new build BEFORE the old layer is torn down. A 404, a CSP block or a corrupt
+        // file must leave a working review layer behind — tearing down first meant a failed update
+        // removed bluepencil from the page entirely, and nothing re-mounted it.
+        await deps.importModule(next.elementUrl);
+        await waitForDefinition(deps, options.tag);
+        if (destroyed) {
+          return false;
+        }
+        teardown();
+        if (options.auto) {
+          element = mountElement(options, next, deps);
+        }
+        target = withElementVersion(next, page, options.tag);
+        dispatch(page, ATTACH_UPDATED, { from, to: target.version });
+        return true;
+      } finally {
+        // Every exit re-arms the watch — a failed fetch, a refused digest or a half-written
+        // manifest must not silently end the update path. Before, only the two success paths
+        // armed a timer, so one transient 5xx killed updating for the rest of the page's life.
         armWatch();
-        return false;
       }
-      // Verified *before* anything is torn down: a refused update leaves the running layer alone.
-      await assertIntegrity(options, next, deps);
-      const from = target.version;
-      teardown();
-      target = next;
-      await deps.importModule(target.elementUrl);
-      await waitForDefinition(deps, options.tag);
-      target = withElementVersion(target, page, options.tag);
-      if (options.auto) {
-        element = mountElement(options, target, deps);
-      }
-      armWatch();
-      dispatch(page, ATTACH_UPDATED, { from, to: target.version });
-      return true;
     },
     async reload(): Promise<void> {
       await handle.check();
     },
     destroy(): void {
+      destroyed = true;
       teardown();
     },
   };

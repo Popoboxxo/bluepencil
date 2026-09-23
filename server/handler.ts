@@ -500,10 +500,42 @@ function filterFromQuery(query: URLSearchParams): NoteFilter {
   return filter;
 }
 
+/**
+ * The filter fields a body may carry, with the same names the query filter uses. A key outside
+ * this set is refused rather than ignored: an ignored key becomes an EMPTY filter, an empty
+ * filter matches every note, and `bulk-delete` with an empty filter removes the whole store. A
+ * typo therefore has to be an error, exactly like an unknown field in a note body already is.
+ */
+const FILTER_KEYS = new Set([
+  "status",
+  "includeDone",
+  "route",
+  "session",
+  "source",
+  "since",
+  "intent",
+  "type",
+  "environment",
+]);
+
 /** The same field checks for the `filter` object of a bulk-delete body. */
 function filterFromBody(value: unknown): NoteFilter {
   if (!isRecord(value)) {
     refuse(400, "invalid_payload", "filter must be a JSON object");
+  }
+  const unknown = Object.keys(value).filter((key) => !FILTER_KEYS.has(key));
+  if (unknown.length > 0) {
+    refuse(
+      400,
+      "invalid_payload",
+      `unknown filter field(s) ${unknown.join(", ")} — allowed are ${[...FILTER_KEYS].join(", ")} ` +
+        `(the page of a note is anchor.route, the review round is session)`,
+    );
+  }
+  if (Object.keys(value).length === 0) {
+    // An empty filter matches every note, so it must be an explicit "remove everything", not the
+    // silent result of a dropped key. Bulk-delete is the only destructive path, so it refuses.
+    refuse(400, "invalid_payload", "filter must name at least one field — refusing to remove every note");
   }
   const query = new URLSearchParams();
   for (const key of Object.keys(value)) {
