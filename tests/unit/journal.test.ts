@@ -316,3 +316,44 @@ describe("journal — choosing the backend from the infrastructure", () => {
     expect(journal.status().location).toBe(path);
   });
 });
+
+describe("journal — the actor of a batch (FR-18)", () => {
+  it("names the actor in the commit and reports it back through `read`", () => {
+    initRepo(dir);
+    const storePath = join(dir, "store.json");
+    const journal = selectJournal({
+      ...options(),
+      backend: "git",
+      storePath,
+      coalesceMs: 0,
+      subjectTemplate: "chore(notes): {count} change(s) by {actor}",
+    });
+    writeFileSync(storePath, "{\"notes\":[{\"id\":\"n-1\"}]}\n", "utf8");
+    journal.record({ op: "create", noteId: "n-1", actor: "dduchrow", summary: "create n-1" });
+
+    const subject = spawnSync("git", ["-C", dir, "log", "-1", "--format=%s"], { encoding: "utf8" }).stdout.trim();
+    const body = spawnSync("git", ["-C", dir, "log", "-1", "--format=%b"], { encoding: "utf8" }).stdout.trim();
+    expect(subject).toBe("chore(notes): 1 change(s) by dduchrow");
+    expect(body).toBe("Actor: dduchrow");
+    expect(journal.read().entries[0]?.actor).toBe("dduchrow");
+  });
+
+  it("leaves the trailer out when the batch names nobody or several disagree", () => {
+    initRepo(dir);
+    const storePath = join(dir, "store.json");
+    const journal = selectJournal({ ...options(), backend: "git", storePath, coalesceMs: 2000 });
+
+    writeFileSync(storePath, "{\"notes\":[{\"id\":\"n-1\"}]}\n", "utf8");
+    journal.record({ op: "create", noteId: "n-1", summary: "create n-1" });
+    journal.flush();
+    expect(spawnSync("git", ["-C", dir, "log", "-1", "--format=%b"], { encoding: "utf8" }).stdout.trim()).toBe("");
+
+    writeFileSync(storePath, "{\"notes\":[{\"id\":\"n-1\"},{\"id\":\"n-2\"}]}\n", "utf8");
+    journal.record({ op: "update", noteId: "n-2", actor: "Hermes", summary: "update n-2" });
+    journal.record({ op: "update", noteId: "n-2", actor: "dduchrow", summary: "update n-2" });
+    journal.flush();
+    const body = spawnSync("git", ["-C", dir, "log", "-1", "--format=%b"], { encoding: "utf8" }).stdout.trim();
+    expect(body).not.toContain("Actor:");
+    expect(journal.read().entries[1]?.actor).toBeUndefined();
+  });
+});

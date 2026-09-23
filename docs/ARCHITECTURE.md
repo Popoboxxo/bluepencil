@@ -208,6 +208,7 @@ Implementation rules:
 ```
 GET    /api/v1/bluepencil/notes?route=&status=&intent=&session=&since=
 POST   /api/v1/bluepencil/notes                 # create
+GET    /api/v1/bluepencil/notes/{id}            # read one note (?environment= gates it)
 PATCH  /api/v1/bluepencil/notes/{id}            # status, intent, body
 POST   /api/v1/bluepencil/notes/{id}/messages   # append thread message (author_type, kind)
 POST   /api/v1/bluepencil/notes/bulk-delete     # filter + confirm token

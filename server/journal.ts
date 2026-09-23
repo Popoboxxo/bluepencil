@@ -101,7 +101,7 @@ export interface JournalOptions {
   coalesceMs?: number;
   /** `Name <mail>`; defaults to the repository's own configuration. */
   author?: string;
-  /** Commit subject template: `{count}`, `{op}`, `{app}` are substituted. */
+  /** Commit subject template: `{count}`, `{op}`, `{actor}`, `{app}` are substituted. */
   subjectTemplate?: string;
   /** App name for the subject template. */
   appName?: string;
@@ -137,6 +137,30 @@ const defaultRun: CommandRunner = (command, args, options) => {
 
 function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+/** Commit-body trailer naming who asked for the change (`Actor: <name>`). */
+export const ACTOR_TRAILER = "Actor";
+
+/**
+ * The single actor of a coalesced batch, or `undefined` when nobody named one or the batch holds
+ * several different ones. A commit is one unit, so claiming "this was Daniel" for a mixed batch
+ * would be a guess — the trailer is left out instead, and the file backend keeps the per-entry truth.
+ */
+function actorFromBatch(batch: readonly JournalRecord[]): string | undefined {
+  const named = batch
+    .map((record) => record.actor?.trim())
+    .filter((name): name is string => name !== undefined && name !== "");
+  const unique = [...new Set(named)];
+  return unique.length === 1 ? unique[0] : undefined;
+}
+
+/** Reads the `Actor: <name>` line out of a commit body; `undefined` when the commit has none. */
+function actorFromTrailer(line: string): string | undefined {
+  const match = /^actor:\s*(.+)$/i.exec(line.trim());
+  if (match === null) return undefined;
+  const value = (match[1] ?? "").trim();
+  return value === "" ? undefined : value;
 }
 
 /** Canonical form the hash is computed over: fixed key order, no `hash` field. */
@@ -381,6 +405,7 @@ class GitJournal implements Journal {
     const subject = this.#subject
       .replace(/\{count\}/g, String(batch.length))
       .replace(/\{op\}/g, batch[batch.length - 1]?.op ?? "update")
+      .replace(/\{actor\}/g, actorFromBatch(batch) ?? "")
       .replace(/\{app\}/g, this.#appNameText());
     const env: NodeJS.ProcessEnv = { ...process.env };
     if (this.#author !== undefined) {
@@ -389,10 +414,15 @@ class GitJournal implements Journal {
       env.GIT_COMMITTER_NAME = this.#author.name;
       env.GIT_COMMITTER_EMAIL = this.#author.email;
     }
-    const commit = this.#run("git", ["-C", this.#repo, "commit", "-q", "--only", "-m", oneLine(subject), "--", ...this.#paths], {
-      stdio: "ignore",
-      env,
-    });
+    // Who asked for the change belongs in the commit itself: the repository identity says which
+    // process wrote, never which reviewer or agent acted (FR-18). One line, and only when known.
+    const actor = actorFromBatch(batch);
+    const body = actor === undefined ? [] : ["-m", `${ACTOR_TRAILER}: ${actor}`];
+    const commit = this.#run(
+      "git",
+      ["-C", this.#repo, "commit", "-q", "--only", "-m", oneLine(subject), ...body, "--", ...this.#paths],
+      { stdio: "ignore", env },
+    );
     if (commit.status !== 0) {
       this.#fail(`git commit failed — ${oneLine(commit.stderr) || `exit ${commit.status}`}`);
       return;
@@ -407,21 +437,28 @@ class GitJournal implements Journal {
     if (limit === 0) return { entries: [] };
     const log = this.#run(
       "git",
-      ["-C", this.#repo, "log", "-n", String(limit), "--format=%H%x09%cI%x09%s", "--", ...this.#paths],
+      ["-C", this.#repo, "log", "-n", String(limit), "--format=%H%x09%cI%x09%s%n%b%x1e", "--", ...this.#paths],
       { stdio: "ignore" },
     );
     if (log.status !== 0) {
       return { entries: [], issue: `git log failed — ${oneLine(log.stderr) || `exit ${log.status}`}` };
     }
     const entries: JournalEntry[] = [];
-    const lines = log.stdout.trim().split("\n").filter((line) => line.trim() !== "");
-    lines.reverse().forEach((line, index) => {
-      const [hash = "", ts = "", ...rest] = line.split("\t");
+    // `%x1e` (record separator) splits the commits; the subject is one line, the trailer lines follow.
+    const blocks = log.stdout
+      .split("\u001e")
+      .map((block) => block.replace(/^\n+/, ""))
+      .filter((block) => block.trim() !== "");
+    blocks.reverse().forEach((block, index) => {
+      const [head = "", ...bodyLines] = block.split(/\r?\n/);
+      const [hash = "", ts = "", ...subjectParts] = head.split("\t");
+      const actor = bodyLines.map(actorFromTrailer).find((value) => value !== undefined);
       entries.push({
         seq: since + index + 1,
         ts,
         op: "update",
-        summary: rest.join("\t"),
+        summary: subjectParts.join("\t"),
+        ...(actor === undefined ? {} : { actor }),
         hash,
         prevHash: "",
       });

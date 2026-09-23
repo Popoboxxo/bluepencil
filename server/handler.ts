@@ -22,7 +22,7 @@
  *   `sortForReview`                            the FR-4.6 review order (src/core/protocol)
  *
  * Rules (frozen contract §3):
- *  - exactly the eight documented endpoints exist; an unknown path is 404, a known path with an
+ *  - the documented endpoints exist and nothing else; an unknown path is 404, a known path with an
  *    undocumented method is 405 (`Allow` header set), a body that is not `application/json` is
  *    415, a malformed body is 400, an unknown note id is 404;
  *  - `POST {base}/notes/bulk-delete` needs `confirm: true` (else 400) and either `ids` or `filter`;
@@ -174,6 +174,12 @@ export interface MutationEvent {
   noteId?: string;
   /** How many notes a bulk delete removed. */
   removed?: number;
+  /**
+   * Who asked for the change — `X-Bluepencil-Actor`, or the `author` of the payload when the
+   * request carries none (FR-18). The journal records it verbatim; without it an audit trail can
+   * say *what* changed but never *who* did it.
+   */
+  actor?: string;
 }
 
 /** A refusal with a documented status code and error code. */
@@ -283,7 +289,8 @@ function splitSegments(rest: string): string[] {
 
 /**
  * The methods the contract documents for a path — `null` for an unknown path (404). `/notes/{id}`
- * is `PATCH` only: removal is the documented bulk-delete, there is no `DELETE {base}/notes/{id}`.
+ * reads with `GET` and patches with `PATCH`: removal is the documented bulk-delete, there is no
+ * `DELETE {base}/notes/{id}`.
  */
 function allowedMethods(segments: readonly string[]): string[] | null {
   const first = segments[0];
@@ -295,7 +302,7 @@ function allowedMethods(segments: readonly string[]): string[] | null {
     return null;
   }
   if (segments.length === 2 && first === "notes") {
-    return segments[1] === "bulk-delete" ? ["POST"] : ["PATCH"];
+    return segments[1] === "bulk-delete" ? ["POST"] : ["GET", "PATCH"];
   }
   if (segments.length === 3 && first === "notes" && segments[2] === "messages") return ["POST"];
   return null;
@@ -534,6 +541,71 @@ const PATCH_FIELDS = new Set([
   "sessionRef",
 ]);
 
+/**
+ * The fields `NoteDraft` accepts in a create body (`src/core/model.ts`). A create is the one place
+ * where a typo silently loses data: the draft is spread into `createNote`, which copies only the
+ * fields it knows, so `{"route": "/cart"}` used to answer 200 while storing nothing — and the note
+ * was then invisible to the very `?route=` filter the client thought it had set. A patch already
+ * refuses unknown keys; a create now does the same.
+ */
+const NOTE_DRAFT_FIELDS = new Set([
+  "type",
+  "body",
+  "anchor",
+  "intent",
+  "status",
+  "author",
+  "authorType",
+  "context",
+  "sessionRef",
+  "source",
+  "environment",
+  "ticketRef",
+  "debug",
+  "now",
+  "id",
+  "messages",
+]);
+
+/** Field names that read plausibly but belong elsewhere — the refusal names the right place. */
+const DRAFT_FIELD_HINTS: Record<string, string> = {
+  route: "the page belongs to the anchor — use anchor.route",
+  session: "the review round is spelled sessionRef",
+  author_type: "the message/note field is authorType (the API takes snake_case only in messages)",
+  app: "the app name is a deployment value (--app), not part of a note",
+};
+
+/**
+ * Refuses a create body with keys `NoteDraft` does not know. Known near-misses are resolved to their
+ * proper name in the message, so the fix is obvious instead of a guessing game.
+ */
+function assertKnownDraftFields(payload: Record<string, unknown>): void {
+  const unknown = Object.keys(payload).filter((key) => !NOTE_DRAFT_FIELDS.has(key));
+  if (unknown.length === 0) return;
+  const explained = unknown.map((key) => {
+    const hint = DRAFT_FIELD_HINTS[key];
+    return hint === undefined ? key : `${key} (${hint})`;
+  });
+  refuse(
+    400,
+    "invalid_payload",
+    `unknown field(s) ${explained.join(", ")} — a note carries ${[...NOTE_DRAFT_FIELDS].join(", ")}`,
+  );
+}
+
+/**
+ * The journal's "who" (FR-18): the `X-Bluepencil-Actor` header wins, otherwise the payload's own
+ * `author`. Both are the caller's own statement — the sidecar has no authentication, so this is a
+ * provenance note, not an identity claim (see the sidecar README on that boundary).
+ */
+function actorOf(request: ServerRequest, payload?: Record<string, unknown>): string | undefined {
+  const header = headerValue(request.headers, "x-bluepencil-actor");
+  const named = header === undefined ? "" : header.trim();
+  if (named !== "") return named;
+  const author = payload?.author;
+  return typeof author === "string" && author.trim() !== "" ? author.trim() : undefined;
+}
+
 /** A patch carries mutable fields only — an unknown key is a client bug, not something to ignore. */
 function patchFromBody(payload: Record<string, unknown>): NotePatch {
   const unknown = Object.keys(payload).filter((key) => !PATCH_FIELDS.has(key));
@@ -619,8 +691,40 @@ function bundleOf(context: HandlerContext) {
   });
 }
 
+/**
+ * `GET {base}/notes/{id}` — one note, canonically, so a tool does not have to fetch the whole set to
+ * read a single entry (the MCP server exposes the same as `get_note`, and the two access paths must
+ * not disagree about what is readable).
+ *
+ * `?environment=` gates the read the same way the list filter does: a note of another environment is
+ * a 404 unless the caller named that environment explicitly (NFR-18 keeps *writes* strict; reading
+ * stays opt-in per environment).
+ */
+function readNote(id: string, query: URLSearchParams, context: HandlerContext): ServerResponse {
+  const note = context.store.notes.find((candidate) => candidate.id === id);
+  if (note === undefined) {
+    refuse(404, "not_found", `no note with id ${JSON.stringify(id)}`);
+  }
+  const wanted = query.get("environment");
+  if (wanted !== null) {
+    if (!isEnvironment(wanted)) {
+      refuse(
+        400,
+        "invalid_query",
+        `environment must be one of ${ENVIRONMENTS.join(", ")} (got ${JSON.stringify(wanted)})`,
+      );
+    }
+    if (note.environment !== wanted) {
+      refuse(404, "not_found", `note ${JSON.stringify(id)} is not part of the ${wanted} environment`);
+    }
+  }
+  return json(200, { note: canonicalNote(note) }, context);
+}
+
 function createNoteFromBody(request: ServerRequest, context: HandlerContext): ServerResponse {
   const payload = readJsonObject(request);
+  assertKnownDraftFields(payload);
+  const actor = actorOf(request, payload);
   const requested = payload.environment;
   if (requested !== undefined && !isEnvironment(requested)) {
     refuse(
@@ -649,12 +753,13 @@ function createNoteFromBody(request: ServerRequest, context: HandlerContext): Se
     context.store.notes = [...context.store.notes, note];
     created = note.id;
     return json(200, { note: canonicalNote(note) }, context);
-  }, () => ({ op: "create", noteId: created }));
+  }, () => ({ op: "create", noteId: created, ...(actor === undefined ? {} : { actor }) }));
 }
 
 function patchNote(id: string, request: ServerRequest, context: HandlerContext): ServerResponse {
   const patch = patchFromBody(readJsonObject(request));
   const note = findNote(context, id);
+  const actor = actorOf(request);
   return applyMutation(context, () => {
     assertEnvironment(note.environment, context);
     const next = applyPatch(note, patch, context.now ? context.now() : undefined);
@@ -666,12 +771,13 @@ function patchNote(id: string, request: ServerRequest, context: HandlerContext):
     }
     context.store.notes = context.store.notes.map((candidate) => (candidate.id === id ? next : candidate));
     return json(200, { note: canonicalNote(next) }, context);
-  }, { op: "update", noteId: id });
+  }, { op: "update", noteId: id, ...(actor === undefined ? {} : { actor }) });
 }
 
 function appendMessageToNote(id: string, request: ServerRequest, context: HandlerContext): ServerResponse {
   const payload = readJsonObject(request);
   const note = findNote(context, id);
+  const actor = actorOf(request, payload);
   return applyMutation(context, () => {
     assertEnvironment(note.environment, context);
     const message = messageFromBody(payload, context);
@@ -684,11 +790,12 @@ function appendMessageToNote(id: string, request: ServerRequest, context: Handle
     }
     context.store.notes = context.store.notes.map((candidate) => (candidate.id === id ? next : candidate));
     return json(200, { note: canonicalNote(next) }, context);
-  }, { op: "message", noteId: id });
+  }, { op: "message", noteId: id, ...(actor === undefined ? {} : { actor }) });
 }
 
 function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResponse {
   const payload = readJsonObject(request);
+  const actor = actorOf(request);
   if (payload.confirm !== true) {
     refuse(400, "confirm_required", 'bulk-delete requires {"confirm": true} — nothing was removed');
   }
@@ -731,7 +838,7 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
     context.store.notes = remaining;
     removedCount = removed;
     return json(200, { removed }, context);
-  }, () => ({ op: "bulk-delete", ...(removedCount === 0 ? {} : { removed: removedCount }) }));
+  }, () => ({ op: "bulk-delete", ...(removedCount === 0 ? {} : { removed: removedCount }), ...(actor === undefined ? {} : { actor }) }));
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -794,7 +901,8 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
     }
     if (segments.length === 2) {
       const second = segments[1] ?? "";
-      return second === "bulk-delete" ? bulkDelete(request, context) : patchNote(second, request, context);
+      if (second === "bulk-delete") return bulkDelete(request, context);
+      return method === "GET" ? readNote(second, query, context) : patchNote(second, request, context);
     }
     return appendMessageToNote(segments[1] ?? "", request, context);
   }

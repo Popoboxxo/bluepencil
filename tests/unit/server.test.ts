@@ -28,6 +28,7 @@ import {
   handleRequest,
   normalizeBase,
   type HandlerContext,
+  type MutationEvent,
   type NoteStoreState,
   type ServerRequest,
   type ServerResponse,
@@ -75,9 +76,9 @@ function note(id: string, createdAt: string, overrides: Partial<NoteDraft> = {})
 function request(
   method: string,
   url: string,
-  init: { body?: unknown; contentType?: string | null } = {},
+  init: { body?: unknown; contentType?: string | null; headers?: Record<string, string> } = {},
 ): ServerRequest {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...(init.headers ?? {}) };
   let body = "";
   if (init.body !== undefined) {
     body = typeof init.body === "string" ? init.body : JSON.stringify(init.body);
@@ -96,6 +97,8 @@ interface Harness {
   state: NoteStoreState;
   /** How often the persist hook ran. */
   saves(): number;
+  /** The mutation events the persist hook saw, in order — what a journal records (FR-18). */
+  events(): (MutationEvent | undefined)[];
   call(request: ServerRequest): ServerResponse;
 }
 
@@ -107,7 +110,7 @@ function createHarness(
     cors?: string;
     base?: string;
     environment?: Environment;
-    persist?: (state: NoteStoreState) => void;
+    persist?: (state: NoteStoreState, event?: MutationEvent) => void;
   } = {},
 ): Harness {
   const state: NoteStoreState = { notes: options.notes ? [...options.notes] : [] };
@@ -127,6 +130,7 @@ function createHarness(
     context,
     state,
     saves: () => persist.mock.calls.length,
+    events: () => persist.mock.calls.map((call) => call[1] as MutationEvent | undefined),
     call: (input) => handleRequest(input, context),
   };
 }
@@ -495,8 +499,7 @@ describe("sidecar handler — the documented endpoints", () => {
       ["DELETE", "/health", "GET"],
       ["DELETE", "/notes", "GET, POST"],
       ["PUT", "/notes", "GET, POST"],
-      ["GET", "/notes/n1", "PATCH"],
-      ["PUT", "/notes/n1", "PATCH"],
+      ["PUT", "/notes/n1", "GET, PATCH"],
       ["GET", "/notes/bulk-delete", "POST"],
       ["GET", "/notes/n1/messages", "POST"],
       ["PATCH", "/sessions", "GET"],
@@ -1004,5 +1007,128 @@ describe("sidecar over HTTP (node:http glue)", () => {
     const storePath = join(dir, "broken.json");
     writeFileSync(storePath, "}{", "utf8");
     await expect(startServer({ storePath, port: 0, quiet: true })).rejects.toThrow(StoreFileError);
+  });
+});
+
+describe("sidecar handler — reading one note (GET {base}/notes/{id})", () => {
+  it("answers the note canonically, without needing the whole set", () => {
+    const harness = createHarness({ notes: seedNotes() });
+    const response = harness.call(request("GET", "/notes/n3"));
+    expect(response.status).toBe(200);
+    const body = jsonOf(response);
+    expect(body.note.id).toBe("n3");
+    expect(body.note.anchor).toEqual({ hook: "cart-total", route: "/cart" });
+    expect(harness.saves()).toBe(0);
+  });
+
+  it("answers 404 not_found for an unknown id", () => {
+    const harness = createHarness({ notes: seedNotes() });
+    const response = harness.call(request("GET", "/notes/n-missing"));
+    expect(response.status).toBe(404);
+    expect(jsonOf(response).error.code).toBe("not_found");
+  });
+
+  it("gates by environment when asked: a foreign note is 404, its own is 200, no filter is no gate", () => {
+    const harness = createHarness({
+      notes: [
+        note("n-dev", "2026-09-15T09:00:01.000Z"),
+        note("n-live", "2026-09-15T09:00:02.000Z", { environment: "live" }),
+      ],
+    });
+    expect(harness.call(request("GET", "/notes/n-live?environment=dev")).status).toBe(404);
+    expect(harness.call(request("GET", "/notes/n-live?environment=live")).status).toBe(200);
+    expect(harness.call(request("GET", "/notes/n-live")).status).toBe(200);
+  });
+
+  it("refuses an invalid environment value with 400 invalid_query", () => {
+    const harness = createHarness({ notes: seedNotes() });
+    const response = harness.call(request("GET", "/notes/n1?environment=prod"));
+    expect(response.status).toBe(400);
+    expect(jsonOf(response).error.code).toBe("invalid_query");
+  });
+
+  it("still refuses DELETE and names both documented methods in Allow", () => {
+    const harness = createHarness({ notes: seedNotes() });
+    const response = harness.call(request("DELETE", "/notes/n1"));
+    expect(response.status).toBe(405);
+    expect(response.headers.allow).toBe("GET, PATCH");
+    expect(harness.saves()).toBe(0);
+  });
+});
+
+describe("sidecar handler — a create body is not a guessing game", () => {
+  it("refuses an unknown field instead of storing nothing and answering 200", () => {
+    const harness = createHarness();
+    const response = harness.call(
+      request("POST", "/notes", { body: { type: "text", body: "x", anchor: { hook: "a" }, bogusField: 1 } }),
+    );
+    expect(response.status).toBe(400);
+    expect(jsonOf(response).error.code).toBe("invalid_payload");
+    expect(jsonOf(response).error.message).toContain("bogusField");
+    expect(harness.saves()).toBe(0);
+    expect(harness.state.notes).toHaveLength(0);
+  });
+
+  it("names the right place for the classic near-misses route and session", () => {
+    const harness = createHarness();
+    const route = harness.call(
+      request("POST", "/notes", { body: { type: "text", body: "x", anchor: { hook: "a" }, route: "/cart" } }),
+    );
+    expect(route.status).toBe(400);
+    expect(jsonOf(route).error.message).toContain("anchor.route");
+
+    const session = harness.call(
+      request("POST", "/notes", { body: { type: "text", body: "x", anchor: { hook: "a" }, session: "s1" } }),
+    );
+    expect(jsonOf(session).error.message).toContain("sessionRef");
+  });
+
+  it("accepts every field NoteDraft knows, in the correct spelling", () => {
+    const harness = createHarness();
+    const response = harness.call(
+      request("POST", "/notes", {
+        body: {
+          type: "text",
+          body: "x",
+          anchor: { hook: "a", route: "/cart" },
+          sessionRef: "s1",
+          ticketRef: "T-1",
+          debug: { commit: "abc" },
+        },
+      }),
+    );
+    expect(response.status).toBe(200);
+    const created = jsonOf(response).note;
+    expect(created.sessionRef).toBe("s1");
+    expect(created.anchor.route).toBe("/cart");
+    expect(created.ticketRef).toBe("T-1");
+  });
+});
+
+describe("sidecar handler — the journal's 'who' (FR-18)", () => {
+  it("records the X-Bluepencil-Actor header for a create", () => {
+    const harness = createHarness();
+    harness.call(request("POST", "/notes", { body: draft(), headers: { "x-bluepencil-actor": "dduchrow" } }));
+    expect(harness.events()[0]?.actor).toBe("dduchrow");
+  });
+
+  it("falls back to the payload author when no header is sent", () => {
+    const harness = createHarness();
+    harness.call(request("POST", "/notes", { body: draft({ author: "Hermes" }) }));
+    expect(harness.events()[0]?.actor).toBe("Hermes");
+  });
+
+  it("names the message author, and leaves the field unset when nobody is named", () => {
+    const harness = createHarness({ notes: [note("n1", "2026-09-15T09:00:01.000Z")] });
+    harness.call(
+      request("POST", "/notes/n1/messages", {
+        body: { text: "reply from the agent", author: "Hermes", author_type: "agent", kind: "reply" },
+      }),
+    );
+    expect(harness.events().map((event) => event?.actor)).toEqual(["Hermes"]);
+
+    const quiet = createHarness({ notes: [note("n1", "2026-09-15T09:00:01.000Z")] });
+    quiet.call(request("PATCH", "/notes/n1", { body: { status: "done" } }));
+    expect(quiet.events()[0]?.actor).toBeUndefined();
   });
 });

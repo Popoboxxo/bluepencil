@@ -268,13 +268,17 @@ them out of the box.
 |---|---|---|---|
 | `GET` | `{base}/health` | – | `{ ok: true, status, version }` |
 | `GET` | `{base}/notes` | Query params: `route`, `intent`, `type`, `session`, `source`, `environment`, `includeDone`, `since`, repeated `status` | `{ notes: Note[] }` |
-| `POST` | `{base}/notes` | `NoteDraft` JSON | `{ note: Note }` |
+| `POST` | `{base}/notes` | `NoteDraft` JSON — an unknown key is refused (`400`), never dropped | `{ note: Note }` |
+| `GET` | `{base}/notes/{id}` | optional `?environment=` | `{ note: Note }` — one note, so a tool does not fetch the whole set to read it. |
 | `PATCH` | `{base}/notes/{id}` | Note patch (fields only) | `{ note: Note }` |
 | `POST` | `{base}/notes/{id}/messages` | `{ id, ts, text, author, author_type, kind }` | `{ note: Note }` |
 | `POST` | `{base}/notes/bulk-delete` | `{ ids?: string[], filter?: NoteFilter, confirm: boolean }` | `{ removed: number }` |
 | `GET` | `{base}/sessions` | – | `{ sessions: Session[] }` |
 | `GET` | `{base}/bundle` | – | Canonical bundle (`src/data`) — for agents and exports. |
 | `GET` | `{base}/journal` | optional `?since=<seq>` | `{ journal: { backend, location, entries, lastSeq }, entries }` — the mutation history (FR-18). |
+
+Who asked for a change: `X-Bluepencil-Actor` (or the payload's `author`) becomes the
+journal entry's `actor` and the `Actor:` trailer of a `git`-journal commit (FR-18).
 
 `{base}` defaults to `/api/v1/bluepencil`. Error conventions: `confirm:
 true` required for bulk-delete (else `400`); unknown note id → `404`;
