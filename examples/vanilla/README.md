@@ -170,10 +170,22 @@ same idempotence the `merge` mode promises (FR-14.3). Rejected notes are counted
 > this file (`!examples/vanilla/data/seed.bluepencil.json`), so the seed is tracked while real review
 > data stays out of the repository (NFR-13).
 
+## Automated against this checklist
+
+`npm run smoke:e2e` (`tests/e2e/vanilla.e2e.mjs`) walks the checklist below in a real browser
+against the real build — including the seed import, the panel order, the shadow-DOM thread and the
+byte-stability of the two exports. It is the same CDP harness the embed smoke uses, so no test
+framework has to be installed. The list stays here because a reviewer checks more than a script can:
+the *look* of the layer, the wording of a hint, the feel of a pick.
+
 ## Manual checklist
 
 Run through this once per review round on `http://localhost:9283/examples/vanilla/`. Every line
 names what must be observable, not what the code intends.
+
+> **Before you start:** the layer's bar sits over this page's control strip at the top. Move or
+> collapse the bar (its own control) before clicking *Load seed notes* / *Export* by hand — the
+> E2E suite clicks those host buttons programmatically for exactly that reason.
 
 1. **Annotate text** (FR-1.3) — `C` (or the bar) → click the `Release review console` heading → the
    composer opens with the anchor `app-title` → save → the note appears in the panel and as a
@@ -192,9 +204,11 @@ names what must be observable, not what the code intends.
 6. **Settings** (FR-4.5) — open the settings surface, switch *show done notes*, change the author
    name, then hit *reset to defaults*. Reload the page: persisted values come back, reset values
    do not.
-7. **Feedback-only mode** (FR-5.2) — `F` → create a note → it is `intent=feedback` without any
-   further action, is visually distinct, and lands in the export's `💬 feedback only` section. An
-   agent must change nothing here (FR-5.7).
+7. **Feedback-only mode** (FR-5.2) — `F` arms the flag, then create a note *in a mode* (`C` or `D`
+   + pick) → it is `intent=feedback` without a second choice, is visually distinct, and lands in the
+   export's `💬 feedback only` section. An agent must change nothing here (FR-5.7).
+   **Note:** `F` alone does not pick anything — the layer only picks an element while a mode is
+   armed (`mode === "off"` returns early), and the flag then forces the intent in the composer.
 8. **Decision thread** (FR-5.4, FR-5.5) — open `n-seed-002` on the shadow-DOM card: the thread
    shows the human note, the agent's `decision_request` (options + recommendation) and a human
    reply. Answer it → the answer is stored as `kind=decision` and the status returns to `open`.

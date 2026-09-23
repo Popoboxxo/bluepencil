@@ -8,11 +8,13 @@
 #   - embed-smoke: the sidecar HTTP contract, the element against a running API, and the attach
 #     loader in a real browser (the fixture website examples/attach plus a live version swap)
 #
-# Embed smoke leg 4 needs a Chrome/Chromium; the runner image ships one, and BP_REQUIRE_BROWSER=1
-# makes a missing browser a failure so the real-browser round cannot be skipped silently.
+#   - e2e-vanilla: the fixture app itself — the manual checklist from examples/vanilla/README.md,
+#     automated in a real browser (annotate, filter, thread, export, lifecycle). It shares the
+#     dependency-free CDP layer with the embed smoke (scripts/lib/browser.mjs), so no test framework
+#     has to be installed to run it (NFR-4, NFR-11).
 #
-# A Playwright E2E suite against examples/vanilla is still outstanding (NFR-11); until it lands the
-# browser round is covered by the embed smoke and the manual checklist in examples/vanilla/README.md.
+# Both real-browser legs need a Chrome/Chromium; the runner image ships one, and BP_REQUIRE_BROWSER=1
+# makes a missing browser a failure so the browser round cannot be skipped silently.
 name: CI
 
 on:
@@ -62,6 +64,13 @@ jobs:
           # fail instead of skipping when the runner has no browser.
           BP_REQUIRE_BROWSER: "1"
         run: npm run smoke:embed
+
+      - name: E2E suite (fixture app, real browser)
+        env:
+          # NFR-11: the automated form of examples/vanilla/README.md; a missing browser must fail
+          # here as well instead of turning the whole suite into a skip.
+          BP_REQUIRE_BROWSER: "1"
+        run: npm run smoke:e2e
 
       - name: Secret scan
         run: npm run secret-scan

@@ -50,7 +50,7 @@ bluepencil/
 │  └─ round-trip/          # dev → bundle → live → bundle → dev exchange (FR-14.5/14.8)
 ├─ tests/
 │  ├─ unit/                # model, anchor, adapters, export (vitest)
-│  └─ e2e/                 # Playwright against examples/vanilla
+│  └─ e2e/                 # the fixture app in a real browser (CDP harness, NFR-11)
 └─ docs/
    ├─ CONCEPT.md  REQUIREMENTS.md  ARCHITECTURE.md
    ├─ PROTOCOL.md          # agent collaboration protocol (implement/feedback/decision)
@@ -361,7 +361,7 @@ The Markdown export opens with the two exception sections (`⚠ open decisions`,
 |---|---|---|
 | Unit | model, anchor resolution (hook/path/quote, orphaning), capture, exports, adapters | vitest (jsdom) |
 | Adapter conformance | one suite, all adapters | vitest |
-| E2E | `examples/vanilla` fixture: annotate text/design, quote capture, filters, done-hidden default, settings, feedback mode, decision thread, export, bulk delete | Playwright |
+| E2E | `examples/vanilla` fixture: annotate text/design, quote capture, filters, done-hidden default, feedback mode, decision thread, export, enable/disable cycles (bulk delete is M2 and not implemented) | dependency-free CDP harness (`scripts/lib/browser.mjs`), no test framework |
 | Host integration | React example: mount/unmount, no leaks, host-supplied theme | Playwright |
 | Size guard | bundle budget (NFR-3) | CI check |
 | A11y | keyboard-only path, contrast of layer surfaces | Playwright + axe |
