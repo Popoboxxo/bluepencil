@@ -22,6 +22,7 @@ src/
   index.ts    # oeffentliche API: init(), mount(), enable(), disable(), destroy()
 server/       # Referenz-Server (Sidecar-Modus)
 examples/     # vanilla, react, home-assistant, round-trip
+spec/         # GENERIERTE reqmd-Spec aus docs/REQUIREMENTS.md (nicht handeditieren)
 tests/        # unit (vitest), e2e (Playwright)
 docs/         # CONCEPT, REQUIREMENTS, ARCHITECTURE, PROTOCOL, INTEGRATION
 
@@ -74,6 +75,35 @@ Kategorien für `docs/REQUIREMENTS.md`:
 - UI, Filter & A11y (FR-4.x, FR-11.x)
 - Adapter, Export & Bundles (FR-6.x, FR-7.x, FR-14.x)
 - Headless/CLI/MCP (FR-13.x, FR-15.x, FR-16.x)
+
+## Spec-Workflow (reqmd)
+
+`spec/` ist die **generierte, maschinenprüfbare Projektion** von `docs/REQUIREMENTS.md`.
+Die Quelle bleibt das Markdown-Tabelle; `spec/` wird nie handeditiert.
+
+```bash
+npm run spec           # spec/ aus docs/REQUIREMENTS.md neu erzeugen
+npm run spec:check     # reqmd check spec/  (Exit 0 = gültig)
+npm run spec:ls        # Tabelle aller Knoten
+npm run spec:stats     # Attribut-Verteilung je Dokument
+```
+
+Hard rules (nach [reqmd.dev/ai](https://reqmd.dev/ai/)):
+
+1. **Quelle zuerst.** Eine Anforderung wird in `docs/REQUIREMENTS.md` geändert, nie in `spec/`.
+   Danach `npm run spec` — CI prüft, dass `spec/` zur Quelle passt.
+2. **Nach jeder Änderung `reqmd check`.** Läuft in Millisekunden; ein roter Exit blockiert.
+3. **ID nie ändern.** `FR-1.3` ist der Trace-Ziel. Eine geänderte Identität = neue
+   Anforderung, alte mit `disposition: rejected`.
+4. **Neues Attribut zuerst ins `schema.yaml`.** `additionalProperties: false` — ein
+   nicht deklariertes Attribut macht `reqmd check` rot.
+5. **`requires-trace-from: []` statt fehlendem `trace:`** — expliziter Opt-out, kein Mehrdeutig.
+6. **`id-prefix` ist global eindeutig** (`FR-1.`, `FR-12.`, …), nicht `FR-` — sonst
+   `prefix already used … collision`.
+
+Der Generator bricht mit einer klaren Meldung ab, wenn er eine Zeile der Quelltabelle nicht
+versteht — stillschweigend fehlende Anforderungen wären die schlimmste Fehlerklasse, weil
+`reqmd check` dann grün bleibt, ohne die Lücke zu sehen.
 
 
 

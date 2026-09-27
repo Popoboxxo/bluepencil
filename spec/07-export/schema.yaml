@@ -1,0 +1,23 @@
+# Schema for the Functional requirements: export
+# Managed for reqmd: read this before adding an attribute —
+# `additionalProperties: false` means an undeclared attribute fails `reqmd check`.
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "export"
+title: "bluepencil — Functional requirements: export"
+type: object
+properties:
+  prio:
+    type: string
+    enum: [P0, P1, P2]
+    description: "MoSCoW priority: P0 must, P1 should, P2 could"
+  origin:
+    type: string
+    enum: [P, G, N, ""]
+    description: "P = proven in prototype, G = prototype gap, N = product need"
+  milestone:
+    type: string
+    description: "Milestone from CONCEPT.md section 12"
+x-reqmd:
+  level: functional-requirements
+  document-id: "export"
+  id-prefix: "FR-7."

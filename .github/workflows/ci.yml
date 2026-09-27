@@ -13,6 +13,10 @@
 #     dependency-free CDP layer with the embed smoke (scripts/lib/browser.mjs), so no test framework
 #     has to be installed to run it (NFR-4, NFR-11).
 #
+#   - spec: regenerates spec/ from docs/REQUIREMENTS.md and validates it with reqmd, so a
+#     malformed requirement block fails the build. The regeneration step also proves the committed
+#     spec/ matches the source table — a drifted spec fails instead of passing silently.
+#
 # Both real-browser legs need a Chrome/Chromium; the runner image ships one, and BP_REQUIRE_BROWSER=1
 # makes a missing browser a failure so the browser round cannot be skipped silently.
 name: CI
@@ -24,6 +28,44 @@ on:
   workflow_dispatch:
 
 jobs:
+  spec:
+    # The spec check needs no Node: it is a Go binary plus a Python generator. Keeping it in its
+    # own job means a broken requirement block reports fast and does not queue behind the browser legs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install reqmd
+        run: |
+          # Prebuilt single binary, checksum verified against the release manifest.
+          curl -sSL -o reqmd https://github.com/dVoo/reqmd/releases/download/v0.2-alpha/reqmd-linux-amd64
+          curl -sSL -o SHA256SUMS.txt https://github.com/dVoo/reqmd/releases/download/v0.2-alpha/SHA256SUMS.txt
+          grep 'reqmd-linux-amd64$' SHA256SUMS.txt | sed 's/reqmd-linux-amd64/reqmd/' | sha256sum -c -
+          chmod +x reqmd
+          sudo mv reqmd /usr/local/bin/reqmd
+          reqmd --version
+
+      - name: Regenerate spec from docs/REQUIREMENTS.md
+        run: python3 scripts/build-reqmd-spec.py
+
+      - name: Spec is in sync with the source table
+        run: |
+          # A dirty worktree here means spec/ no longer matches docs/REQUIREMENTS.md.
+          # Failing loudly beats validating a stale spec.
+          if [ -n "$(git status --porcelain spec/)" ]; then
+            echo "::error::spec/ is out of sync with docs/REQUIREMENTS.md — run 'npm run spec'"
+            git --no-pager diff --stat spec/
+            git --no-pager diff spec/ | head -100
+            exit 1
+          fi
+
+      - name: Validate requirements (reqmd check)
+        run: reqmd check spec/
+
   verify:
     runs-on: ubuntu-latest
     steps:
