@@ -7,6 +7,11 @@
 > **Milestone:** see [CONCEPT.md §12](CONCEPT.md#12-roadmap).
 > **Origin:** `P` = proven in the reference prototype · `G` = gap the prototype left ·
 > `N` = concrete product need (admin debug mode in an ALM system).
+>
+> **This file is the source of truth.** The machine-checkable projection lives in
+> [`spec/`](../spec/README.md) — 127 requirements as a [reqmd](https://reqmd.dev) tree,
+> regenerated with `npm run spec` and validated in CI with `reqmd check`. Edit the table
+> below, never the generated spec.
 
 ---
 

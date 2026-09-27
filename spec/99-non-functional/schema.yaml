@@ -1,0 +1,15 @@
+$schema: "https://json-schema.org/draft/2020-12/schema"
+$id: "nonfunctional"
+title: "bluepencil — Non-Functional Requirements"
+type: object
+properties:
+  prio:
+    type: string
+    enum: [P0, P1, P2]
+  milestone:
+    type: string
+x-reqmd:
+  level: non-functional
+  document-id: "nonfunctional"
+  id-prefix: "NFR-"
+  mandatory-disposition: true
