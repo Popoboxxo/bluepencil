@@ -157,6 +157,29 @@ function debugIssues(value: unknown, path: string): string[] {
   return issues;
 }
 
+function timingIssues(value: unknown, path: string): string[] {
+  if (!isObject(value)) return [`${path} must be an object`];
+  const issues: string[] = [];
+  // `at` is the only required member: a cue without a position cannot be ordered, everything
+  // else is optional. Negative positions are refused — a talk starts at 0, not before it.
+  if (typeof value.at !== "number" || !Number.isFinite(value.at)) {
+    issues.push(`${path}.at must be a finite number`);
+  } else if (value.at < 0) {
+    issues.push(`${path}.at must be >= 0`);
+  }
+  if (value.duration !== undefined) {
+    if (typeof value.duration !== "number" || !Number.isFinite(value.duration)) {
+      issues.push(`${path}.duration must be a finite number`);
+    } else if (value.duration < 0) {
+      issues.push(`${path}.duration must be >= 0`);
+    }
+  }
+  if (value.label !== undefined && !isNonEmptyString(value.label)) {
+    issues.push(`${path}.label must be a non-empty string`);
+  }
+  return issues;
+}
+
 function messageIssues(value: unknown, path: string): string[] {
   if (!isObject(value)) return [`${path} must be an object`];
   const issues: string[] = [];
@@ -201,6 +224,7 @@ function noteIssues(note: JsonObject, path: string): string[] {
     issues.push(`${path}.ticketRef must be a non-empty string`);
   }
   if (note.debug !== undefined) issues.push(...debugIssues(note.debug, `${path}.debug`));
+  if (note.timing !== undefined) issues.push(...timingIssues(note.timing, `${path}.timing`));
   return issues;
 }
 

@@ -165,6 +165,27 @@ export interface Note {
   ticketRef?: string;
   /** Optional debug context written by tooling (FR-13.5/13.6). */
   debug?: DebugContext;
+  /**
+   * Presentation timing (FR-20.4): where this note sits in a talk. Seconds, not minutes — a talk
+   * has cues in seconds, and hosts that think in minutes convert at their own boundary. Optional on
+   * purpose: a bundle written before the presentation mode stays valid and needs no migration step.
+   */
+  timing?: NoteTiming;
+}
+
+/**
+ * Presentation timing of a note (FR-20.4).
+ *
+ * Deliberately *not* `debug` (FR-13.5): debug context is tool output, this is authored content that
+ * has to survive export, MCP and the sidecar — which is why it lives on the note and not on the UI.
+ */
+export interface NoteTiming {
+  /** Cue position: seconds from the start of the talk. */
+  at: number;
+  /** Optional planned length of this cue in seconds. */
+  duration?: number;
+  /** Short human label for the cue ("Auftrag", "Pausenpunkt"), carried into exports. */
+  label?: string;
 }
 
 /** Everything a caller may supply when creating a note; the rest is derived. */
@@ -182,6 +203,7 @@ export interface NoteDraft {
   environment?: Environment;
   ticketRef?: string;
   debug?: DebugContext;
+  timing?: NoteTiming;
   /** Injectable timestamp/ids — used by tests for deterministic output. */
   now?: string;
   id?: string;
@@ -198,6 +220,8 @@ export interface NotePatch {
   anchor?: Anchor;
   context?: CapturedContext | null;
   sessionRef?: string;
+  /** Set or replace the cue; `null` clears it, omitted leaves it untouched (FR-20.4). */
+  timing?: NoteTiming | null;
 }
 
 export interface NoteFilter {
@@ -341,6 +365,7 @@ export function createNote(draft: NoteDraft): Note {
     ...(draft.sessionRef !== undefined ? { sessionRef: draft.sessionRef } : {}),
     ...(draft.ticketRef !== undefined ? { ticketRef: draft.ticketRef } : {}),
     ...(draft.debug !== undefined ? { debug: draft.debug } : {}),
+    ...(draft.timing !== undefined ? { timing: { ...draft.timing } } : {}),
   };
   return note;
 }

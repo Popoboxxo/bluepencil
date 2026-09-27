@@ -19,7 +19,15 @@ export type ShortcutId =
   | "previous"
   | "jump"
   | "cancel"
-  | "save";
+  | "save"
+  /* Presentation mode (FR-20.8) — all `Shift` combinations, so they cannot shadow a host key. */
+  | "present.toggle"
+  | "present.mode"
+  | "present.audience"
+  | "present.timer"
+  | "present.reset"
+  | "present.chapter.next"
+  | "present.chapter.previous";
 
 /** Where a shortcut applies: `composer` shortcuts are only ever read inside the composer surface. */
 export type ShortcutScope = "document" | "composer";
@@ -34,6 +42,13 @@ export interface Shortcut {
   readonly range?: { readonly min: number; readonly max: number };
   /** Defaults to `document`; composer shortcuts never enter the document binding. */
   readonly scope?: ShortcutScope;
+  /**
+   * The shortcut only fires with `Shift` held (FR-20.8). This is how the presentation keys avoid
+   * shadowing a host: an unshifted `p`/`e`/`r` stays the host's, `Shift`+`P` is ours. The modifier
+   * is part of the registered identifier, so the conflict check below sees `Shift+P` and a plain
+   * `p` as two different keys — the legend and the handler read the same registry either way.
+   */
+  readonly shift?: boolean;
   readonly label: MessageKey;
   readonly group: MessageKey;
 }
@@ -44,6 +59,7 @@ export const SHORTCUT_GROUPS = Object.freeze({
   view: "legend.group.view" as MessageKey,
   navigate: "legend.group.navigate" as MessageKey,
   edit: "legend.group.edit" as MessageKey,
+  present: "legend.group.present" as MessageKey,
 });
 
 /** Order matters: the legend renders in this order, grouped by `group`. */
@@ -127,6 +143,70 @@ export const SHORTCUTS: readonly Shortcut[] = Object.freeze([
     label: "legend.key.save",
     group: SHORTCUT_GROUPS.edit,
   },
+
+  /* -- presentation mode (FR-20.8) -------------------------------------- */
+  /* Every key below is a `Shift` combination. That is the whole collision strategy: an unshifted
+   * letter or digit is a navigation key on every host page we know (`j`/`k` = next/previous,
+   * `0`–`9` = jump to chapter, `s` = speaker notes, `t` = print), and those stay with the host.
+   * `Shift`+letter is free there, so a presentation page keeps both keymaps at once. */
+  {
+    id: "present.toggle",
+    shift: true,
+    keys: ["P"],
+    display: ["Shift", "P"],
+    label: "legend.key.present.toggle",
+    group: SHORTCUT_GROUPS.present,
+  },
+  {
+    id: "present.mode",
+    shift: true,
+    keys: ["E"],
+    display: ["Shift", "E"],
+    label: "legend.key.present.mode",
+    group: SHORTCUT_GROUPS.present,
+  },
+  {
+    id: "present.audience",
+    shift: true,
+    keys: ["O"],
+    display: ["Shift", "O"],
+    label: "legend.key.present.audience",
+    group: SHORTCUT_GROUPS.present,
+  },
+  {
+    id: "present.timer",
+    shift: true,
+    keys: [" "],
+    display: ["Shift", "Space"],
+    label: "legend.key.present.timer",
+    group: SHORTCUT_GROUPS.present,
+  },
+  {
+    id: "present.reset",
+    shift: true,
+    keys: ["R"],
+    display: ["Shift", "R"],
+    label: "legend.key.present.reset",
+    group: SHORTCUT_GROUPS.present,
+  },
+  {
+    // Two real key entries rather than a `range`: the arrow keys are not a digit range, and a range
+    // shortcut is documented as unremappable, which would take the choice away from a host.
+    id: "present.chapter.next",
+    shift: true,
+    keys: ["ArrowRight"],
+    display: ["Shift", "→"],
+    label: "legend.key.present.chapter",
+    group: SHORTCUT_GROUPS.present,
+  },
+  {
+    id: "present.chapter.previous",
+    shift: true,
+    keys: ["ArrowLeft"],
+    display: ["Shift", "←"],
+    label: "legend.key.present.chapter",
+    group: SHORTCUT_GROUPS.present,
+  },
 ]);
 
 /** Overrides a host may pass: `{ bar: "g", panel: ["l", "p"] }`. */
@@ -142,6 +222,17 @@ export interface KeymapResolution {
 /** `C` and `c` are the same key; `Escape` is reported as such and never lower-cased. */
 export function normaliseKey(key: string): string {
   return key.length === 1 ? key.toLowerCase() : key;
+}
+
+/**
+ * The identifier a key event is looked up under: `Shift` becomes part of the name, so a `Shift`ed
+ * shortcut and its bare twin can live in the same registry without either shadowing the other.
+ * `Shift`+`Space` arrives as `" "` from the browser, and is named `Space` here — the same word the
+ * legend prints, so the table and the handler cannot drift apart (FR-1.11).
+ */
+export function keyIdentifier(rawKey: string, shiftKey: boolean): string {
+  if (!shiftKey) return normaliseKey(rawKey);
+  return `Shift+${rawKey === " " ? "Space" : rawKey.length === 1 ? rawKey.toUpperCase() : rawKey}`;
 }
 
 function asKeys(value: string | readonly string[] | undefined): readonly string[] | null {
@@ -184,7 +275,10 @@ export function resolveKeymap(overrides?: KeymapOverrides): KeymapResolution {
       continue;
     }
     for (const raw of overridden ?? shortcut.keys) {
-      const key = normaliseKey(raw);
+      // FR-20.8: a `shift` shortcut registers under `Shift+<key>`, so it occupies a different slot
+      // than the bare key. A host that binds plain `p` and we bind `Shift+P` are two entries, not
+      // a conflict — that is the whole point of the modifier living in the identifier.
+      const key = shortcut.shift ? `Shift+${raw === " " ? "Space" : normaliseKey(raw).toUpperCase()}` : normaliseKey(raw);
       const taken = binding.get(key);
       if (taken !== undefined) {
         issues.push(`keymap conflict: "${shortcut.id}" and "${taken.id}" both claim "${key}"`);

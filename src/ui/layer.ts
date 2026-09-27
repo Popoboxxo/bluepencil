@@ -44,7 +44,7 @@ import { applyTranslations, createTranslator, normalizeLanguage, type Translate 
 import type { MessageKey } from "../i18n/en";
 import { createComposer, type Composer, type ComposerSaveInput, type ComposerSaveResult, type ComposerTarget } from "./composer";
 import { createLegend } from "./legend";
-import { normaliseKey, resolveKeymap, type KeymapOverrides } from "./keymap";
+import { keyIdentifier, resolveKeymap, type KeymapOverrides } from "./keymap";
 import {
   createPanel,
   createSettings,
@@ -1473,9 +1473,14 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (isEditableTarget(event.target)) return;
     if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
 
+    // FR-20.8: the presentation keys are the only ones that need `Shift`, so a shifted key that is
+    // not in the registry belongs to the host and must fall through untouched (FR-12.6).
+    const shift = event.shiftKey;
+    if (shift && !keymap.binding.has(keyIdentifier(rawKey, true))) return;
+
     // The registry decides which key means what (FR-1.11): handler and legend read the same table, so
     // a key cannot work without being documented — or be documented without working.
-    const shortcut = keymap.binding.get(normaliseKey(rawKey));
+    const shortcut = keymap.binding.get(keyIdentifier(rawKey, shift));
     let handled = true;
     if (shortcut === undefined) {
       if (/^[1-9]$/.test(key)) {
@@ -1522,6 +1527,31 @@ export function createLayer(options: LayerOptions): LayerHandle {
           break;
         case "cancel":
           // `Esc` is consumed by `escape()` above; this branch keeps the switch exhaustive.
+          break;
+        case "present.toggle":
+          presentation?.toggle();
+          break;
+        case "present.mode":
+          if (presentation) {
+            presentation.setMode(presentation.mode === "edit" ? "read" : "edit");
+          }
+          break;
+        case "present.audience":
+          presentation?.openAudience();
+          break;
+        case "present.timer":
+          // One key for both directions: the clock knows whether it is running.
+          if (presentation?.elapsedRunning()) presentation.pause();
+          else presentation?.start();
+          break;
+        case "present.reset":
+          presentation?.reset();
+          break;
+        case "present.chapter.next":
+        case "present.chapter.previous":
+          // Stepping between chapters is the *host's* job — the layer only knows its own notes, so
+          // it asks the host through the same route provider that names a note's chapter.
+          options.onChapter?.(shortcut.id === "present.chapter.next" ? 1 : -1);
           break;
         case "jump":
         case "save":
