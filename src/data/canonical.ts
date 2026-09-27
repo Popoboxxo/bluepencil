@@ -13,6 +13,7 @@ import type {
   DebugContext,
   Message,
   Note,
+  NoteTiming,
   RevealHint,
   Session,
 } from "../core/model";
@@ -115,6 +116,14 @@ function canonicalMessage(message: Message): Message {
   };
 }
 
+/** FR-20.4: fixed key order for a cue, optional keys only when they carry a value. */
+function canonicalTiming(timing: NoteTiming): NoteTiming {
+  const out: NoteTiming = { at: timing.at };
+  if (timing.duration !== undefined) out.duration = timing.duration;
+  if (timing.label !== undefined) out.label = timing.label;
+  return out;
+}
+
 /**
  * Canonical form of a note: fixed key order, optional keys only when they carry a value,
  * thread sorted by `ts` then `id`.
@@ -139,6 +148,8 @@ export function canonicalNote(note: Note): Note {
     environment: note.environment,
     ...(note.ticketRef !== undefined ? { ticketRef: note.ticketRef } : {}),
     ...(note.debug !== undefined ? { debug: canonicalDebug(note.debug) } : {}),
+    // FR-20.4: canonical order is fixed, so a bundle diffs cleanly when a cue is retimed.
+    ...(note.timing !== undefined ? { timing: canonicalTiming(note.timing) } : {}),
   };
 }
 

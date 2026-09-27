@@ -26,6 +26,7 @@ import {
   type NoteDraft,
   type NoteFilter,
   type NotePatch,
+  type NoteTiming,
 } from "./model";
 
 export interface Adapter {
@@ -209,6 +210,10 @@ export function applyPatch(note: Note, patch: AdapterPatch, now?: string): Note 
   if (patch.sessionRef !== undefined) {
     next.sessionRef = patch.sessionRef;
   }
+  // FR-20.4: `timing: null` clears the cue, an object sets or replaces it. Omitted leaves it alone.
+  if (patch.timing !== undefined) {
+    next.timing = patch.timing === null ? undefined : { ...patch.timing };
+  }
   if (patch.messages !== undefined && patch.messages.length > 0) {
     next.messages = [...next.messages, ...patch.messages.map((message) => ({ ...message }))];
   }
@@ -252,8 +257,26 @@ export function coerceNote(value: unknown): Note | null {
     ...(typeof value.sessionRef === "string" ? { sessionRef: value.sessionRef } : {}),
     ...(typeof value.ticketRef === "string" ? { ticketRef: value.ticketRef } : {}),
     ...(isRecord(value.debug) ? { debug: coerceDebug(value.debug) } : {}),
+    ...(coerceTiming(value.timing) !== undefined ? { timing: coerceTiming(value.timing)! } : {}),
   };
   return note;
+}
+
+/**
+ * FR-20.4: a cue survives a reload only if `at` is a finite, non-negative number — a corrupt or
+ * partial timing is dropped rather than poisoning the presenter panel with `NaN`.
+ */
+function coerceTiming(value: unknown): NoteTiming | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.at !== "number" || !Number.isFinite(value.at) || value.at < 0) return undefined;
+  const timing: NoteTiming = { at: value.at };
+  if (typeof value.duration === "number" && Number.isFinite(value.duration) && value.duration >= 0) {
+    timing.duration = value.duration;
+  }
+  if (typeof value.label === "string" && value.label !== "") {
+    timing.label = value.label;
+  }
+  return timing;
 }
 
 function coerceAnchor(value: unknown): Anchor {

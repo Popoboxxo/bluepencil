@@ -64,6 +64,8 @@ interface ExportStrings {
   readonly environment: string;
   readonly session: string;
   readonly ticket: string;
+  /** Presentation cue label (FR-20.4) — "Cue" in the field list, "Position" inside a bullet. */
+  readonly cue: string;
   readonly quote: string;
   readonly anchor: string;
   readonly hook: string;
@@ -103,6 +105,7 @@ const STRINGS: Record<Language, ExportStrings> = {
     environment: "Environment",
     session: "Session",
     ticket: "Ticket",
+    cue: "Cue",
     quote: "Quote",
     anchor: "Anchor",
     hook: "hook",
@@ -138,6 +141,7 @@ const STRINGS: Record<Language, ExportStrings> = {
     environment: "Umgebung",
     session: "Sitzung",
     ticket: "Ticket",
+    cue: "Position",
     quote: "Zitat",
     anchor: "Anker",
     hook: "hook",
@@ -156,6 +160,19 @@ const STRINGS: Record<Language, ExportStrings> = {
 /** Collapse every line break and run of whitespace into single spaces. */
 function flatten(value: string): string {
   return value.replace(/\r\n?/g, "\n").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * FR-20.4: a cue in `m:ss`, plus `h:mm:ss` once a talk runs past an hour — a 90-minute talk is
+ * exactly the case where a two-digit minute field is worth the extra branch.
+ */
+export function formatCue(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
 /**
@@ -273,6 +290,13 @@ function renderNote(note: Note, s: ExportStrings, headingLevel: number): string[
   }
   if (note.ticketRef !== undefined && note.ticketRef !== "") {
     lines.push(bullet(s.ticket, code(note.ticketRef)));
+  }
+  // FR-20.4: the cue travels with the note, so a printed/exported handout still carries the plan.
+  if (note.timing !== undefined) {
+    const clock = formatCue(note.timing.at);
+    const length = note.timing.duration !== undefined ? `, ${formatCue(note.timing.duration)}` : "";
+    const label = note.timing.label !== undefined ? ` — ${inline(note.timing.label)}` : "";
+    lines.push(bullet(s.cue, `${clock}${length}${label}`));
   }
 
   const anchor = note.anchor;

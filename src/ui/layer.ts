@@ -44,7 +44,8 @@ import { applyTranslations, createTranslator, normalizeLanguage, type Translate 
 import type { MessageKey } from "../i18n/en";
 import { createComposer, type Composer, type ComposerSaveInput, type ComposerSaveResult, type ComposerTarget } from "./composer";
 import { createLegend } from "./legend";
-import { normaliseKey, resolveKeymap, type KeymapOverrides } from "./keymap";
+import { keyIdentifier, resolveKeymap, type KeymapOverrides } from "./keymap";
+import { createPresentation, type PresentationHandle } from "./present";
 import {
   createPanel,
   createSettings,
@@ -88,6 +89,12 @@ export interface LayerOptions {
   exportedBy?: string;
   /** Environment stamped into an exported bundle; a store scopes its notes by it (NFR-18). */
   environment?: Environment;
+  /**
+   * Steps between the host's own chapters (FR-20.7). The layer knows its notes, not the talk: the
+   * chapter order belongs to the product that embeds the layer, so the `present.chapter.*` keys
+   * are forwarded here instead of being handled in the panel. `+1` is next, `-1` is previous.
+   */
+  onChapter?: (direction: 1 | -1) => void;
   onError?: (err: unknown) => void;
 }
 
@@ -358,6 +365,8 @@ export function createLayer(options: LayerOptions): LayerHandle {
   let panel: Panel | null = null;
   let composer: Composer | null = null;
   let legend: ReturnType<typeof createLegend> | null = null;
+  /** Presentation mode surface (FR-20); null until enable() builds it. */
+  let presentation: PresentationHandle | null = null;
 
   /**
    * Resolved once (FR-1.11): the handler and the legend both read this — a shortcut that only exists
@@ -648,6 +657,31 @@ export function createLayer(options: LayerOptions): LayerHandle {
       onClose: () => applyUiState(),
     });
 
+    /* -- presentation mode (FR-20) --------------------------------------- */
+
+    // The panel writes through the same store as the composer (FR-15.3: one source of truth), so a
+    // cue edited while presenting is the same note the review list shows. Writes go through
+    // `mutate` like every other layer action, which keeps the error path in one place.
+    presentation = createPresentation(
+      {
+        notes: () => options.store.notes(),
+        routeOf: (note) => note.anchor.route,
+        t: (key) => t(key),
+        onWrite: (id, body) => {
+          const note = options.store.notes().find((candidate) => candidate.id === id);
+          if (!note) return;
+          void mutate(() => options.store.update(id, { body }), note);
+        },
+        onRetime: (id, at) => {
+          const note = options.store.notes().find((candidate) => candidate.id === id);
+          if (!note) return;
+          void mutate(() => options.store.update(id, { timing: { ...note.timing, at } }), note);
+        },
+        onError: reportError,
+      },
+      doc,
+    );
+
     node.append(
       markersLayer,
       highlight,
@@ -802,6 +836,9 @@ export function createLayer(options: LayerOptions): LayerHandle {
     panel?.render();
     renderMarkers();
     renderCounters();
+    // The presenter panel reads the same store snapshot, so it follows the same render pass —
+    // a note added or retimed in the review list is visible in the next cue immediately.
+    presentation?.refresh(options.store.notes());
     applyTranslations(root, t);
   }
 
@@ -1473,9 +1510,16 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (isEditableTarget(event.target)) return;
     if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
 
+    // FR-20.8: the presentation keys are the only ones that need `Shift`, so a shifted key that is
+    // not in the registry belongs to the host and must fall through untouched (FR-12.6).
+    // The lookup uses `keyIdentifier`, not the raw name: an engine that reports `ARROWLEFT` would
+    // otherwise miss the `Shift+ArrowLeft` entry and hand a documented key to the host.
+    const shift = event.shiftKey;
+    if (shift && !keymap.binding.has(keyIdentifier(rawKey, true))) return;
+
     // The registry decides which key means what (FR-1.11): handler and legend read the same table, so
     // a key cannot work without being documented — or be documented without working.
-    const shortcut = keymap.binding.get(normaliseKey(rawKey));
+    const shortcut = keymap.binding.get(keyIdentifier(rawKey, shift));
     let handled = true;
     if (shortcut === undefined) {
       if (/^[1-9]$/.test(key)) {
@@ -1522,6 +1566,31 @@ export function createLayer(options: LayerOptions): LayerHandle {
           break;
         case "cancel":
           // `Esc` is consumed by `escape()` above; this branch keeps the switch exhaustive.
+          break;
+        case "present.toggle":
+          presentation?.toggle();
+          break;
+        case "present.mode":
+          if (presentation) {
+            presentation.setMode(presentation.mode === "edit" ? "read" : "edit");
+          }
+          break;
+        case "present.audience":
+          presentation?.openAudience();
+          break;
+        case "present.timer":
+          // One key for both directions: the clock knows whether it is running.
+          if (presentation?.elapsedRunning()) presentation.pause();
+          else presentation?.start();
+          break;
+        case "present.reset":
+          presentation?.reset();
+          break;
+        case "present.chapter.next":
+        case "present.chapter.previous":
+          // Stepping between chapters is the *host's* job — the layer only knows its own notes, so
+          // it asks the host through the same route provider that names a note's chapter.
+          options.onChapter?.(shortcut.id === "present.chapter.next" ? 1 : -1);
           break;
         case "jump":
         case "save":
@@ -1746,6 +1815,10 @@ export function createLayer(options: LayerOptions): LayerHandle {
     composer?.close();
     legend?.close();
     settingsPopover?.close();
+    // FR-12.2: teardown must leave no timer, listener or channel behind. The presentation surface
+    // owns a 250 ms ticker and a BroadcastChannel, so it is torn down with everything else.
+    presentation?.destroy();
+    presentation = null;
 
     markerNodes.clear();
     resolutions.clear();

@@ -707,7 +707,14 @@ describe("capture UI", () => {
       if (shortcut.range !== undefined || (shortcut.scope ?? "document") === "composer") continue;
       for (const key of shortcut.keys) {
         ensureOwned();
-        const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+        // A `shift: true` shortcut (the presentation keys, FR-20.8) is only bound under the shifted
+        // identifier, so the event has to carry the modifier the registry declares.
+        const event = new KeyboardEvent("keydown", {
+          key,
+          shiftKey: shortcut.shift === true,
+          bubbles: true,
+          cancelable: true,
+        });
         document.body.dispatchEvent(event);
         // A documented key must be owned by the layer: the prototype's legend advertised keys the
         // handler did not accept, and nothing failed.
@@ -715,7 +722,14 @@ describe("capture UI", () => {
         documented.push(key);
       }
     }
-    expect(documented).toEqual(["c", "d", "l", "f", "b", "h", "?", "Escape", "j", "k"]);
+    // Every document-scoped key must be owned by the layer. The list is derived from the registry
+    // rather than written out: a hardcoded list is exactly what let a documented key ship without a
+    // working handler, so the assertion that matters is "all of them", not "these ten".
+    expect(documented).toEqual(
+      SHORTCUTS.filter(
+        (shortcut) => shortcut.range === undefined && (shortcut.scope ?? "document") === "document",
+      ).flatMap((shortcut) => shortcut.keys),
+    );
 
     handle.disable();
   });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { SHORTCUTS, legendGroups, normaliseKey, resolveKeymap } from "../../src/ui/keymap";
+import { SHORTCUTS, keyIdentifier, legendGroups, normaliseKey, resolveKeymap } from "../../src/ui/keymap";
 
 describe("keymap registry (FR-1.11)", () => {
   it("has one stable id, label and group per shortcut", () => {
@@ -17,7 +17,12 @@ describe("keymap registry (FR-1.11)", () => {
     expect(binding.issues).toEqual([]);
     const documentKeys = SHORTCUTS.filter(
       (shortcut) => shortcut.range === undefined && (shortcut.scope ?? "document") === "document",
-    ).flatMap((shortcut) => shortcut.keys.map(normaliseKey));
+    ).flatMap((shortcut) =>
+      // A `shift: true` shortcut is registered under the shifted identifier (FR-20.8) — building
+      // the expectation with `normaliseKey(key)` alone would demand an unshifted binding that
+      // intentionally does not exist.
+      shortcut.keys.map((key) => keyIdentifier(key, shortcut.shift === true)),
+    );
     expect([...binding.binding.keys()].sort()).toEqual([...documentKeys].sort());
   });
 

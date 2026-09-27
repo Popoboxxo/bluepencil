@@ -165,6 +165,21 @@ export const de: Messages = {
   "legend.key.jump": "Zu Notiz 1–9 springen",
   "legend.key.save": "Notiz speichern (Strg/⌘ + Enter)",
   "legend.key.passthrough": "Links und Formularfelder bleiben immer bedienbar",
+
+  /* -- Präsentationsmodus (FR-20) ---------------------------------------- */
+  "present.panelLabel": "Präsentationsmodus",
+  "present.read": "Lesen",
+  "present.edit": "Bearbeiten",
+  "present.audience": "Zuschaueransicht",
+  "present.editLabel": "Text der Sprechnotiz",
+  "present.unplaced": "Ohne Zuordnung",
+  "legend.group.present": "Vortrag",
+  "legend.key.present.toggle": "Präsentationsmodus an / aus",
+  "legend.key.present.mode": "Lesen / Bearbeiten",
+  "legend.key.present.audience": "Zuschaueransicht öffnen",
+  "legend.key.present.timer": "Vortragsuhr starten / pausieren",
+  "legend.key.present.reset": "Vortragsuhr zurücksetzen",
+  "legend.key.present.chapter": "Kapitel vor / zurück",
   "legend.close": "Legende schließen",
   "legend.backdrop": "Schließen",
 

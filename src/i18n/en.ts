@@ -167,6 +167,21 @@ export const en = {
   "legend.key.jump": "Jump to note 1–9",
   "legend.key.save": "Save the note (Ctrl/⌘ + Enter)",
   "legend.key.passthrough": "Links and form fields always stay usable",
+
+  /* -- presentation mode (FR-20) ------------------------------------------ */
+  "present.panelLabel": "Presentation mode",
+  "present.read": "Read",
+  "present.edit": "Edit",
+  "present.audience": "Audience view",
+  "present.editLabel": "Speaker note text",
+  "present.unplaced": "Unplaced",
+  "legend.group.present": "Presentation",
+  "legend.key.present.toggle": "Presentation mode on / off",
+  "legend.key.present.mode": "Read / edit switch",
+  "legend.key.present.audience": "Open the audience view",
+  "legend.key.present.timer": "Start / pause the talk clock",
+  "legend.key.present.reset": "Reset the talk clock",
+  "legend.key.present.chapter": "Previous / next chapter",
   "legend.close": "Close legend",
   "legend.backdrop": "Close",
 
