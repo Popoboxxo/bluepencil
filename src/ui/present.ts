@@ -58,6 +58,8 @@ export interface PresentationHandle {
   openAudience(): boolean;
   /** Presenter clock in seconds since the talk was started; 0 when stopped. */
   elapsed(): number;
+  /** Whether the clock is currently advancing. One key drives both directions (FR-20.5). */
+  elapsedRunning(): boolean;
   start(): void;
   pause(): void;
   reset(): void;
@@ -368,6 +370,7 @@ export function createPresentation(options: PresentationOptions, doc: Document):
     },
     openAudience,
     elapsed: () => elapsed,
+    elapsedRunning: () => running,
     start() {
       if (running) return;
       running = true;
