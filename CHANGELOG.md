@@ -39,6 +39,18 @@ and so is `<all_urls>`.
 
 ### Fixed
 
+**The `chromeStorage` adapter was not emitted by the build, while `package.json` exported it.** The
+adapters build lists its entry points explicitly and the new adapter was missing from that list, so
+`./dist/adapters/chrome-storage.js` did not exist while `"./adapters/chrome-storage"` pointed at it.
+The packaging smoke test caught it in CI; a plain `npm run build` did not, because the build itself
+had nothing to complain about.
+
+The size guard carried the same list, hard-coded in a filter regex, and would have silently counted
+the new adapter into the "core without adapters" figure instead of stubbing it out — making the
+budget look tighter than it was, with nothing failing. Both lists now derive from one constant, so
+adding an adapter can no longer leave one of them behind. Measured effect: the core figure went from
+37.0 kB to 35.4 kB gzip, which is the fifth adapter no longer inflating it.
+
 **The layer rendered unstyled under a page CSP that forbids inline styles (#33).** `acquireStyles()`
 inserted a `<style>` element and assumed it had taken effect. A content security policy without
 `'unsafe-inline'` in `style-src` changes that silently: the node stays in the document, but the
