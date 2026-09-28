@@ -7,6 +7,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ### Fixed
 
+**The layer rendered unstyled under a page CSP that forbids inline styles (#33).** `acquireStyles()`
+inserted a `<style>` element and assumed it had taken effect. A content security policy without
+`'unsafe-inline'` in `style-src` changes that silently: the node stays in the document, but the
+engine never applies it, so `node.sheet` is `null` and the sheet has no `CSSStyleSheet` behind it
+at all. That is worse than a missing stylesheet, because everything *looks* mounted — the root and
+the bar are there, unstyled and unpositioned. The failure was also documented backwards: the
+bookmarklet and troubleshooting sections recommended a browser extension as the way around a strict
+CSP, while the element layer was in fact the component that broke under it.
+
+The layer now verifies the inline node instead of trusting it, and falls back to a constructable
+`CSSStyleSheet` on `document.adoptedStyleSheets`, which a page CSP does not govern. Teardown
+restores whatever the document had adopted before, so a host's own sheets survive a layer that
+mounts and unmounts. If the engine supports neither path, the unverified node is kept: a document
+with a present-but-unapplied sheet is still better than an unstyled one.
+
+Scope, measured rather than assumed: under the common policy shape — `style-src 'self'
+'unsafe-inline'` with a strict `script-src` — the inline sheet is applied normally (93 rules,
+`position: fixed`, `z-index: 2147483000`, no violations), so this is hardening, not a fix for a
+broad breakage. The silent case is the strict one.
+
 **`defineBluepencilElement()` threw on import wherever `customElements` is null, taking the whole
 element bundle with it (#32).** The guard tested `typeof customElements === "undefined"`, which is
 not the same question. An environment that shadows or stubs the global can expose

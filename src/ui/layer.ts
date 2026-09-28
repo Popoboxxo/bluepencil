@@ -133,10 +133,65 @@ export type ChromeLevel = "full" | "quiet" | "off";
 const NARROW_WIDTH = 720;
 
 /* -------------------------------------------------------------------------- */
-/* style node registry — one <style> per document, removed with the last layer */
+/* style registry — one sheet per document, removed with the last layer        */
 /* -------------------------------------------------------------------------- */
 
-const STYLE_NODES = new WeakMap<Document, { node: HTMLStyleElement; refs: number }>();
+/**
+ * How the sheet was delivered, because the two ways need different teardown.
+ *
+ * - `node`     an inline `<style>` element in the document head.
+ * - `adopted`  a constructable `CSSStyleSheet` on `document.adoptedStyleSheets`.
+ */
+type StyleSheetHandle =
+  | { kind: "node"; node: HTMLStyleElement }
+  | { kind: "adopted"; previous: CSSStyleSheet[] };
+
+type StyleEntry = { handle: StyleSheetHandle; refs: number };
+
+const STYLE_NODES = new WeakMap<Document, StyleEntry>();
+
+/**
+ * Whether the inline `<style>` node actually took effect.
+ *
+ * A page CSP can drop an inline stylesheet: under `style-src 'self'` the node is still inserted,
+ * but the engine does not apply it, so the sheet is inert and the layer renders unstyled — which
+ * is worse than no sheet, because everything *looks* mounted. The tell is `sheet.cssRules`: an
+ * applied sheet exposes its rules, a discarded one has no `CSSStyleSheet` at all.
+ */
+function inlineSheetApplied(node: HTMLStyleElement): boolean {
+  try {
+    return node.sheet !== null && node.sheet.cssRules.length > 0;
+  } catch {
+    // A cross-origin sheet can throw on access. That is not our node, so treat it as "not ours
+    // to judge" and fall through to the alternative path rather than guessing.
+    return false;
+  }
+}
+
+/** Deliver the stylesheet as a constructable sheet, which a page CSP does not govern. */
+function adoptStyles(doc: Document): boolean {
+  const Sheet = (globalThis as { CSSStyleSheet?: typeof CSSStyleSheet }).CSSStyleSheet;
+  const target = doc as Document & { adoptedStyleSheets?: CSSStyleSheet[] };
+  // A constructable sheet is only usable if the engine supports construction, adoption AND the
+  // sync form. jsdom ships a CSSStyleSheet constructor without `replaceSync`, so checking for the
+  // method here is what keeps the fallback honest instead of assuming it exists.
+  const constructable = (Sheet as { prototype?: { replaceSync?: unknown } } | undefined)?.prototype;
+  if (Sheet === undefined || constructable?.replaceSync === undefined) return false;
+  if (target.adoptedStyleSheets === undefined) return false;
+  try {
+    const sheet = new Sheet();
+    sheet.replaceSync(STYLES);
+    // Record what the document had adopted BEFORE adding ours, so teardown can put the host's own
+    // sheets back. Capturing the array after the assignment would store the combined list and make
+    // teardown a no-op that leaks our sheet into the page for good.
+    const previous = target.adoptedStyleSheets;
+    target.adoptedStyleSheets = [...previous, sheet];
+    STYLE_NODES.set(doc, { handle: { kind: "adopted", previous }, refs: 1 });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function acquireStyles(doc: Document): void {
   const existing = STYLE_NODES.get(doc);
@@ -150,7 +205,22 @@ function acquireStyles(doc: Document): void {
   node.textContent = STYLES;
   const parent = doc.head ?? doc.documentElement;
   parent?.append(node);
-  STYLE_NODES.set(doc, { node, refs: 1 });
+
+  // A CSP that forbids inline styles leaves the node in place but inert. Verify before trusting
+  // it, and switch to a constructable sheet otherwise — the layer must not depend on the host
+  // permitting inline styles.
+  if (inlineSheetApplied(node)) {
+    STYLE_NODES.set(doc, { handle: { kind: "node", node }, refs: 1 });
+    return;
+  }
+  if (!adoptStyles(doc)) {
+    // No constructable sheets either (an old engine, or a document that forbids them). Keep the
+    // node: a CSP that merely *reports* a violation still renders on some engines, and an empty
+    // document is strictly worse than an unverified one.
+    STYLE_NODES.set(doc, { handle: { kind: "node", node }, refs: 1 });
+    return;
+  }
+  node.remove();
 }
 
 function releaseStyles(doc: Document): void {
@@ -158,7 +228,16 @@ function releaseStyles(doc: Document): void {
   if (!entry) return;
   entry.refs -= 1;
   if (entry.refs > 0) return;
-  entry.node.remove();
+  if (entry.handle.kind === "node") {
+    entry.handle.node.remove();
+  } else {
+    // Restore whatever the document had adopted before — a host's own sheets must survive a
+    // layer that mounts and unmounts.
+    const target = doc as Document & { adoptedStyleSheets?: CSSStyleSheet[] };
+    if (target.adoptedStyleSheets !== undefined) {
+      target.adoptedStyleSheets = entry.handle.previous;
+    }
+  }
   STYLE_NODES.delete(doc);
 }
 
