@@ -136,6 +136,24 @@ const jobs = [
     },
   },
   {
+    // The element as a classic script, for the one host that cannot use a module: a browser
+    // extension's MAIN world. Measured: a page cannot `import()` a `chrome-extension://` URL ("Failed
+    // to fetch dynamically imported module"), so the worker reads this file and evaluates it as a
+    // string. That evaluation has to be a function body, and the ESM build ends in a real
+    // `export{…}` — which `new Function` rejects with "Invalid or unexpected token". An IIFE with a
+    // global name is the shape that survives being turned into source text.
+    name: "element-iife",
+    options: {
+      ...shared,
+      entryPoints: [join(root, "src/element/index.ts")],
+      outfile: join(root, "dist/bluepencil.element.iife.js"),
+      format: "iife",
+      globalName: "bluepencilElement",
+      minify: true,
+      banner: { js: banner },
+    },
+  },
+  {
     // FR-17: the attach loader — a classic script for hosts that must not build anything.
     name: "attach",
     options: {

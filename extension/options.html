@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bluepencil — settings</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0 auto; padding: 2rem 1.5rem 4rem; max-width: 42rem;
+  }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+  p.lede { margin: 0 0 2rem; color: #6b7280; }
+  fieldset { border: 1px solid #d1d5db; border-radius: 8px; margin: 0 0 1.25rem; padding: 1rem 1.15rem 1.15rem; }
+  legend { padding: 0 .4rem; font-weight: 600; font-size: .9rem; }
+  label { display: block; margin: 0 0 .9rem; }
+  label > span { display: block; font-weight: 500; margin-bottom: .2rem; }
+  select, input[type=text], input[type=password] {
+    width: 100%; padding: .45rem .55rem; font: inherit;
+    border: 1px solid #d1d5db; border-radius: 6px; background: transparent; color: inherit;
+  }
+  .hint { display: block; margin-top: .25rem; font-size: .82rem; color: #6b7280; }
+  .row { display: flex; gap: .6rem; align-items: center; }
+  .row input[type=checkbox] { width: auto; }
+  button {
+    font: inherit; padding: .5rem 1.1rem; border-radius: 6px;
+    border: 1px solid #2563eb; background: #2563eb; color: #fff; cursor: pointer;
+  }
+  button[disabled] { opacity: .6; cursor: default; }
+  #status { margin-left: .8rem; font-size: .9rem; color: #6b7280; }
+  #status[data-kind=error] { color: #b91c1c; }
+  #status[data-kind=ok] { color: #15803d; }
+  .warn { border-left: 3px solid #d97706; padding: .6rem .8rem; background: #fffbeb; border-radius: 0 6px 6px 0; }
+</style>
+</head>
+<body>
+  <h1>Bluepencil</h1>
+  <p class="lede">Click the toolbar button on any page to annotate it.</p>
+
+  <form id="form">
+    <fieldset>
+      <legend>Notes</legend>
+
+      <label>
+        <span>Environment</span>
+        <select id="environment">
+          <option value="dev">dev</option>
+          <option value="staging">staging</option>
+          <option value="prod">prod</option>
+        </select>
+        <span class="hint">The badge the layer shows on each note.</span>
+      </label>
+
+      <label>
+        <span>App name</span>
+        <input type="text" id="appName" placeholder="(the page's own title)">
+      </label>
+
+      <label>
+        <span>Language</span>
+        <select id="language">
+          <option value="auto">auto</option>
+          <option value="en">en</option>
+          <option value="de">de</option>
+        </select>
+      </label>
+
+      <label>
+        <span>Author</span>
+        <select id="identity">
+          <option value="prompt">ask me once, then remember</option>
+          <option value="page">take it from the page</option>
+        </select>
+        <span class="hint">Neither is verified — the store has no authentication of its own.</span>
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Storage</legend>
+
+      <label>
+        <span>Where notes are kept</span>
+        <select id="store">
+          <option value="chromeStorage">in the extension (shared across all sites)</option>
+          <option value="localStorage">in the page (per site)</option>
+          <option value="memory">in this tab only (lost on reload)</option>
+          <option value="http">on a sidecar (shared with an agent)</option>
+        </select>
+      </label>
+
+      <div id="sidecar" hidden>
+        <p class="warn">
+          A sidecar is reachable from the network once it binds beyond loopback, and it has no
+          authentication of its own. Do not expose it to an untrusted network.
+        </p>
+        <label>
+          <span>Sidecar URL</span>
+          <input type="text" id="endpoint" placeholder="http://127.0.0.1:8787">
+        </label>
+        <label>
+          <span>Token</span>
+          <input type="password" id="token" placeholder="(optional)">
+          <span class="hint">Stored in this browser only. Never sent anywhere but the URL above.</span>
+        </label>
+      </div>
+    </fieldset>
+
+    <button type="submit" id="save">Save</button>
+    <span id="status" role="status" aria-live="polite"></span>
+  </form>
+
+  <script type="module" src="./options.js"></script>
+</body>
+</html>

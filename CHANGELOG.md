@@ -5,6 +5,38 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added
+
+**A Chromium extension that ships the review layer (#34).** `extension/` builds an installable MV3
+extension that mounts the same element on any page. Mounting into an arbitrary third-party page
+turned out to be the hard part, and every assumption about it was wrong until Chrome 151 was
+measured:
+
+- the element cannot run in the isolated content-script world — `customElements` is `null` there
+  (`typeof` still reports `"object"`), which is the #32 defect, fixed in this release;
+- it cannot `import()` a `chrome-extension://` URL: *"Failed to fetch dynamically imported module"* —
+  a page may not load the extension's origin;
+- the worker cannot `import()` itself: *"import() is disallowed on ServiceWorkerGlobalScope"*;
+- no source text may be evaluated anywhere in the page's world: *"Evaluating a string as JavaScript
+  violates the following Content Security Policy directive because 'unsafe-eval' is not an allowed
+  source of script: script-src 'self'"* — and that holds regardless of how the string arrives, so
+  passing the bundle in as an argument does not help either.
+
+What works is a content script registered with `world: "MAIN"`: Chrome loads a **packaged file** into
+the page's own world even under a strict CSP. So the element bundle is compiled *into*
+`extension/src/bootstrap.ts` and the whole thing ships as one static classic script. Runtime delivery
+across the boundary is data only — the worker hands over the settings as a plain object. The layer's
+own constructable-stylesheet fallback (#33) is what keeps it styled on those pages, so an extension
+does not bypass a CSP, it works inside one.
+
+Also new: a `chromeStorage` store adapter (`src/adapters/chrome-storage.ts`) putting notes in
+`chrome.storage.local` through the existing JSON-adapter abstraction, an options page, and
+`npm run smoke:ext` — 32 checks covering the static packaging plus a real round trip through Chrome
+against a `script-src 'self'` host.
+
+Host access is `http://*/*` and `https://*/*` plus `activeTab`. `file:///*` is deliberately absent,
+and so is `<all_urls>`.
+
 ### Fixed
 
 **The layer rendered unstyled under a page CSP that forbids inline styles (#33).** `acquireStyles()`

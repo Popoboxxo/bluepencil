@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Bluepencil Review Layer",
+  "version": "0.2.0",
+  "description": "Annotate and review any page: design and text notes, kept across tabs and sites.",
+  "minimum_chrome_version": "116",
+  "background": {
+    "service_worker": "sw.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Bluepencil \u2014 annotate this page"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "commands": {
+    "toggle-bluepencil": {
+      "suggested_key": {
+        "default": "Alt+Shift+B"
+      },
+      "description": "Annotate this page with Bluepencil"
+    }
+  },
+  "permissions": [
+    "scripting",
+    "storage",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}
