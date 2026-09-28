@@ -280,12 +280,23 @@ function locationOrUndefined(): { pathname: string; search: string } | undefined
   return location === undefined ? undefined : { pathname: location.pathname, search: location.search };
 }
 
-/** Register the element once (idempotent — safe even if several hosts import this module). */
+/**
+ * Register the element once (idempotent — safe even if several hosts import this module).
+ *
+ * A missing registry is a quiet no-op, not an error. `typeof` alone is not enough: an environment
+ * that shadows or stubs the global can expose `customElements` as `null`, and `typeof null` is
+ * `"object"`, so the guard would pass and `get()` would throw at module evaluation — taking the
+ * whole bundle down for a consumer that merely imports it (Chromium's isolated content-script
+ * world does exactly this). Test the value, not just its type.
+ */
 export function defineBluepencilElement(tagName: string = BluepencilNotesElement.tagName): void {
-  if (typeof customElements === "undefined" || customElements.get(tagName)) {
+  const registry: CustomElementRegistry | null | undefined = (
+    globalThis as { customElements?: CustomElementRegistry | null }
+  ).customElements;
+  if (registry == null || registry.get(tagName)) {
     return;
   }
-  customElements.define(tagName, BluepencilNotesElement);
+  registry.define(tagName, BluepencilNotesElement);
 }
 
 defineBluepencilElement();

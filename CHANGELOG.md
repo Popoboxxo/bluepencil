@@ -7,8 +7,19 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ### Fixed
 
-Six defects found by a review round against a real embedded deployment (0.2.0). All of them were
-reproduced against the shipped builds before the fix and carry a regression test.
+**`defineBluepencilElement()` threw on import wherever `customElements` is null, taking the whole
+element bundle with it (#32).** The guard tested `typeof customElements === "undefined"`, which is
+not the same question. An environment that shadows or stubs the global can expose
+`customElements` as `null`, and `typeof null` is `"object"` — so the guard passed and `get()`
+threw `TypeError: Cannot read properties of null (reading 'get')`. Because the call runs at module
+top level, the exception aborted the evaluation of the bundle: a consumer that merely imported it
+got a crash instead of an import, and the element never registered. Chromium's isolated
+content-script world is one such environment (measured: `typeof customElements === "object"`,
+value `null`); a host that stubs the global hits it too, so this was never extension-specific. The
+guard now tests the value rather than its type, making a missing registry a quiet no-op.
+
+The six defects below were found by a review round against a real embedded deployment (0.2.0). All
+of them were reproduced against the shipped builds before the fix and carry a regression test.
 
 - **A mistyped filter field deleted every note.** `POST {base}/notes/bulk-delete` ignored unknown
   keys in its `filter` object, so `{"filter": {"statuz": "open"}, "confirm": true}` became an
