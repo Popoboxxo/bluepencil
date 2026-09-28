@@ -375,6 +375,88 @@ describe("layer lifecycle", () => {
     expect(document.querySelectorAll("style[data-bp-styles]").length).toBe(0);
   });
 
+  it("falls back to a constructable stylesheet when a CSP discards the inline node (#33)", () => {
+    // Reproduce the hostile case at its actual source: a page CSP without 'unsafe-inline' leaves
+    // `styleElement.sheet` null — the node is in the document, the engine simply never applies it.
+    // Simulated on the prototype because that is where the engine puts the accessor.
+    const proto = window.HTMLStyleElement.prototype as unknown as Record<string, unknown>;
+    const realSheet = Object.getOwnPropertyDescriptor(proto, "sheet");
+    Object.defineProperty(proto, "sheet", { ...realSheet, get: () => null, configurable: true });
+    // jsdom's CSSStyleSheet has no `replaceSync`, so the real constructable path has to be
+    // installed for the fallback to be reachable at all. This is the shape a real engine has:
+    // a constructable sheet is *not* governed by the page CSP, so it is built from a node whose
+    // `sheet` accessor is temporarily the real one again.
+    const adopted: CSSStyleSheet[] = [];
+    (document as Document & { adoptedStyleSheets: CSSStyleSheet[] }).adoptedStyleSheets = adopted;
+    const proto2 = CSSStyleSheet.prototype as unknown as Record<string, unknown>;
+    const realReplace = proto2.replaceSync as typeof CSSStyleSheet.prototype.replaceSync;
+    proto2.replaceSync = function replaceSync(this: CSSStyleSheet, text: string): void {
+      const node = document.createElement("style");
+      node.textContent = text;
+      // Build the rules with the genuine accessor — a discarded sheet here would only be proving
+      // the mock's own limits.
+      Object.defineProperty(proto, "sheet", { ...realSheet, configurable: true });
+      document.head.append(node);
+      const built = node.sheet as CSSStyleSheet | null;
+      Object.defineProperty(proto, "sheet", { ...realSheet, get: () => null, configurable: true });
+      if (built === null) throw new Error("simulated: the engine refused the sheet");
+      Object.defineProperty(this, "cssRules", { value: built.cssRules, configurable: true });
+      node.remove();
+    };
+
+    try {
+      const mount = document.createElement("div");
+      document.body.append(mount);
+      const layer = createLayer({ store: makeStore(), document, mount });
+      layer.enable();
+
+      // The inline node is gone, and the constructable sheet carries the stylesheet instead.
+      expect(document.querySelectorAll("style[data-bp-styles]").length).toBe(0);
+      // The layer assigns a new array rather than mutating in place, so the document is the
+      // thing to read — a local reference captured before enable() would stay empty.
+      const sheet = (document as Document & { adoptedStyleSheets: CSSStyleSheet[] })
+        .adoptedStyleSheets[0];
+      expect(sheet).toBeDefined();
+      expect(sheet?.cssRules.length ?? 0).toBeGreaterThan(0);
+
+      layer.disable();
+
+      // Teardown restores whatever the document had adopted before the layer — a host's own sheets
+      // must survive a layer that mounts and unmounts, and ours must not linger.
+      expect(
+        (document as Document & { adoptedStyleSheets: CSSStyleSheet[] }).adoptedStyleSheets.length,
+      ).toBe(0);
+    } finally {
+      if (realSheet) Object.defineProperty(proto, "sheet", realSheet);
+      if (realReplace) CSSStyleSheet.prototype.replaceSync = realReplace;
+    }
+  });
+
+  it("keeps the inline node when the document has no constructable stylesheets", () => {
+    // The "neither path" branch: the engine discards inline styles AND the document has nowhere
+    // to adopt a constructable sheet. An unverified inline node still beats an unstyled document.
+    const proto = window.HTMLStyleElement.prototype as unknown as Record<string, unknown>;
+    const realSheet = Object.getOwnPropertyDescriptor(proto, "sheet");
+    Object.defineProperty(proto, "sheet", { ...realSheet, get: () => null, configurable: true });
+    const target = document as Document & { adoptedStyleSheets?: CSSStyleSheet[] };
+    const realAdopted = target.adoptedStyleSheets;
+    // An engine without constructable stylesheets simply has no such property at all.
+    delete (target as { adoptedStyleSheets?: CSSStyleSheet[] }).adoptedStyleSheets;
+
+    try {
+      const mount = document.createElement("div");
+      document.body.append(mount);
+      const layer = createLayer({ store: makeStore(), document, mount });
+      layer.enable();
+      expect(document.querySelectorAll("style[data-bp-styles]").length).toBe(1);
+      layer.disable();
+      expect(document.querySelectorAll("style[data-bp-styles]").length).toBe(0);
+    } finally {
+      if (realSheet) Object.defineProperty(proto, "sheet", realSheet);
+      target.adoptedStyleSheets = realAdopted;
+    }
+  });
+
   it("treats enable() as a no-op while already enabled (idempotent, NFR-15)", () => {
     document.body.innerHTML = `<main id="host"></main>`;
     const handle = startLayer(makeStore());

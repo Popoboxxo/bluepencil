@@ -53,8 +53,14 @@ user clears site data. Good for a single reviewer; not for a team.
 2. Put the loader (see [ARCHITECTURE.md §6](ARCHITECTURE.md#6-bookmarklet)) in a bookmark.
 3. Click it on any page → the layer attaches, notes go to `localStorage`, export writes a file.
 
-Limits worth knowing: strict `script-src` CSP blocks external loaders (use the self-hosted mode
-or a browser extension instead), and nothing is shared between browsers.
+Limits worth knowing: strict `script-src` CSP blocks external loaders, and nothing is shared
+between browsers. Note that a browser extension does **not** remove the CSP problem: the element
+layer has to run in the page's MAIN world (Chromium's isolated content-script world reports a null
+`customElements`, so the element cannot register there), and a MAIN-world inline `<style>` is still
+governed by the page's `style-src`. The element layer therefore verifies the stylesheet it inserted
+and falls back to a constructable `CSSStyleSheet` on `document.adoptedStyleSheets`, which a page
+CSP does not govern. Under a strict `style-src` you will see the layer mount unstyled if that
+fallback is unavailable; everything else works.
 
 ## 5. Self-hosted sidecar (M2 — planned, not in this repository yet)
 
@@ -185,7 +191,8 @@ init({ theme: { font: "inherit", "font-size": "inherit" } });
 | Clicks do nothing | Buttons disabled because the adapter failed on first load (check `onError`) |
 | Notes lose their element | Anchor resolved to an unstable path; add a `data-bluepencil`/`data-testid` hook to that element |
 | Marker drifts | Host CSS repositions the element after capture; re-check the note or switch to the hook-based anchor |
-| Bookmarklet blocked | CSP without external script allowance — use self-hosted or extension mode |
+| Bookmarklet blocked | CSP without external script allowance — self-host the loader, or run the layer in the page's MAIN world (an extension content script cannot: its isolated world has no usable `customElements`) |
+| Layer mounts but looks unstyled | Page CSP forbids inline styles. The layer should have fallen back to a constructable stylesheet; if the engine offers neither path, the unstyled mount is the visible symptom |
 
 ## 11. Embed / attach reference
 
