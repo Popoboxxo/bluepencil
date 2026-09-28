@@ -36,6 +36,10 @@
       "types": "./dist/types/adapters/local-storage.d.ts",
       "import": "./dist/adapters/local-storage.js"
     },
+    "./adapters/chrome-storage": {
+      "types": "./dist/types/adapters/chrome-storage.d.ts",
+      "import": "./dist/adapters/chrome-storage.js"
+    },
     "./adapters/file": {
       "types": "./dist/types/adapters/file.d.ts",
       "import": "./dist/adapters/file.js"
@@ -82,6 +86,8 @@
     "test:watch": "vitest",
     "size": "node scripts/size-guard.mjs",
     "serve": "node dist/server.js",
+    "build:ext": "node extension/build.mjs",
+    "smoke:ext": "node extension/smoke.mjs",
     "smoke:cli": "node scripts/cli-smoke.mjs",
     "smoke:mcp": "node scripts/mcp-smoke.mjs",
     "smoke:pack": "node scripts/pack-smoke.mjs",
@@ -91,7 +97,7 @@
     "spec:check": "reqmd check spec/",
     "spec:ls": "reqmd ls spec/",
     "spec:stats": "reqmd stats spec/",
-    "verify": "npm run typecheck && npm run test && npm run build && npm run size && npm run smoke:pack && npm run smoke:embed && npm run smoke:e2e",
+    "verify": "npm run typecheck && npm run test && npm run build && npm run build:ext && npm run size && npm run smoke:pack && npm run smoke:embed && npm run smoke:e2e && npm run smoke:ext",
     "smoke:e2e": "node tests/e2e/vanilla.e2e.mjs"
   },
   "dependencies": {},

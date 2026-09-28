@@ -138,6 +138,11 @@ export class Browser {
 
   static async #launchOnce(executable, userDataDir, options = {}) {
     mkdirSync(userDataDir, { recursive: true });
+    // A headless extension needs --load-extension, and the extension's own targets only appear
+    // once the browser has a page to attach to. `extraArgs` exists for that: it is how the
+    // extension smoke test loads an unpacked MV3 extension without duplicating this launcher
+    // (and without the pipe/port differences that a second launcher would have to duplicate too).
+    const extraArgs = Array.isArray(options.extraArgs) ? options.extraArgs : [];
     const child = spawn(
       executable,
       [
@@ -145,6 +150,7 @@ export class Browser {
         "--no-sandbox",
         "--disable-gpu",
         "--disable-dev-shm-usage",
+        ...extraArgs,
         // A real window of a given size is the only way to get a viewport in builds whose pipe session
         // has no `Emulation` domain (the geometry case in issue #4 needs exactly that).
         ...(typeof options.width === "number" && typeof options.height === "number"
@@ -215,6 +221,56 @@ export class Browser {
 
   async navigate(url) {
     await this.send("Page.navigate", { url }, this.#session);
+  }
+
+  /**
+   * Switch the active session to another target of this browser.
+   *
+   * A headless page session cannot see the extension's service worker: they are separate targets,
+   * and the worker's globals (`chrome.*`) only exist in its own context. Driving the worker — which
+   * is the only place the extension's own code runs outside the page — means attaching to it
+   * explicitly, so this is how the extension smoke test reaches the mount entry point.
+   */
+  async attachTo(predicate, { timeoutMs = 20000, intervalMs = 150 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let lastSeen = [];
+    while (Date.now() < deadline) {
+      const { targetInfos } = await this.send("Target.getTargets");
+      lastSeen = targetInfos ?? [];
+      const match = lastSeen.find(predicate);
+      if (match !== undefined) {
+        const attached = await this.send("Target.attachToTarget", {
+          targetId: match.targetId,
+          flatten: true,
+        });
+        this.#session = attached.sessionId;
+        await this.send("Runtime.enable", {}, this.#session);
+        return match;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    throw new Error(
+      `no target matched within ${timeoutMs} ms; seen: ${
+        lastSeen.map((t) => `${t.type}:${t.url}`).join(", ") || "nothing"
+      }`,
+    );
+  }
+
+  /** Back to the page target, so a test can assert on the page after driving the worker. */
+  async attachToPage() {
+    return this.attachTo((t) => t.type === "page");
+  }
+
+  /**
+   * Back to a *specific* page target, matched by predicate.
+   *
+   * `attachToPage()` is not enough once a browser has more than one page open: a headless launch
+   * creates `about:blank` alongside the page the test navigated, and the first match is whichever
+   * order the target list happens to return — asserting on the wrong document produces failures
+   * that look like product defects.
+   */
+  async attachToPageWhere(predicate) {
+    return this.attachTo((t) => t.type === "page" && predicate(t));
   }
 
   /** Evaluates an expression in the page and returns its JSON value (promises are awaited). */

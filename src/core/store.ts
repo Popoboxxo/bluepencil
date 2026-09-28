@@ -116,6 +116,10 @@ export function registerAdapter(name: string, factory: AdapterLoader): () => voi
 const BUILTIN_ADAPTERS: Record<AdapterName, AdapterLoader> = {
   memory: async () => (await import("../adapters/memory")).createMemoryAdapter(),
   localStorage: async () => (await import("../adapters/local-storage")).createLocalStorageAdapter(),
+  // The extension's own store, partitioned per extension rather than per host page. Lazy, so a
+  // plain page that only asks for `localStorage` never loads the extension code (NFR-3).
+  chromeStorage: async () =>
+    (await import("../adapters/chrome-storage")).createChromeStorageAdapter(),
   file: async () => {
     // The module is imported so the name→module mapping stays real, but the factory needs I/O
     // that only the host can provide; there is no sensible default file to write to.

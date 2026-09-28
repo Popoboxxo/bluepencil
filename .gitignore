@@ -40,3 +40,4 @@ AGENTS.personal.md
 CLAUDE.personal.md
 sync.log
 # --- end agent-meta managed ---
+extension/dist/

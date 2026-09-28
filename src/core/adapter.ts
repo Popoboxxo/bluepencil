@@ -40,7 +40,14 @@ export interface Adapter {
   subscribe?(cb: (notes: Note[]) => void): () => void;
 }
 
-export type AdapterName = "memory" | "localStorage" | "file" | "http";
+/**
+ * Built-in adapter names.
+ *
+ * `chromeStorage` is the extension's own store: `chrome.storage.local` is partitioned per
+ * extension rather than per host page, so one store is shared across every site and tab — which
+ * `localStorage` (partitioned per origin) cannot provide.
+ */
+export type AdapterName = "memory" | "localStorage" | "chromeStorage" | "file" | "http";
 
 export type AdapterLike = Adapter | AdapterName;
 

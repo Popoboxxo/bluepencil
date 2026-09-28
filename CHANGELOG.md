@@ -5,7 +5,51 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added
+
+**A Chromium extension that ships the review layer (#34).** `extension/` builds an installable MV3
+extension that mounts the same element on any page. Mounting into an arbitrary third-party page
+turned out to be the hard part, and every assumption about it was wrong until Chrome 151 was
+measured:
+
+- the element cannot run in the isolated content-script world — `customElements` is `null` there
+  (`typeof` still reports `"object"`), which is the #32 defect, fixed in this release;
+- it cannot `import()` a `chrome-extension://` URL: *"Failed to fetch dynamically imported module"* —
+  a page may not load the extension's origin;
+- the worker cannot `import()` itself: *"import() is disallowed on ServiceWorkerGlobalScope"*;
+- no source text may be evaluated anywhere in the page's world: *"Evaluating a string as JavaScript
+  violates the following Content Security Policy directive because 'unsafe-eval' is not an allowed
+  source of script: script-src 'self'"* — and that holds regardless of how the string arrives, so
+  passing the bundle in as an argument does not help either.
+
+What works is a content script registered with `world: "MAIN"`: Chrome loads a **packaged file** into
+the page's own world even under a strict CSP. So the element bundle is compiled *into*
+`extension/src/bootstrap.ts` and the whole thing ships as one static classic script. Runtime delivery
+across the boundary is data only — the worker hands over the settings as a plain object. The layer's
+own constructable-stylesheet fallback (#33) is what keeps it styled on those pages, so an extension
+does not bypass a CSP, it works inside one.
+
+Also new: a `chromeStorage` store adapter (`src/adapters/chrome-storage.ts`) putting notes in
+`chrome.storage.local` through the existing JSON-adapter abstraction, an options page, and
+`npm run smoke:ext` — 32 checks covering the static packaging plus a real round trip through Chrome
+against a `script-src 'self'` host.
+
+Host access is `http://*/*` and `https://*/*` plus `activeTab`. `file:///*` is deliberately absent,
+and so is `<all_urls>`.
+
 ### Fixed
+
+**The `chromeStorage` adapter was not emitted by the build, while `package.json` exported it.** The
+adapters build lists its entry points explicitly and the new adapter was missing from that list, so
+`./dist/adapters/chrome-storage.js` did not exist while `"./adapters/chrome-storage"` pointed at it.
+The packaging smoke test caught it in CI; a plain `npm run build` did not, because the build itself
+had nothing to complain about.
+
+The size guard carried the same list, hard-coded in a filter regex, and would have silently counted
+the new adapter into the "core without adapters" figure instead of stubbing it out — making the
+budget look tighter than it was, with nothing failing. Both lists now derive from one constant, so
+adding an adapter can no longer leave one of them behind. Measured effect: the core figure went from
+37.0 kB to 35.4 kB gzip, which is the fifth adapter no longer inflating it.
 
 **The layer rendered unstyled under a page CSP that forbids inline styles (#33).** `acquireStyles()`
 inserted a `<style>` element and assumed it had taken effect. A content security policy without

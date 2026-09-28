@@ -36,11 +36,19 @@ const shared = {
 
 const banner = `/*! ${pkg.name} v${pkg.version} — ${pkg.description} | ${pkg.license} */`;
 
-/** Replaces the four built-in adapters with a stub so the core size can be measured (NFR-3). */
+/**
+ * Replaces the built-in adapters with a stub so the core size can be measured (NFR-3).
+ *
+ * The filter has to name every built-in adapter. It listed four while a fifth existed, which did not
+ * fail — it silently counted the new adapter into the "core" number, making the budget look tighter
+ * than it was. Deriving the list keeps that from happening again.
+ */
+const BUILTIN_ADAPTERS = ["memory", "local-storage", "file", "http", "chrome-storage"];
 const adapterStubPlugin = {
   name: "adapter-stub",
   setup(pluginBuild) {
-    pluginBuild.onResolve({ filter: /^\.\.\/adapters\/(memory|local-storage|file|http)$/ }, () => ({
+    const filter = new RegExp(`^\\.\\./adapters/(${BUILTIN_ADAPTERS.join("|")})$`);
+    pluginBuild.onResolve({ filter }, () => ({
       path: join(root, "scripts/adapter-stub.js"),
     }));
   },
@@ -80,6 +88,10 @@ const jobs = [
         "local-storage": join(root, "src/adapters/local-storage.ts"),
         file: join(root, "src/adapters/file.ts"),
         http: join(root, "src/adapters/http.ts"),
+        // The extension's own store. Listed here, not forgotten: a subpath export that the build
+        // does not emit fails the package smoke test ("was not emitted by the build"), which is
+        // exactly the check that caught its absence.
+        "chrome-storage": join(root, "src/adapters/chrome-storage.ts"),
       },
       outdir: join(root, "dist/adapters"),
       format: "esm",
@@ -131,6 +143,24 @@ const jobs = [
       entryPoints: [join(root, "src/element/index.ts")],
       outfile: join(root, "dist/bluepencil.element.js"),
       format: "esm",
+      minify: true,
+      banner: { js: banner },
+    },
+  },
+  {
+    // The element as a classic script, for the one host that cannot use a module: a browser
+    // extension's MAIN world. Measured: a page cannot `import()` a `chrome-extension://` URL ("Failed
+    // to fetch dynamically imported module"), so the worker reads this file and evaluates it as a
+    // string. That evaluation has to be a function body, and the ESM build ends in a real
+    // `export{…}` — which `new Function` rejects with "Invalid or unexpected token". An IIFE with a
+    // global name is the shape that survives being turned into source text.
+    name: "element-iife",
+    options: {
+      ...shared,
+      entryPoints: [join(root, "src/element/index.ts")],
+      outfile: join(root, "dist/bluepencil.element.iife.js"),
+      format: "iife",
+      globalName: "bluepencilElement",
       minify: true,
       banner: { js: banner },
     },
