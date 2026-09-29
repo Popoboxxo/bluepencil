@@ -184,7 +184,10 @@ self.__bluepencilModule = { mountOnTab };
 chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if (typeof message !== "object" || message === null) return false;
   const { type } = message as { type?: unknown };
-  if (type !== "bluepencil:mount") return false;
+  // `bluepencil:toggle` is the on/off switch #36 asked for. It is a message rather than a second
+  // manifest command so the toolbar button, the keyboard shortcut and a page can all drive the same
+  // code path — three entry points to one behaviour, instead of three copies of it.
+  if (type !== "bluepencil:mount" && type !== "bluepencil:toggle") return false;
 
   void (async () => {
     try {
@@ -195,6 +198,21 @@ chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) =
       const tab = tabs[0];
       if (tab === undefined || tab.id === undefined) {
         sendResponse({ ok: false, error: "no active tab" });
+        return;
+      }
+      if (type === "bluepencil:toggle") {
+        const enabled =
+          typeof (message as { enabled?: unknown }).enabled === "boolean"
+            ? (message as { enabled: boolean }).enabled
+            : true;
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          world: "MAIN",
+          func: mainWorldToggle,
+          args: [enabled],
+          injectImmediately: true,
+        });
+        sendResponse({ ok: true, enabled });
         return;
       }
       sendResponse(await mountOnTab(tab.id, tab.url ?? ""));
@@ -213,6 +231,35 @@ chrome.action.onClicked.addListener((tab) => {
   // before. Passing it through means the notes carry their source page.
   void mountOnTab(tab.id, tab.url ?? "").catch(() => undefined);
 });
+
+/**
+ * Turn the layer off again, on the page that has it.
+ *
+ * The element's own contract is the `enabled` attribute (FR-12.1/12.2), so switching off is setting
+ * that to `false` rather than tearing the element out: `disable()` is idempotent and leaves the note
+ * set intact, and the bar can be brought back without another injection. Removing the element would
+ * also work and would be simpler, but it would discard the note state a user has open.
+ *
+ * The MAIN world is needed because that is where the element lives — the same isolation gap #34
+ * documented, and the same reason the mount path cannot use the isolated world.
+ */
+function mainWorldToggle(enabled: boolean): void {
+  const el = document.querySelector("bluepencil-notes");
+  const found = el !== null;
+  if (found) el.setAttribute("enabled", enabled ? "true" : "false");
+  // The same channel the mount reports on, so a caller (or the smoke test) sees both outcomes the
+  // same way instead of having to know which path produced the answer.
+  window.postMessage(
+    {
+      source: "bluepencil-extension",
+      kind: "toggled",
+      ok: found,
+      enabled,
+      error: found ? undefined : "the layer is not on this page",
+    },
+    window.location.origin === "null" ? "*" : window.location.origin,
+  );
+}
 
 chrome.commands.onCommand.addListener((command) => {
   if (command !== "toggle-bluepencil" && command !== "_execute_action") return;

@@ -1,0 +1,93 @@
+name: extension
+
+# Builds the Chromium extension and publishes it as a download.
+#
+# Two triggers, deliberately:
+#   - every push to main, so the artefact always matches the merged source;
+#   - a tag, so a release has something to point at.
+# The ordinary CI workflow already runs `build:ext` and `smoke:ext` on every
+# PR — this one exists to produce the *packaged* thing, not to test it.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build the extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: install
+        run: npm ci
+
+      # The element bundle the extension injects is built from src/, so the
+      # extension cannot be built before the library is.
+      - name: build the library
+        run: npm run build
+
+      - name: build the extension
+        run: npm run build:ext
+
+      # Re-run the smoke test on the CI machine. It is the only check that
+      # proves the layer actually mounts under a strict page CSP, and a build
+      # that passes on a laptop can still fail here.
+      - name: verify it mounts in a real browser
+        run: npm run smoke:ext
+
+      - name: package
+        run: |
+          cd extension/dist
+          zip -r "../bluepencil-extension-${{ github.ref_name }}.zip" . -x '.*'
+          cd ../..
+          mkdir -p dist-artifacts
+          mv "bluepencil-extension-${{ github.ref_name }}.zip" dist-artifacts/
+          ls -la dist-artifacts/
+
+      - name: summarise
+        run: |
+          echo "### Extension build" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat extension/dist/build-info.json >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Unpacked for a local install: \`extension/dist\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bluepencil-extension
+          path: dist-artifacts/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  attach-to-release:
+    name: attach to the release
+    needs: build
+    # Only a tag produces a release; on a plain push to main there is nothing to
+    # attach to, and creating one would be a surprise.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bluepencil-extension
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          # A tag that was pushed without a matching release is the normal case
+          # here; create one rather than failing the build.
+          generate_release_notes: true

@@ -12,8 +12,15 @@ npm run build:ext     # writes extension/dist/
 Then load it: `chrome://extensions` → enable *Developer mode* → *Load unpacked* → pick
 `extension/dist`.
 
-`npm run smoke:ext` verifies the build: 32 checks, of which the last dozen drive a real Chrome
+`npm run smoke:ext` verifies the build: 34 checks, of which the last dozen drive a real Chrome
 against a host page with `script-src 'self'` and assert the layer actually mounted there.
+
+### From a release
+
+Every push to `main` builds the packaged extension and attaches it as a workflow artefact
+(`.github/workflows/extension.yml`). A `v*` tag additionally creates a GitHub release with the zip
+attached, so a Chrome Web Store upload is a download of that artefact — no local build needed. The
+artefact is the content of `extension/dist` zipped, which is also what *Load unpacked* takes.
 
 ## What it looks for on a page
 
@@ -48,9 +55,48 @@ runs against a strict-CSP host on purpose: it is the case that used to break.
 ## Storage
 
 The default store is `chromeStorage` (`chrome.storage.local`), which needs no server and no account.
-Notes stay in the browser profile. Switching to a Sidecar store is a settings change; see
-[issue #36](https://github.com/Popoboxxo/bluepencil/issues/36) for the authentication and sync work
-that is not in this release yet.
+Notes stay in the browser profile.
+
+### Using a sidecar instead
+
+Switch the store to *on a sidecar* in the options page and give it a URL. The extension then hands the
+element a `data-endpoint` and the element talks to the sidecar directly, which is what makes notes
+shared across devices and visible to the MCP server.
+
+**The sidecar needs a secret.** Start it with one:
+
+```sh
+BLUEPENCIL_AUTH_SECRET=… node dist/server.js --store notes.json --host 0.0.0.0
+```
+
+Every request under the base must then present the secret in `x-bluepencil-auth`; anything else is
+answered `401 {"error":{"code":"unauthorized"}}`. Put the same value in the options page's *Token*
+field. Use the environment variable, not `--auth-secret` — a secret on a command line is visible in
+the process list to every other user on the machine.
+
+**Binding matters more than the secret.** The default is loopback, and a loopback sidecar needs no
+authentication at all — the process is as protected as the file it writes to. The moment you pass
+`--host 0.0.0.0` to reach it from another device, the secret is the only thing standing between the
+network and your notes.
+
+### Switching the layer on and off
+
+The layer follows the toolbar button, and the options page has *Turn on here* / *Turn off here* for
+the tab you are currently looking at. Turning it off sets the element's `enabled` attribute rather
+than removing it, so your open notes survive and the layer can be brought back without a second
+injection. A page can do the same:
+
+```js
+window.postMessage({ source: "bluepencil-page", kind: "toggle", enabled: false, requestId: "1" },
+                    window.location.origin);
+```
+
+The answer comes back on the same channel, tagged with your `requestId`. Fire and read it later
+rather than awaiting inside one turn — a reply is delivered while a promise registered in the same
+tick is still resolving, so awaiting it there deadlocks into a timeout even though the toggle worked.
+
+Signed, per-device tokens instead of one shared secret are not in this release yet; see
+[issue #36](https://github.com/Popoboxxo/bluepencil/issues/36) for what is still open.
 
 ## Permissions, and why these
 

@@ -7,6 +7,43 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: 
 
 ### Added
 
+**A sidecar can require a shared secret (`--auth-secret`, #36 phase 1).** A sidecar bound to
+loopback needs no authentication — it is as protected as the file it writes to — but the moment it
+binds beyond loopback to be reachable from another device, nothing stood between the network and the
+notes. Every request under the base must now present the secret in `x-bluepencil-auth`; anything else
+is answered `401 {"error":{"code":"unauthorized"}}`. Prefer `BLUEPENCIL_AUTH_SECRET` over the flag: a
+secret on a command line is visible in the process list to every other user on the machine.
+
+The check runs *before* routing, so no route can forget it and an unauthenticated caller cannot learn
+which paths exist by watching 405s turn into 404s. It sits after the "not under the base" 404 on
+purpose — answering 401 to a request that could not be the API at all would make a sidecar on a
+shared host 401 every unrelated request.
+
+**The extension can reach that sidecar.** `endpoint` and `token` existed in the settings since #34 and
+were used nowhere, so choosing the `http` store silently stayed local. The bootstrap now passes
+`data-endpoint`, `data-token` and `data-token-header` on to the element, which already understood them.
+
+**The layer can be switched on and off.** The toolbar button mounts; the options page and a page can
+now turn the layer off again. Switching off sets the element's `enabled` attribute rather than
+removing it, so open notes survive and the layer comes back without a second injection. A page drives
+it over `postMessage`:
+
+```js
+window.postMessage({ source: "bluepencil-page", kind: "toggle", enabled: false, requestId: "1" },
+                    window.location.origin);
+```
+
+Wiring this up exposed a bridge that was deaf to the page: it listened on
+`chrome.runtime.onMessage`, which never fires for a page's `postMessage`. The mount worked only
+because it went through the worker. The bridge now listens on `window.message`, and the dead
+`onMessage` branch is gone.
+
+**A GitHub workflow builds the packaged extension.** `.github/workflows/extension.yml` builds the
+library, builds the extension, re-runs the smoke test on the CI machine, zips `extension/dist` and
+attaches it as an artefact. On a `v*` tag it also creates a release and attaches the zip there. This
+is separate from the existing CI, which already runs `build:ext` and `smoke:ext` — this one produces
+the packaged thing rather than testing it.
+
 **A Chromium extension that ships the review layer (#34).** `extension/` builds an installable MV3
 extension that mounts the same element on any page. Mounting into an arbitrary third-party page
 turned out to be the hard part, and every assumption about it was wrong until Chrome 151 was
