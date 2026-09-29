@@ -35,6 +35,10 @@ interface MountConfig {
     language: string;
     store: string;
     identity: string;
+    /** Sidecar base URL; only read when `store` is `http` (#36). */
+    endpoint: string;
+    /** Shared secret for the sidecar; only read when `store` is `http` (#36). */
+    token: string;
   };
   tabUrl: string;
 }
@@ -70,6 +74,10 @@ function mount(): void {
 
     const tag = "bluepencil-notes";
     const el = document.createElement(tag);
+    // The element already understands an HTTP store through `data-endpoint`, and a credential
+    // through `data-token` / `data-token-header` (docs/INTEGRATION.md). The extension's job is
+    // only to hand those two across — without them the `http` store setting would silently stay
+    // local, because the element has no other way to learn where the sidecar lives (#36).
     const attributes: Record<string, string> = {
       "data-environment": config.settings.environment,
       "data-app-name": config.settings.appName,
@@ -78,6 +86,16 @@ function mount(): void {
       "data-identity": config.settings.identity,
       "data-bluepencil-url": config.tabUrl,
     };
+    if (config.settings.store === "http") {
+      if (config.settings.endpoint.length > 0) {
+        attributes["data-endpoint"] = config.settings.endpoint;
+      }
+      if (config.settings.token.length > 0) {
+        // The sidecar's own header name, so the two agree by construction rather than by convention.
+        attributes["data-token"] = config.settings.token;
+        attributes["data-token-header"] = "x-bluepencil-auth";
+      }
+    }
     for (const [name, value] of Object.entries(attributes)) el.setAttribute(name, value);
     (document.body ?? document.documentElement).append(el);
 

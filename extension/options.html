@@ -90,8 +90,9 @@
 
       <div id="sidecar" hidden>
         <p class="warn">
-          A sidecar is reachable from the network once it binds beyond loopback, and it has no
-          authentication of its own. Do not expose it to an untrusted network.
+          A sidecar is reachable from the network once it binds beyond loopback. It is only as safe
+          as its secret, so start it with <code>--auth-secret</code> — without that flag every caller
+          on the network can read and write your notes.
         </p>
         <label>
           <span>Sidecar URL</span>
@@ -100,7 +101,11 @@
         <label>
           <span>Token</span>
           <input type="password" id="token" placeholder="(optional)">
-          <span class="hint">Stored in this browser only. Never sent anywhere but the URL above.</span>
+          <span class="hint">
+            Sent as <code>x-bluepencil-auth</code>. Stored in this browser only, and never sent
+            anywhere but the URL above. Leave it empty only if the sidecar runs without
+            <code>--auth-secret</code>.
+          </span>
         </label>
       </div>
     </fieldset>
@@ -108,6 +113,16 @@
     <button type="submit" id="save">Save</button>
     <span id="status" role="status" aria-live="polite"></span>
   </form>
+
+  <fieldset class="card">
+    <legend>This page</legend>
+    <p class="hint">
+      The layer follows the toolbar button. These switch it on the tab you are looking at now.
+    </p>
+    <button type="button" id="turn-on">Turn on here</button>
+    <button type="button" id="turn-off">Turn off here</button>
+    <span id="toggle-status" role="status" aria-live="polite"></span>
+  </fieldset>
 
   <script type="module" src="./options.js"></script>
 </body>

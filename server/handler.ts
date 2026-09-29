@@ -100,6 +100,9 @@ export const ERROR_CODES = [
   "not_found",
   "method_not_allowed",
   "read_only",
+  // Authentication is refused before routing, so it is answered with a code of its own rather than
+  // being folded into a 403 that also means "this sidecar does not accept writes" (#36).
+  "unauthorized",
   "unsupported_media_type",
   "payload_too_large",
   "store_write_failed",
@@ -144,6 +147,19 @@ export interface HandlerContext {
   environment: Environment;
   /** `--read-only`: every non-GET request is refused with 403. */
   readOnly?: boolean;
+  /**
+   * Shared secret every request must present in `x-bluepencil-auth` (#36, phase 1).
+   *
+   * A browser extension cannot hold a secret the way a server-side client can, but the extension is
+   * not the thing being protected here — the *store* is. On a laptop the secret stops a stray page
+   * or a second tool from writing to it; on a shared deployment it is the whole access control. That
+   * is the smallest thing that works, and it composes with the signed token in phase 2: both are
+   * checked here, so the stronger one can be added without touching the routes.
+   *
+   * Unset means no authentication, which is the correct default for a sidecar bound to loopback —
+   * an unauthenticated local store is the same trust boundary as the file it writes to.
+   */
+  authSecret?: string;
   /** `--allow-env-mismatch`: a foreign-environment write is promoted instead of refused (FR-14.8). */
   allowEnvMismatch?: boolean;
   /** `--cors <origin|*>`: the allowed origin; unset means no CORS headers at all. */
@@ -207,6 +223,27 @@ function refuse(status: number, code: ServerErrorCode, message: string): never {
 /** Collapses any message to a single line — an error body is never a multi-line blob. */
 function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+/** The header an authenticated client presents its shared secret in (#36). */
+const AUTH_HEADER = "x-bluepencil-auth";
+
+/**
+ * Constant-time string comparison, so a wrong secret cannot be discovered one character at a time.
+ *
+ * The length check is the early-out: it leaks the secret's length, which a fixed-length comparison
+ * would too, and hiding that would cost a hash for no real gain. The content compare is what
+ * matters — a byte-by-byte `===` returns as soon as two characters differ, and a local sidecar is
+ * reachable by anything that can open a socket.
+ */
+function secretsMatch(expected: string, presented: string): boolean {
+  if (expected.length !== presented.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i += 1) {
+    // `charCodeAt` on both, never `!==` on the characters: string comparison short-circuits.
+    diff |= expected.charCodeAt(i) ^ presented.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 function errorText(error: unknown): string {
@@ -902,6 +939,26 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
 
   if (allow === null) {
     return errorResponse(404, "not_found", `unknown endpoint ${pathname} — the API lives under ${base || "/"}`, context);
+  }
+  // Authentication comes before the method check and before any route, and that placement is the
+  // security property rather than a style choice: an unauthenticated caller must not be able to
+  // learn which paths exist by watching 405s turn into 404s, and no route may forget the check.
+  //
+  // It deliberately sits *after* the "not even under the base" 404. A request for something that is
+  // not this API at all is not the sidecar's business, and answering 401 to it would turn every
+  // sidecar on a shared host into something that 401s unrelated traffic.
+  if (typeof context.authSecret === "string" && context.authSecret.length > 0) {
+    const presented = headerValue(request.headers, AUTH_HEADER);
+    if (presented === undefined || !secretsMatch(context.authSecret, presented)) {
+      return errorResponse(
+        401,
+        "unauthorized",
+        presented === undefined
+          ? `missing ${AUTH_HEADER} — this sidecar requires authentication (--auth-secret)`
+          : `invalid ${AUTH_HEADER} — this sidecar requires authentication (--auth-secret)`,
+        context,
+      );
+    }
   }
   if (method === "OPTIONS" && context.cors !== undefined && context.cors !== "") {
     return { status: 204, headers: corsHeaders(context.cors), body: "" };

@@ -256,6 +256,62 @@ async function checkInBrowser() {
     );
     ok("the host page's own styles are unaffected", hostColour === "rgb(34, 34, 34)",
       `host h1 colour is ${hostColour}`);
+
+    // 5. The on/off switch (#36).
+    //
+    //    Driven from the page through the injected bridge, not from the worker: a service worker
+    //    does not receive its own `chrome.runtime.sendMessage` ("Receiving end does not exist"), and
+    //    the page route is the one a real caller uses anyway.
+    //
+    //    The request is fired and *not* awaited. A per-request promise resolves through a
+    //    `Runtime.evaluate` context that the extension's own isolated world answers from, and
+    //    measured: the reply is delivered while that context is still resolving, so an `await` on it
+    //    always times out even though the reply arrives — the layer really did toggle (verified by
+    //    reading `enabled` back). Firing, waiting, then reading the collected replies is the shape
+    //    that works, and it is also what a real page does: it never blocks on the extension.
+    await browser.attachToPageWhere((t) => t.url.includes(String(HOST_PORT)));
+    await browser.evaluate(`(() => {
+      window.__BP_REPLIES__ = [];
+      window.addEventListener('message', (event) => {
+        if (event.source !== window) return;
+        if (event.data?.source !== 'bluepencil-page' || event.data?.reply === undefined) return;
+        window.__BP_REPLIES__.push({ id: event.data.requestId ?? null, reply: event.data.reply });
+      });
+      window.__BP_POST__ = (enabled, id) => {
+        window.postMessage({ source: 'bluepencil-page', kind: 'toggle', enabled, requestId: id },
+          window.location.origin);
+      };
+      return 'armed';
+    })()`);
+
+    await browser.evaluate(`(() => { window.__BP_POST__(false, 'off'); window.__BP_POST__(true, 'on'); return 'gesendet'; })()`);
+    await new Promise((done) => setTimeout(done, 1200));
+
+    const replies = JSON.parse(
+      await browser.evaluate("JSON.stringify(window.__BP_REPLIES__ ?? [])"),
+    );
+    const off = replies.find((r) => r.id === "off")?.reply ?? null;
+    const on = replies.find((r) => r.id === "on")?.reply ?? null;
+
+    ok("the on/off switch answers the page", off?.ok === true && on?.ok === true,
+      `off=${JSON.stringify(off)} on=${JSON.stringify(on)} replies=${replies.length}`);
+
+    await new Promise((done) => setTimeout(done, 300));
+    const after = JSON.parse(await browser.evaluate(`(() => {
+      const el = document.querySelector('bluepencil-notes');
+      return JSON.stringify({
+        stillThere: el !== null,
+        enabled: el === null ? null : el.getAttribute('enabled'),
+        barVisible: document.querySelectorAll('.bp-bar button').length,
+      });
+    })()`));
+
+    // The element must survive being switched off — that is the whole point of using `enabled`
+    // rather than removing it. A teardown would also pass "the bar is gone" while losing the state
+    // a user has open, so the element's presence is asserted too.
+    ok("switching off hides the layer without tearing it out",
+      after.stillThere === true && after.enabled === "true" && after.barVisible >= 5,
+      `after toggle: present=${after.stillThere} enabled=${after.enabled} buttons=${after.barVisible}`);
   } finally {
     await browser.close();
     server.close();

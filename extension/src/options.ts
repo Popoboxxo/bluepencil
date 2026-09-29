@@ -9,6 +9,10 @@
 import { DEFAULT_SETTINGS, normalizeSettings, type ExtensionSettings } from "./settings";
 
 declare const chrome: {
+  runtime: {
+    /** The worker's on/off path. Available to every extension page, so no permission is needed. */
+    sendMessage(message: unknown): Promise<unknown>;
+  };
   storage: {
     local: {
       get(key: string): Promise<Record<string, unknown>>;
@@ -96,5 +100,41 @@ async function save_(): Promise<void> {
 byId<HTMLSelectElement>("store").addEventListener("change", (event) => {
   showSidecar((event.target as HTMLSelectElement).value);
 });
+
+/**
+ * The on/off switch for the current tab (#36).
+ *
+ * It goes through `chrome.runtime.sendMessage`, not through a direct `chrome.tabs` call, so the
+ * options page does not need the `tabs` permission to influence a tab — it asks the worker, which
+ * already has it. That is also the only way to reach the MAIN world, where the element lives.
+ */
+function wireToggle(id: string, enabled: boolean): void {
+  byId<HTMLButtonElement>(id).addEventListener("click", () => {
+    const status = byId<HTMLSpanElement>("toggle-status");
+    status.textContent = "Working…";
+    status.className = "";
+    void chrome.runtime
+      .sendMessage({ type: "bluepencil:toggle", enabled })
+      .then((reply: unknown) => {
+        const ok = typeof reply === "object" && reply !== null && (reply as { ok?: unknown }).ok === true;
+        if (ok) {
+          status.textContent = enabled ? "The layer is on for this tab." : "The layer is off for this tab.";
+          status.className = "ok";
+        } else {
+          // The most likely cause is that the layer was never mounted on this tab, and saying so is
+          // more useful than the generic "not on this page" the worker reports.
+          status.textContent = "The layer is not on this tab — press the toolbar button first.";
+          status.className = "warn";
+        }
+      })
+      .catch((error: unknown) => {
+        status.textContent = `Could not reach the page: ${String(error)}`;
+        status.className = "error";
+      });
+  });
+}
+
+wireToggle("turn-on", true);
+wireToggle("turn-off", false);
 
 void load();
