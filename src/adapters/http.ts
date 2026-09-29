@@ -40,7 +40,13 @@ export const HTTP_ADAPTER_NAME = "http";
 export interface HttpAdapterOptions {
   /** Base URL of the API, e.g. `/api/v1/bluepencil` or `https://host/api/v1/bluepencil`. */
   endpoint: string;
-  /** Evaluated on **every** request, so refreshed tokens are picked up (FR-9.1). */
+  /**
+   * Evaluated on **every** request, so refreshed tokens are picked up (FR-9.1).
+   *
+   * This is also how the extension authenticates against a sidecar (#36): it returns
+   * `{ "x-bluepencil-auth": <secret> }`. Being a function rather than a value is what lets a
+   * phase-2 signed token be refreshed without rebuilding the adapter.
+   */
   headers?: () => Record<string, string>;
   /** Injectable for tests and for runtimes without a global `fetch`. */
   fetchImpl?: typeof fetch;

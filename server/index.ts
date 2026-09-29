@@ -90,6 +90,14 @@ export interface ServerOptions {
   root?: string;
   environment?: Environment;
   readOnly?: boolean;
+  /**
+   * Shared secret required in the `x-bluepencil-auth` header on every request (#36).
+   *
+   * The flag takes it directly; the environment variable is the safer one, because a secret on a
+   * command line is visible in the process list to every other user on the machine. Both are read,
+   * the flag winning.
+   */
+  authSecret?: string;
   allowEnvMismatch?: boolean;
   /** Optional Markdown mirror of the note set (`--mirror`). */
   mirror?: string;
@@ -739,6 +747,14 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
   const cors = argv.some((arg) => arg === "--cors" || arg.startsWith("--cors="))
     ? (get("--cors") ?? "*")
     : undefined;
+  // The flag or the environment, and an empty value is a configuration error rather than "no
+  // authentication": `--auth-secret=` reads as a typo, and silently accepting it would leave a
+  // deployment unprotected while looking configured (#36).
+  const authSecretRaw = get("--auth-secret") ?? process.env.BLUEPENCIL_AUTH_SECRET;
+  if (authSecretRaw !== undefined && authSecretRaw.length === 0) {
+    return "--auth-secret must not be empty — omit it entirely to run without authentication";
+  }
+  const authSecret = authSecretRaw;
 
   return {
     storePath,
@@ -748,6 +764,9 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
     ...(root !== undefined ? { root } : {}),
     environment,
     readOnly: has("--read-only"),
+    // `--auth-secret <value>` or the environment, never both: an unset secret means "no
+    // authentication", so a typo in the flag must not silently fall back to that (#36).
+    ...(authSecret !== undefined ? { authSecret } : {}),
     allowEnvMismatch: has("--allow-env-mismatch"),
     ...(mirror !== undefined ? { mirror } : {}),
     ...(cors !== undefined ? { cors } : {}),
@@ -766,12 +785,21 @@ const HELP = `bluepencil sidecar ${SERVER_VERSION} — static site + notes API o
 Usage:
   node dist/server.js --store notes.json [--port 8787] [--host 127.0.0.1]
     [--base /api/v1/bluepencil] [--root <static dir>] [--environment dev|staging|live]
-    [--read-only] [--allow-env-mismatch] [--mirror notes.md] [--cors <origin|*>] [--quiet]
+    [--read-only] [--auth-secret <value>] [--allow-env-mismatch] [--mirror notes.md] [--cors <origin|*>] [--quiet]
     [--journal auto|git|file|none] [--journal-dir <dir>] [--journal-repo <dir>]
     [--journal-coalesce <ms>] [--journal-author "Name <mail>"] [--journal-subject "<template>"]
-      env: BLUEPENCIL_JOURNAL (backend), BLUEPENCIL_JOURNAL_AUTHOR, BLUEPENCIL_JOURNAL_SUBJECT
+      env: BLUEPENCIL_AUTH_SECRET, BLUEPENCIL_JOURNAL (backend), BLUEPENCIL_JOURNAL_AUTHOR,
+           BLUEPENCIL_JOURNAL_SUBJECT
       a flag wins over the env; without an author the commits carry the repository's identity,
       and the journal status reports which identity is in use
+
+Authentication:
+  With --auth-secret (or BLUEPENCIL_AUTH_SECRET) every request under the base must present the
+  secret in the x-bluepencil-auth header; anything else is answered 401 {"error":{"code":
+  "unauthorized"}}. Without the flag there is no authentication at all — which is the right default
+  for a sidecar bound to loopback, and the wrong one as soon as it is not. Prefer the environment
+  variable: a secret on a command line is visible in the process list to every other user on the
+  machine. An empty value is rejected rather than treated as "off".
 
 Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in http adapter):
   GET    {base}/health              { ok, status, version }
