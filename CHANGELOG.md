@@ -146,13 +146,17 @@ by CI. It was not: `build:ext` and `smoke:ext` lived only in `npm run verify`, w
 so the extension was built and smoke-tested locally and nowhere else. Both are steps of the `verify`
 job now.
 
-**The extension smoke pinned how one Chrome spells its worker's URL.** It attached to
-`chrome-extension://…/sw.js`; the runner's Chrome reports the same manifest entry as
-`…/service_worker.js`, so the suite failed with `no target matched` on a browser where the extension
-had loaded correctly — and the eleven checks behind that line never ran. The worker now answers for
-itself (`chrome.runtime.getManifest().name`), which also settles the reason the URL was pinned at
-all: this browser ships a component extension and a built-in one, each with its own worker, and the
-first `chrome-extension://` worker in the list is not necessarily ours.
+**The extension smoke could not run in CI on the runner's Chrome, and silently said nothing.** It
+loaded the unpacked extension with `--load-extension`, which branded Chrome removed in 137: the
+runner's `google-chrome-stable` accepts the flag and ignores it, so the extension's own worker never
+appeared and the suite failed at the attach with `no extension service worker matching /bluepencil/i`
+— the only worker on the wire belonged to a component extension. It now uses the supported route,
+`Extensions.loadUnpacked` (which needs `--enable-unsafe-extension-debugging`, and the pipe transport
+this launcher already uses), and keeps `--load-extension` as the fallback for builds that predate the
+command. The worker is also identified by its own `chrome.runtime.getManifest().name` instead of by
+its URL, because this browser ships other extensions with workers of their own and the first
+`chrome-extension://` target is not necessarily ours. The suite reports which route it took, so a
+future removal shows up in the output rather than as "nothing was injected".
 
 **The `chromeStorage` adapter was not emitted by the build, while `package.json` exported it.** The
 adapters build lists its entry points explicitly and the new adapter was missing from that list, so

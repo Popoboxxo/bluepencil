@@ -195,12 +195,48 @@ async function attachToBlueprintWorker(browser, { timeoutMs = 20000, expect = /b
   );
 }
 
+/**
+ * Load the unpacked extension the way the browser in front of us allows.
+ *
+ * Chrome 137 removed `--load-extension` in *branded* builds. The CI runner runs
+ * `google-chrome-stable`, so there the flag is accepted and then ignored — it shows up as "the
+ * extension's service worker never appeared", not as an error, and the eleven checks behind it never
+ * ran. Locally this suite ran on Playwright's unbranded Chromium, where the flag still works, which
+ * is exactly how the gap stayed invisible.
+ *
+ * The supported way in is the `Extensions` domain: `Extensions.loadUnpacked`, which needs
+ * `--enable-unsafe-extension-debugging` and the pipe transport this launcher already uses (over
+ * `--remote-debugging-port` the command is refused).
+ *
+ * Older builds have no such command, so the command line stays as the fallback — with the killswitch
+ * that restores `--load-extension` on Chrome 137–141. Unbranded Chromium never needed either.
+ */
+async function launchWithExtension(profile) {
+  const modern = await Browser.launch(findChrome(), profile, {
+    extraArgs: ["--enable-unsafe-extension-debugging"],
+  });
+  try {
+    const { id } = await modern.send("Extensions.loadUnpacked", { path: extDist });
+    return { browser: modern, how: `Extensions.loadUnpacked (id ${id})` };
+  } catch (error) {
+    if (!/-32601|wasn't found|not found/.test(String(error?.message ?? error))) throw error;
+    await modern.close();
+  }
+  const legacy = await Browser.launch(findChrome(), profile, {
+    extraArgs: [
+      `--disable-extensions-except=${extDist}`,
+      `--load-extension=${extDist}`,
+      "--disable-features=DisableLoadExtensionCommandLineSwitch",
+    ],
+  });
+  return { browser: legacy, how: "--load-extension on the command line" };
+}
+
 async function checkInBrowser() {
   const server = await startHost();
   const profile = await mkdtemp(join(tmpdir(), "bp-ext-smoke-"));
-  const browser = await Browser.launch(findChrome(), profile, {
-    extraArgs: [`--disable-extensions-except=${extDist}`, `--load-extension=${extDist}`],
-  });
+  const launched = await launchWithExtension(profile);
+  const browser = launched.browser;
 
   try {
     await browser.navigate(`http://127.0.0.1:${HOST_PORT}/`);
@@ -223,7 +259,7 @@ async function checkInBrowser() {
     // failing here is clearer than eleven later failures that all say "nothing was injected".
     const worker = await attachToBlueprintWorker(browser);
     ok("the extension's own service worker is attached", /bluepencil/i.test(worker.name),
-      `attached ${worker.name}; probed ${worker.candidates.join(" | ")}`);
+      `attached ${worker.name} via ${launched.how}; probed ${worker.candidates.join(" | ")}`);
 
     // 2. Drive the worker's own mount entry point.
     //
