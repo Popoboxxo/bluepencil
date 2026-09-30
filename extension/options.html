@@ -99,12 +99,32 @@
           <input type="text" id="endpoint" placeholder="http://127.0.0.1:8787">
         </label>
         <label>
-          <span>Token</span>
-          <input type="password" id="token" placeholder="(optional)">
+          <span>Authentication</span>
+          <select id="auth">
+            <option value="none">None — the sidecar has no credential</option>
+            <option value="secret">Shared secret (--auth-secret)</option>
+            <option value="token">Signed token (--token-key)</option>
+          </select>
           <span class="hint">
-            Sent as <code>x-bluepencil-auth</code>. Stored in this browser only, and never sent
-            anywhere but the URL above. Leave it empty only if the sidecar runs without
-            <code>--auth-secret</code>.
+            These are different headers, and picking the wrong one is a 401 that looks like a dead
+            server. <strong>Secret</strong> is one string every client shares; withdrawing it means
+            changing it everywhere at once. <strong>Token</strong> is per device, expires, and can be
+            revoked on its own — the right choice once more than one device is involved.
+          </span>
+        </label>
+        <label>
+          <span id="credential-label">Token</span>
+          <input type="password" id="token" placeholder="(optional)">
+          <span class="hint" id="credential-hint"></span>
+        </label>
+        <p class="warn" id="token-state" hidden></p>
+        <label id="device-field" hidden>
+          <span>Device name</span>
+          <input type="text" id="deviceName" placeholder="work-laptop">
+          <span class="hint">
+            Not sent anywhere — it records which machine the token was minted for, so the sidecar's
+            revocation list stays readable by a human. Keep the name you passed to
+            <code>bluepencil token</code>.
           </span>
         </label>
       </div>

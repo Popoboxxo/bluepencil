@@ -26,9 +26,6 @@ import { DEFAULT_SETTINGS, normalizeSettings, type ExtensionSettings } from "./s
 
 const SETTINGS_KEY = "bluepencil:settings";
 
-/** Where the built element bundle lives inside the extension. */
-const ELEMENT_FILE = "bluepencil.element.iife.js";
-
 /** Id of the registered MAIN-world content script; re-registering the same id is an error. */
 const BOOTSTRAP_ID = "bluepencil-bootstrap";
 

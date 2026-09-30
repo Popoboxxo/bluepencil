@@ -82,6 +82,7 @@
     "build": "node scripts/build.mjs",
     "dev": "node scripts/dev.mjs",
     "typecheck": "tsc --noEmit",
+    "typecheck:ext": "tsc --noEmit -p extension/tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "size": "node scripts/size-guard.mjs",
@@ -97,7 +98,7 @@
     "spec:check": "reqmd check spec/",
     "spec:ls": "reqmd ls spec/",
     "spec:stats": "reqmd stats spec/",
-    "verify": "npm run typecheck && npm run test && npm run build && npm run build:ext && npm run size && npm run smoke:pack && npm run smoke:embed && npm run smoke:e2e && npm run smoke:ext",
+    "verify": "npm run typecheck && npm run typecheck:ext && npm run test && npm run build && npm run build:ext && npm run size && npm run smoke:pack && npm run smoke:embed && npm run smoke:e2e && npm run smoke:ext",
     "smoke:e2e": "node tests/e2e/vanilla.e2e.mjs"
   },
   "dependencies": {},

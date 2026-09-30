@@ -158,9 +158,14 @@ use exactly the same data and validators as the UI.
 
 ## Privacy & secrets
 
-* **No credentials.** The library stores and transmits none of its own — no account, no token, no
+* **No credentials of its own.** The library stores and transmits none — no account, no token, no
   session. The only requests that leave the page are the ones the host configured through an
-  adapter (FR-9.1, NFR-7), and note text is rendered as text, never as HTML (FR-9.3).
+  adapter (FR-9.1, NFR-7), and note text is rendered as text, never as HTML (FR-9.3). A credential a
+  *sidecar* needs arrives the same way any other host setting does: through the adapter's headers or
+  the element's `token`/`token-header`/`token-scheme` attributes, or through the extension's options
+  page. The sidecar is where that credential is checked — one shared secret (`--auth-secret`) or
+  signed, expiring, revocable per-device tokens (`--token-key`, minted with `bluepencil token`);
+  [docs/INTEGRATION.md](docs/INTEGRATION.md) §5 has both.
 * **Notes may contain internal wording.** A note is a review artefact, not a data store; treat it as
   if it names internal features, customers or drafts. The policy is **"no personal data in notes"**:
   purge a round once it is worked off, and prefer the local (`localStorage`) or file adapter when in

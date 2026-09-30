@@ -62,17 +62,69 @@ and falls back to a constructable `CSSStyleSheet` on `document.adoptedStyleSheet
 CSP does not govern. Under a strict `style-src` you will see the layer mount unstyled if that
 fallback is unavailable; everything else works.
 
-## 5. Self-hosted sidecar (M2 — planned, not in this repository yet)
+## 5. Self-hosted sidecar
 
-The planned `server/` package serves a static site **and** the API on one port, with the note store
-as a JSON file plus a generated Markdown mirror. It is an **M2 deliverable** and does not exist in
-this branch: the HTTP contract of ARCHITECTURE §5 is documented but has no reference implementation.
-What exists today is the client side (`src/adapters/http.ts`) and, for local rounds, the
-dependency-free example server (`scripts/serve-example.mjs`) together with a file or `localStorage`
-adapter.
+`server/` serves a static site **and** the API on one port, with the note store as a JSON file plus an
+optional generated Markdown mirror. It is built to `dist/server.js`:
 
-When it lands: deploy it as a container behind your usual proxy, and make sure the port is actually
-published (a listening process inside a container is not automatically reachable from the network).
+```sh
+npm run build
+node dist/server.js --store notes.json --root examples/vanilla --port 8787
+```
+
+Flags: `--store <json>` (required), `--port 8787`, `--host 127.0.0.1`, `--base /api/v1/bluepencil`,
+`--root <static dir>`, `--environment dev|staging|live`, `--read-only`, `--allow-env-mismatch`,
+`--mirror notes.md`, `--cors <origin|*>`, `--quiet`. The HTTP contract is ARCHITECTURE §5.
+
+### Authentication — and when it is needed
+
+A sidecar on loopback needs none: it is as protected as the file it writes to. The moment `--host`
+leaves loopback, one of two credentials has to be configured, and **every request under the base**
+must then carry it:
+
+| Credential | Flag / environment | Header | Properties |
+|---|---|---|---|
+| Shared secret | `--auth-secret` / `BLUEPENCIL_AUTH_SECRET` | `x-bluepencil-auth: <secret>` | one string for every client, no expiry, no per-device revocation |
+| Signed token | `--token-key` / `BLUEPENCIL_TOKEN_KEY` | `Authorization: Bearer <token>` | HS256, one per device (`jti`), expires, revocable by id |
+
+Prefer the environment variable over the flag in both cases: a value on a command line is visible in
+the process list to every other user on the machine.
+
+```sh
+# phase 1 — one shared secret
+BLUEPENCIL_AUTH_SECRET=… node dist/server.js --store notes.json --host 0.0.0.0
+
+# phase 2 — per-device signed tokens
+export BLUEPENCIL_TOKEN_KEY=…
+node dist/server.js --store notes.json --host 0.0.0.0 \
+  --token-ttl 86400 --revoked-tokens revoked.json
+bluepencil token --device work-laptop --scope read write --ttl 43200
+```
+
+`bluepencil token` mints locally and prints the token on stdout (context on stderr), so
+`export TOKEN=$(bluepencil token --device laptop)` works. The id it prints is what a revocation file
+lists; the file is read once at startup, so revoking a device means restarting the sidecar.
+
+Clients authenticate the same way the extension does — over HTTP the adapter sets the header:
+
+```ts
+adapter: httpAdapter({
+  endpoint: "https://notes.example.test/api/v1/bluepencil",
+  headers: () => ({ Authorization: `Bearer ${getToken()}` }),
+}),
+```
+
+and the element path uses the same contract through attributes: `data-token="…"
+data-token-header="authorization" data-token-scheme="Bearer"` (or `data-token-header="x-bluepencil-auth"`
+for the shared secret). [EMBED.md](EMBED.md) lists the attributes.
+
+Refusals are meant to be actionable: `401 unauthorized` (missing or wrong secret), `401 token_expired`
+(mint a new one), `401 token_revoked` (do *not* — the device was deliberately cut off), `403
+insufficient_scope` (the token is good but read-only). `GET` requires `read`, every mutation
+`write`, and `write` implies `read`.
+
+Deploy it as a container behind your usual proxy, and make sure the port is actually published (a
+listening process inside a container is not automatically reachable from the network).
 
 ## 6. Admin debug mode in a product (FR-10.4)
 

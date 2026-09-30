@@ -146,12 +146,97 @@ async function checkArtefacts() {
 /* browser checks — the parts that only a real browser can answer               */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The extension's own background worker, attached — or an error naming what was on the wire.
+ *
+ * Chrome builds disagree about the *name* of an MV3 worker's CDP target: some report the file the
+ * manifest registers (`…/sw.js`), others report `…/service_worker.js` for the same manifest entry.
+ * Matching the file name therefore makes this suite fail on a browser it does not control — measured
+ * on the CI runner, where the extension had loaded correctly and the target list showed
+ * `service_worker:chrome-extension://…/service_worker.js`. Pinning one spelling is a test that fails
+ * for a reason that has nothing to do with the product.
+ *
+ * The worker is asked instead: `chrome.runtime.getManifest().name`, evaluated in the attached
+ * context. That is the extension's own answer, and it also settles the second problem with a URL
+ * match — this Chrome build runs a component extension and a built-in one, each with its own worker,
+ * and the first `chrome-extension://` worker in the list is not necessarily ours.
+ */
+async function attachToBlueprintWorker(browser, { timeoutMs = 20000, expect = /bluepencil/i } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  const probed = new Map();
+  const seen = new Set();
+  while (Date.now() < deadline) {
+    const { targetInfos } = await browser.send("Target.getTargets");
+    const targets = targetInfos ?? [];
+    for (const target of targets) {
+      if (target.type === "service_worker") seen.add(`${target.type}:${target.url}`);
+    }
+    for (const candidate of targets) {
+      if (candidate.type !== "service_worker") continue;
+      if (!candidate.url.startsWith("chrome-extension://")) continue;
+      if (probed.has(candidate.targetId)) continue;
+      const attached = await browser.attachTo((t) => t.targetId === candidate.targetId, {
+        timeoutMs: 2000,
+      });
+      const name = await browser
+        .evaluate("chrome.runtime.getManifest().name")
+        .catch(() => undefined);
+      probed.set(candidate.targetId, `${name ?? "no manifest"} <${candidate.url}>`);
+      if (typeof name === "string" && expect.test(name)) {
+        return { ...attached, name, candidates: [...probed.values()] };
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  throw new Error(
+    `no extension service worker matching ${expect} within ${timeoutMs} ms; probed: ${
+      [...probed.values()].join(" | ") || "nothing"
+    }; seen: ${[...seen].join(", ") || "nothing"}`,
+  );
+}
+
+/**
+ * Load the unpacked extension the way the browser in front of us allows.
+ *
+ * Chrome 137 removed `--load-extension` in *branded* builds. The CI runner runs
+ * `google-chrome-stable`, so there the flag is accepted and then ignored — it shows up as "the
+ * extension's service worker never appeared", not as an error, and the eleven checks behind it never
+ * ran. Locally this suite ran on Playwright's unbranded Chromium, where the flag still works, which
+ * is exactly how the gap stayed invisible.
+ *
+ * The supported way in is the `Extensions` domain: `Extensions.loadUnpacked`, which needs
+ * `--enable-unsafe-extension-debugging` and the pipe transport this launcher already uses (over
+ * `--remote-debugging-port` the command is refused).
+ *
+ * Older builds have no such command, so the command line stays as the fallback — with the killswitch
+ * that restores `--load-extension` on Chrome 137–141. Unbranded Chromium never needed either.
+ */
+async function launchWithExtension(profile) {
+  const modern = await Browser.launch(findChrome(), profile, {
+    extraArgs: ["--enable-unsafe-extension-debugging"],
+  });
+  try {
+    const { id } = await modern.send("Extensions.loadUnpacked", { path: extDist });
+    return { browser: modern, how: `Extensions.loadUnpacked (id ${id})` };
+  } catch (error) {
+    if (!/-32601|wasn't found|not found/.test(String(error?.message ?? error))) throw error;
+    await modern.close();
+  }
+  const legacy = await Browser.launch(findChrome(), profile, {
+    extraArgs: [
+      `--disable-extensions-except=${extDist}`,
+      `--load-extension=${extDist}`,
+      "--disable-features=DisableLoadExtensionCommandLineSwitch",
+    ],
+  });
+  return { browser: legacy, how: "--load-extension on the command line" };
+}
+
 async function checkInBrowser() {
   const server = await startHost();
   const profile = await mkdtemp(join(tmpdir(), "bp-ext-smoke-"));
-  const browser = await Browser.launch(findChrome(), profile, {
-    extraArgs: [`--disable-extensions-except=${extDist}`, `--load-extension=${extDist}`],
-  });
+  const launched = await launchWithExtension(profile);
+  const browser = launched.browser;
 
   try {
     await browser.navigate(`http://127.0.0.1:${HOST_PORT}/`);
@@ -160,17 +245,21 @@ async function checkInBrowser() {
     // 1. The service worker must exist at all. A manifest error stops it, and every later
     //    assertion would then fail with a confusing "nothing injected" instead.
     //
-    //    Match specifically on `/sw.js`: this Chrome build ships two other extensions (a component
-    //    extension and a built-in one), each with its own worker. Attaching to the first
-    //    `chrome-extension://` worker would evaluate in a context that has neither `chrome.scripting`
-    //    nor this extension's module — measured as exactly that.
-    const worker = await browser.attachTo(
-      (t) => t.type === "service_worker" && t.url.endsWith("/sw.js"),
-    );
-    ok("the extension service worker starts", worker !== undefined);
-    ok("the service worker is bluepencil's own",
-      worker.url.startsWith("chrome-extension://") && worker.url.endsWith("/sw.js"),
-      worker.url);
+    //    Which *name* it has on the CDP wire differs between Chrome builds: some report the file the
+    //    manifest registers (`…/sw.js`), others `…/service_worker.js` for the same manifest entry.
+    //    Matching on that file name makes the suite fail on a browser it does not control — measured
+    //    on the CI runner, where the extension had loaded fine and the only difference was the name.
+    //
+    //    So the worker identifies itself instead: `chrome.runtime.getManifest().name`, read from the
+    //    attached context. That is stronger evidence than a URL suffix, and it is immune to the other
+    //    extensions the browser ships — this Chrome build runs a component extension and a built-in
+    //    one, each with its own worker, and attaching to the first `chrome-extension://` worker would
+    //    evaluate in a context that has neither `chrome.scripting` nor this extension's module.
+    // A missing worker is a thrown error from the helper, with every worker it probed and its name —
+    // failing here is clearer than eleven later failures that all say "nothing was injected".
+    const worker = await attachToBlueprintWorker(browser);
+    ok("the extension's own service worker is attached", /bluepencil/i.test(worker.name),
+      `attached ${worker.name} via ${launched.how}; probed ${worker.candidates.join(" | ")}`);
 
     // 2. Drive the worker's own mount entry point.
     //
@@ -312,6 +401,78 @@ async function checkInBrowser() {
     ok("switching off hides the layer without tearing it out",
       after.stillThere === true && after.enabled === "true" && after.barVisible >= 5,
       `after toggle: present=${after.stillThere} enabled=${after.enabled} buttons=${after.barVisible}`);
+
+    // 6. The options page — the extension's own UI, and the only place a credential is entered.
+    //
+    //    Mounting was covered and the settings page was not, which is the wrong way round: the
+    //    credential is what decides which header leaves the browser, and the whole reason the mode is
+    //    a select rather than a header name is that the wrong one fails as a 401 that reads like a
+    //    dead server. Nothing here needs a signing key: the page reads `exp` out of a token to tell
+    //    the user when it dies and verifies nothing (the sidecar is the only party that decides), so
+    //    a hand-built payload is enough — and asserting on it *is* the check that the page does not
+    //    pretend to verify anything.
+    await browser.attachTo((t) => t.targetId === worker.targetId);
+    const openedTab = await browser.evaluate(`(async () => {
+      const tab = await chrome.tabs.create({ url: chrome.runtime.getURL("options.html"), active: true });
+      return tab.id ?? null;
+    })()`);
+    ok("the options page can be opened from the extension", openedTab !== null, `tab id ${openedTab}`);
+
+    await browser.attachToPageWhere((t) => t.url.endsWith("/options.html"));
+    await browser.waitFor('document.querySelector("#auth") !== null');
+
+    const modes = JSON.parse(
+      await browser.evaluate(
+        'JSON.stringify(Array.from(document.querySelectorAll("#auth option"), (o) => o.value))',
+      ),
+    );
+    ok("the options page offers every credential mode",
+      modes.join(",") === "none,secret,token", modes.join(","));
+
+    // Six hours out, in the JWT's own unit (seconds since the epoch). The signature is nonsense on
+    // purpose: nothing on this page may look at it.
+    const expSeconds = Math.floor(Date.now() / 1000) + 6 * 60 * 60;
+    const payload = Buffer.from(JSON.stringify({ exp: expSeconds, device: "smoke-laptop" })).toString("base64url");
+    const smokeToken = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${payload}.signature-nobody-checks`;
+
+    const saved = JSON.parse(await browser.evaluate(`(async () => {
+      const set = (id, value) => {
+        const el = document.getElementById(id);
+        el.value = value;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      set("store", "http");
+      set("endpoint", "http://127.0.0.1:8787/bluepencil");
+      set("auth", "token");
+      set("deviceName", "smoke-laptop");
+      set("token", ${JSON.stringify(smokeToken)});
+      document.getElementById("form").requestSubmit();
+      await new Promise((done) => setTimeout(done, 400));
+      const stored = await chrome.storage.local.get("bluepencil:settings");
+      const state = document.getElementById("token-state");
+      return JSON.stringify({
+        settings: stored["bluepencil:settings"] ?? null,
+        stateHidden: state.hidden,
+        stateText: state.textContent,
+        deviceVisible: document.getElementById("device-field").hidden === false,
+        hint: document.getElementById("credential-hint").textContent,
+        status: document.getElementById("status").textContent,
+      });
+    })()`));
+
+    ok("the options page stores the credential mode, not just a token",
+      saved.settings?.auth === "token" && saved.settings?.deviceName === "smoke-laptop",
+      JSON.stringify(saved.settings));
+    ok("the stored expiry is read out of the token rather than typed",
+      typeof saved.settings?.tokenExpiresAt === "string" &&
+        Math.abs(Date.parse(saved.settings.tokenExpiresAt) - expSeconds * 1000) < 5000,
+      `tokenExpiresAt=${saved.settings?.tokenExpiresAt} expected≈${new Date(expSeconds * 1000).toISOString()}`);
+    ok("the page tells the user when the token expires, and shows the device field",
+      saved.stateHidden === false && /expires in about/i.test(saved.stateText) && saved.deviceVisible === true,
+      `hidden=${saved.stateHidden} text=${JSON.stringify(saved.stateText)} device=${saved.deviceVisible}`);
+    ok("the token mode names the header it will send",
+      /Authorization: Bearer/i.test(saved.hint),
+      JSON.stringify(saved.hint));
   } finally {
     await browser.close();
     server.close();

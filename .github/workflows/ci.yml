@@ -13,6 +13,13 @@
 #     dependency-free CDP layer with the embed smoke (scripts/lib/browser.mjs), so no test framework
 #     has to be installed to run it (NFR-4, NFR-11).
 #
+#   - ext-smoke: the built MV3 extension loaded into a real Chrome — the MAIN-world injection, a page
+#     with a strict CSP, and the element loading from the extension's own origin. Nothing about this
+#     is reproducible in jsdom, so it is the only leg that can fail on a browser-behaviour regression.
+#     The extension sources are typechecked with their own config (`npm run typecheck:ext`): the root
+#     tsconfig does not include `extension/`, and a typecheck that skips a quarter of the shipped code
+#     is worse than none.
+#
 #   - spec: regenerates spec/ from docs/REQUIREMENTS.md and validates it with reqmd, so a
 #     malformed requirement block fails the build. The regeneration step also proves the committed
 #     spec/ matches the source table — a drifted spec fails instead of passing silently.
@@ -82,6 +89,10 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Typecheck extension
+        # Its own config: browser libs, no Node types. Not covered by the root tsconfig above.
+        run: npm run typecheck:ext
+
       - name: Unit tests
         run: npm test
 
@@ -113,6 +124,16 @@ jobs:
           # here as well instead of turning the whole suite into a skip.
           BP_REQUIRE_BROWSER: "1"
         run: npm run smoke:e2e
+
+      - name: Build extension (MV3)
+        run: npm run build:ext
+
+      - name: Extension smoke (MV3 extension in a real Chrome)
+        env:
+          # Loads the built extension into Chrome and needs a browser for every one of its checks;
+          # a missing Chrome has to fail here rather than turn the leg into a silent no-op.
+          BP_REQUIRE_BROWSER: "1"
+        run: npm run smoke:ext
 
       - name: Secret scan
         run: npm run secret-scan

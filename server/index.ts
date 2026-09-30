@@ -63,6 +63,7 @@ import {
   type ServerErrorCode,
   type MutationEvent,
 } from "./handler";
+import { asHandlerVerifier, createTokenIssuer } from "./tokens";
 import { selectJournal, type Journal, type JournalRecord, type JournalStatus } from "./journal";
 
 /** Bind/port defaults: loopback only, and the port the contract documents. */
@@ -98,6 +99,21 @@ export interface ServerOptions {
    * the flag winning.
    */
   authSecret?: string;
+  /**
+   * HMAC key for signed per-device tokens (`--token-key`, `BLUEPENCIL_TOKEN_KEY`) (#36, phase 2).
+   *
+   * Never given to a client. The sidecar signs a token and hands it out; the client presents it and
+   * cannot re-sign it, which is what makes a token revocable in a way a shared secret is not. Because
+   * it is sensitive, the environment variable is the better of the two ways to set it — a value on a
+   * command line is visible in the process list to every other user on the machine.
+   */
+  tokenKey?: string;
+  /** Lifetime of newly issued tokens in seconds (`--token-ttl`); the issuer's own default applies when unset. */
+  tokenTtlSeconds?: number;
+  /** Token ids to refuse (`--revoked-tokens`); loaded from that file at startup. */
+  revokedTokens?: ReadonlySet<string>;
+  /** Where the revocation list was read from, so a startup log can name it. */
+  revokedPath?: string;
   allowEnvMismatch?: boolean;
   /** Optional Markdown mirror of the note set (`--mirror`). */
   mirror?: string;
@@ -134,6 +150,12 @@ interface ResolvedOptions {
   environment: Environment;
   readOnly: boolean;
   allowEnvMismatch: boolean;
+  /** Phase 1's shared secret, and phase 2's signing key — alternatives, both settable. */
+  authSecret: string | undefined;
+  tokenKey: string | undefined;
+  tokenTtlSeconds: number | undefined;
+  revokedTokens: ReadonlySet<string> | undefined;
+  revokedPath: string | undefined;
   mirror: string | undefined;
   cors: string | undefined;
   quiet: boolean;
@@ -158,6 +180,11 @@ function resolveOptions(options: ServerOptions): ResolvedOptions {
     environment: options.environment ?? DEFAULT_ENVIRONMENT,
     readOnly: options.readOnly ?? false,
     allowEnvMismatch: options.allowEnvMismatch ?? false,
+    authSecret: options.authSecret,
+    tokenKey: options.tokenKey,
+    tokenTtlSeconds: options.tokenTtlSeconds,
+    revokedTokens: options.revokedTokens,
+    revokedPath: options.revokedPath,
     mirror: options.mirror,
     cors: options.cors,
     quiet: options.quiet ?? false,
@@ -626,6 +653,18 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     ...(resolved.now !== undefined ? { now: resolved.now } : {}),
   });
 
+  // Built once, from the key, so every request verifies against the same key and the TTL applies
+  // only to newly issued tokens. `asHandlerVerifier` narrows the verdict to what the handler needs,
+  // which keeps the token format out of the routes (#36, phase 2).
+  const tokenIssuer =
+    resolved.tokenKey === undefined
+      ? undefined
+      : createTokenIssuer({
+          key: resolved.tokenKey,
+          ...(resolved.tokenTtlSeconds !== undefined ? { ttlSeconds: resolved.tokenTtlSeconds } : {}),
+          ...(resolved.now !== undefined ? { now: () => new Date(resolved.now!()) } : {}),
+        });
+
   const context: HandlerContext = {
     store: store.state,
     base: resolved.base,
@@ -635,6 +674,12 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     version: SERVER_VERSION,
     appName: resolved.appName,
     exportedBy: resolved.exportedBy,
+    // These two were parsed, validated and then never passed on, so `--auth-secret` had no effect on
+    // a real server: the handler was configured without it and served every request. The unit tests
+    // could not catch it, because they call the handler directly with their own context.
+    ...(resolved.authSecret !== undefined ? { authSecret: resolved.authSecret } : {}),
+    ...(tokenIssuer !== undefined ? { verifyToken: asHandlerVerifier(tokenIssuer) } : {}),
+    ...(resolved.revokedTokens !== undefined ? { revokedTokens: resolved.revokedTokens } : {}),
     ...(resolved.cors !== undefined ? { cors: resolved.cors } : {}),
     ...(resolved.now !== undefined ? { now: resolved.now } : {}),
     persist: (state, event) => {
@@ -756,6 +801,47 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
   }
   const authSecret = authSecretRaw;
 
+  // Phase 2 (#36): a signing key for per-device tokens. Separate from the shared secret on purpose —
+  // it is a different credential with a different job, and one is not a substitute for the other:
+  // the key never leaves the sidecar, the secret is handed to every client. Setting both is
+  // legitimate, and the handler then accepts either.
+  const tokenKeyRaw = get("--token-key") ?? process.env.BLUEPENCIL_TOKEN_KEY;
+  if (tokenKeyRaw !== undefined && tokenKeyRaw.length === 0) {
+    return "--token-key must not be empty — omit it entirely to run without token authentication";
+  }
+  const tokenKey = tokenKeyRaw;
+  let tokenTtlSeconds: number | undefined;
+  const tokenTtlRaw = get("--token-ttl");
+  if (tokenTtlRaw !== undefined) {
+    const parsed = Number.parseInt(tokenTtlRaw, 10);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      return `--token-ttl must be a positive number of seconds, got ${tokenTtlRaw}`;
+    }
+    tokenTtlSeconds = parsed;
+  }
+  // Where revoked token ids are kept. It has to be a file: a revocation list that lives in memory
+  // disappears on restart, and a device that was deliberately cut off would be let back in by
+  // restarting the sidecar. That would make revocation a speed bump.
+  const revokedPath = get("--revoked-tokens") ?? process.env.BLUEPENCIL_REVOKED_TOKENS;
+  if (revokedPath !== undefined && revokedPath.length === 0) {
+    return "--revoked-tokens must not be empty — omit it entirely to run with an empty list";
+  }
+  // Revoked ids, read once at startup. Read here rather than per request so a corrupt or unreadable
+  // file is a startup failure an operator sees, not a silent empty list that un-revokes everything.
+  let revokedTokens: ReadonlySet<string> | undefined;
+  if (revokedPath !== undefined) {
+    try {
+      const raw = readFileSync(revokedPath, "utf8");
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
+        return `${revokedPath} must contain a JSON array of token id strings`;
+      }
+      revokedTokens = new Set(parsed);
+    } catch (error) {
+      return `could not read ${revokedPath}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+
   return {
     storePath,
     port,
@@ -767,6 +853,10 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
     // `--auth-secret <value>` or the environment, never both: an unset secret means "no
     // authentication", so a typo in the flag must not silently fall back to that (#36).
     ...(authSecret !== undefined ? { authSecret } : {}),
+    ...(tokenKey !== undefined ? { tokenKey } : {}),
+    ...(tokenTtlSeconds !== undefined ? { tokenTtlSeconds } : {}),
+    ...(revokedTokens !== undefined ? { revokedTokens } : {}),
+    ...(revokedPath !== undefined ? { revokedPath } : {}),
     allowEnvMismatch: has("--allow-env-mismatch"),
     ...(mirror !== undefined ? { mirror } : {}),
     ...(cors !== undefined ? { cors } : {}),

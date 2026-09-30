@@ -27,7 +27,15 @@ const PATTERNS = [
   { name: "connection string", regex: /\b(?:postgres|mysql|mongodb(\+srv)?):\/\/[^\s"']+:[^\s"']+@/ },
 ];
 
-const files = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" })
+// Tracked *and* about-to-be-committed files. `git ls-files` alone lists what is already tracked, so a
+// scan run before the first commit of a new file reports "OK" while that exact file is what gets
+// pushed — measured: a suite with a secret-shaped fixture passed locally and failed in CI, because
+// the file was still untracked when the local scan ran. A check that cannot see the file being
+// written is the same class of bug as a typecheck that skips a directory.
+const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
+  cwd: root,
+  encoding: "utf8",
+})
   .split("\n")
   .map((line) => line.trim())
   .filter((line) => line !== "" && !SKIP.some((pattern) => pattern.test(line)));
@@ -66,4 +74,4 @@ if (findings.length > 0) {
   process.exit(1);
 }
 
-console.log(`secret scan: OK (${files.length} tracked files, no credentials or review data)`);
+console.log(`secret scan: OK (${files.length} files, no credentials or review data)`);

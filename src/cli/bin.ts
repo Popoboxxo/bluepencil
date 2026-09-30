@@ -643,6 +643,15 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
 
+    case "token": {
+      // Mints a signed device token for a token-configured sidecar (#36, phase 2). A local command
+      // rather than an HTTP endpoint, so minting a credential never needs an unauthenticated request
+      // against the thing it is protecting.
+      const { runTokenCommand } = await import("../../server/mint-cli");
+      await runTokenCommand(process.argv.slice(3));
+      return;
+    }
+
     case "demo": {
       // Small self-check used by the docs and CI smoke tests.
       const blueprint = createBlueprint({
