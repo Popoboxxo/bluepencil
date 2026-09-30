@@ -106,7 +106,7 @@ decision — the sidecar is the only party that decides whether a token is good.
 extension, assert the three credential modes, save a token mode with a device name, and read back
 what actually landed in `chrome.storage`: the mode, the device name and an expiry derived from the
 token rather than typed. The page is where a credential is entered and it had no test at all — the
-suite covered mounting and nothing else. 40 checks now (was 34).
+suite covered mounting and nothing else. 39 checks now (was 34).
 
 **A signed token is accepted before the shared secret.** Both credentials can be configured at once:
 the token is checked first (it is the stronger one) and the shared secret is still honoured, so a CLI
@@ -145,6 +145,14 @@ entry in `exports`); `npm run typecheck` still covers it, because the root confi
 by CI. It was not: `build:ext` and `smoke:ext` lived only in `npm run verify`, which CI never calls,
 so the extension was built and smoke-tested locally and nowhere else. Both are steps of the `verify`
 job now.
+
+**The extension smoke pinned how one Chrome spells its worker's URL.** It attached to
+`chrome-extension://…/sw.js`; the runner's Chrome reports the same manifest entry as
+`…/service_worker.js`, so the suite failed with `no target matched` on a browser where the extension
+had loaded correctly — and the eleven checks behind that line never ran. The worker now answers for
+itself (`chrome.runtime.getManifest().name`), which also settles the reason the URL was pinned at
+all: this browser ships a component extension and a built-in one, each with its own worker, and the
+first `chrome-extension://` worker in the list is not necessarily ours.
 
 **The `chromeStorage` adapter was not emitted by the build, while `package.json` exported it.** The
 adapters build lists its entry points explicitly and the new adapter was missing from that list, so
