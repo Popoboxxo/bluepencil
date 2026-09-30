@@ -115,7 +115,28 @@ no credential configured stays exactly as it was: it serves anyone who asks, and
 `Authorization` header it never asked for (a page may well be sending one for its own API on the
 same origin).
 
+**A tag is the only thing that publishes, and one workflow owns it.** `.github/workflows/release.yml`
+runs the full `verify`, the secret scan and the spec check *on the tagged commit* — a tag used to be
+the one revision no workflow checked, because `ci.yml` listens to branches — then builds all five
+assets, writes **one** `SHA256SUMS` over them, verifies the set against it, and publishes the release
+with the changelog section as its body. `scripts/release-preflight.mjs` refuses a tag whose version
+does not match `package.json`, `extension/manifest.json` and a non-empty `CHANGELOG.md` section, and it
+is runnable before the tag exists (`node scripts/release-preflight.mjs --tag v0.3.0`). Re-running a
+release updates it instead of failing, so a half-written release is recoverable. The extension
+workflow no longer creates releases: two workflows publishing the same release was a race over its
+body.
+
+**The MV3 extension is a release asset.** `bluepencil-extension-<version>.zip` — unpack the folder and
+load it as an unpacked extension — is built and smoke-tested in the same job that publishes it, and it
+is covered by the same `SHA256SUMS` as the loader, the layer and the tarball.
+
 ### Fixed
+
+**The documented install from a tag did not work.** The README has offered
+`npm i github:Popoboxxo/bluepencil#v0.2.0` since 0.2.0, but there was no `prepare` script and `dist/`
+is not committed: the install produced a package whose every `exports` entry pointed at nothing, so the
+only path that worked was the attached tarball. The build now runs during install (`prepare`), which is
+what that instruction always assumed.
 
 **`--auth-secret` never reached the handler, so a real sidecar with a shared secret served every
 request unauthenticated.** It was parsed, validated, resolved into the options — and then not passed
@@ -250,6 +271,11 @@ of them were reproduced against the shipped builds before the fix and carry a re
 - `app.name` of a CLI export is the input file's basename, not its full path.
 - `docs/INTEGRATION.md` §8 documents all 18 theme tokens, the dark-mode precedence, how to force a
   scheme, the partial-pin hazard, and the fact that font and font size are not inherited by default.
+- CI runs on Node 22. The extension workflow packages `bluepencil-extension-<version>.zip` named after
+  the version in `package.json` instead of the git ref, and both workflows cancel a superseded run of
+  the same branch. Dependabot watches the npm and the GitHub Actions ecosystems, weekly and grouped.
+- `docs/RELEASING.md` documents the order (bump → changelog → preflight → PR → tag), what the release
+  workflow checks, and what is deliberately not automated.
 
 
 ### Added

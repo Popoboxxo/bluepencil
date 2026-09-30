@@ -34,6 +34,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A superseded run of the same branch has nothing left to prove.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   spec:
     # The spec check needs no Node: it is a Go binary plus a Python generator. Keeping it in its
@@ -80,7 +85,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
 
       - name: Install dependencies
