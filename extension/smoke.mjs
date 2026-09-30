@@ -435,7 +435,12 @@ async function checkInBrowser() {
     const payload = Buffer.from(JSON.stringify({ exp: expSeconds, device: "smoke-laptop" })).toString("base64url");
     const smokeToken = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${payload}.signature-nobody-checks`;
 
-    const saved = JSON.parse(await browser.evaluate(`(async () => {
+    // Fill and save in one call, then *poll* for the effect instead of sleeping: `chrome.storage` is
+    // the contract, and a fixed 400 ms is the kind of assumption that holds on a laptop and fails on
+    // a loaded runner. Measured: this check died once with "Inspected target navigated or closed"
+    // while the identical suite had passed minutes earlier, so the wait moved to the thing that
+    // actually has to be true.
+    await browser.evaluate(`(() => {
       const set = (id, value) => {
         const el = document.getElementById(id);
         el.value = value;
@@ -447,7 +452,15 @@ async function checkInBrowser() {
       set("deviceName", "smoke-laptop");
       set("token", ${JSON.stringify(smokeToken)});
       document.getElementById("form").requestSubmit();
-      await new Promise((done) => setTimeout(done, 400));
+      return true;
+    })()`);
+
+    await browser.waitFor(`(async () => {
+      const saved = (await chrome.storage.local.get("bluepencil:settings"))["bluepencil:settings"];
+      return Boolean(saved && saved.auth === "token" && saved.deviceName === "smoke-laptop");
+    })()`);
+
+    const saved = JSON.parse(await browser.evaluate(`(async () => {
       const stored = await chrome.storage.local.get("bluepencil:settings");
       const state = document.getElementById("token-state");
       return JSON.stringify({
