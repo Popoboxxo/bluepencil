@@ -29,6 +29,18 @@ export class Skipped {
 }
 
 /** Locations worth probing, in order: explicit override, PATH, the CI images, a Playwright cache. */
+/**
+ * Protocol errors that mean the frame moved under us — not that the page is broken.
+ *
+ * A `Runtime.evaluate` that races a navigation is answered with `Inspected target navigated or
+ * closed`; the expression never ran anywhere. Retrying is right, and it is not a blanket swallow:
+ * these three codes are the only ones treated this way, and everything else still fails loudly.
+ */
+const TRANSIENT_EVALUATE =
+  /Inspected target navigated or closed|Execution context was destroyed|Cannot find context with specified id/;
+const TRANSIENT_RETRY_MS = 150;
+
+/** Locations worth probing, in order: explicit override, PATH, the CI images, a Playwright cache. */
 export function findChrome() {
   const candidates = [];
   if (process.env.BP_CHROME) candidates.push(process.env.BP_CHROME);
@@ -275,6 +287,20 @@ export class Browser {
 
   /** Evaluates an expression in the page and returns its JSON value (promises are awaited). */
   async evaluate(expression) {
+    try {
+      return await this.#evaluateOnce(expression);
+    } catch (error) {
+      // A navigation that lands between the call and the answer is a race in the harness, not a
+      // verdict about the page: the expression is retried once against whatever document is there
+      // now. Measured — the extension smoke's options-page save died exactly this way on a loaded
+      // runner while the identical suite had passed minutes earlier.
+      if (!TRANSIENT_EVALUATE.test(String(error?.message ?? error))) throw error;
+      await new Promise((resolve) => setTimeout(resolve, TRANSIENT_RETRY_MS));
+      return await this.#evaluateOnce(expression);
+    }
+  }
+
+  async #evaluateOnce(expression) {
     const result = await this.send(
       "Runtime.evaluate",
       { expression, returnByValue: true, awaitPromise: true },
@@ -306,7 +332,15 @@ export class Browser {
     const deadline = Date.now() + timeoutMs;
     let last;
     while (Date.now() < deadline) {
-      last = await this.evaluate(expression);
+      try {
+        last = await this.evaluate(expression);
+      } catch (error) {
+        // Repeated navigation can outlast the single retry inside `evaluate`; a wait keeps waiting.
+        // `last` stays undefined on purpose so a transient error is never mistaken for a truthy
+        // answer — this is the one place where a caught error must not become a return value.
+        if (!TRANSIENT_EVALUATE.test(String(error?.message ?? error))) throw error;
+        last = undefined;
+      }
       if (last) return last;
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
