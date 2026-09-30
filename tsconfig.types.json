@@ -7,6 +7,27 @@
     "declarationMap": false,
     "outDir": "dist/types"
   },
+  // The declarations mirror `src/` one-to-one (`src/index.ts` → `dist/types/index.d.ts`), which is
+  // what the `exports` map and the packaging smoke test require — and that mapping only holds while
+  // every file in this program lives under `src/`. As soon as one file from outside is pulled in by
+  // an import, TypeScript widens the inferred `rootDir` to the repository root and *every*
+  // declaration moves one level down (`dist/types/src/index.d.ts`), so the twelve paths the
+  // packaging smoke asserts stop existing.
+  //
+  // `src/cli/**` is the one place that reaches out: `bluepencil token` dispatches into
+  // `server/mint-cli.ts`, because minting a token belongs next to the sidecar that verifies it. The
+  // CLI is not a typed entry point (its `bin` has no `types` path in `exports`), so leaving it out of
+  // the declaration emit keeps the published layout intact. `npm run typecheck` covers it in full:
+  // the root tsconfig includes `src/` *and* `server/`.
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "tests", ".agent-meta", ".claude", ".opencode", "examples"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests",
+    ".agent-meta",
+    ".claude",
+    ".opencode",
+    "examples",
+    "src/cli/**"
+  ]
 }

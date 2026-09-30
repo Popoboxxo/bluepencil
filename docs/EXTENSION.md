@@ -12,8 +12,10 @@ npm run build:ext     # writes extension/dist/
 Then load it: `chrome://extensions` → enable *Developer mode* → *Load unpacked* → pick
 `extension/dist`.
 
-`npm run smoke:ext` verifies the build: 34 checks, of which the last dozen drive a real Chrome
-against a host page with `script-src 'self'` and assert the layer actually mounted there.
+`npm run smoke:ext` verifies the build: 40 checks, of which the last dozen drive a real Chrome against
+a host page with `script-src 'self'` and assert the layer actually mounted there. The options page
+has its own cases in that suite — the credential mode, the header it means, and the expiry line —
+because the settings UI is the only place a credential is entered and it was otherwise untested.
 
 ### From a release
 
@@ -63,21 +65,43 @@ Switch the store to *on a sidecar* in the options page and give it a URL. The ex
 element a `data-endpoint` and the element talks to the sidecar directly, which is what makes notes
 shared across devices and visible to the MCP server.
 
-**The sidecar needs a secret.** Start it with one:
+**Binding matters more than the credential.** The default is loopback, and a loopback sidecar needs no
+authentication at all — the process is as protected as the file it writes to. The moment you pass
+`--host 0.0.0.0` to reach it from another device, the credential is the only thing standing between
+the network and your notes.
+
+The options page asks **which** credential the sidecar expects, because the two are different headers
+and picking the wrong one produces a `401` that reads like a dead server:
+
+| Mode | Header | Sidecar needs | Good for |
+|---|---|---|---|
+| **None** | – | nothing | loopback only |
+| **Shared secret** | `x-bluepencil-auth` | `--auth-secret` / `BLUEPENCIL_AUTH_SECRET` | one string, every client |
+| **Signed token** | `Authorization: Bearer …` | `--token-key` / `BLUEPENCIL_TOKEN_KEY` | one credential per device, expiring, revocable |
+
+A shared secret has no expiry and no per-device revocation: every client holds the same string, so
+withdrawing it means rotating it everywhere at once. Prefer `BLUEPENCIL_AUTH_SECRET` over the flag —
+a secret on a command line is visible in the process list to every other user on the machine.
+
+### A signed token per device
 
 ```sh
-BLUEPENCIL_AUTH_SECRET=… node dist/server.js --store notes.json --host 0.0.0.0
+export BLUEPENCIL_TOKEN_KEY=…            # the same value the sidecar has
+node dist/server.js --store notes.json --host 0.0.0.0   # sidecar
+bluepencil token --device work-laptop    # prints the token on stdout, context on stderr
 ```
 
-Every request under the base must then present the secret in `x-bluepencil-auth`; anything else is
-answered `401 {"error":{"code":"unauthorized"}}`. Put the same value in the options page's *Token*
-field. Use the environment variable, not `--auth-secret` — a secret on a command line is visible in
-the process list to every other user on the machine.
+Paste the printed token into the options page, choose *Signed token*, and keep the device name — it is
+recorded in the token so a revocation list stays readable by a human. The options page reads the
+token's expiry when you save it and then says *"Expires in about 6 h 12 min"*, *"This token has
+expired"*, or plainly that the expiry could not be read. That line is a warning, not a decision: only
+the sidecar decides whether a token is good.
 
-**Binding matters more than the secret.** The default is loopback, and a loopback sidecar needs no
-authentication at all — the process is as protected as the file it writes to. The moment you pass
-`--host 0.0.0.0` to reach it from another device, the secret is the only thing standing between the
-network and your notes.
+Mint with a narrower `--scope read` for a device that should only look, and `--ttl <seconds>` for a
+shorter life than the default day. To cut a device off, put the id that `bluepencil token` printed
+into the sidecar's `--revoked-tokens` file and restart it. The sidecar answers
+`401 token_revoked` — which means *do not mint a new one* — as opposed to `401 token_expired`, which
+means replace it, and `403 insufficient_scope` for a valid token that may not do what was asked.
 
 ### Switching the layer on and off
 
@@ -95,8 +119,10 @@ The answer comes back on the same channel, tagged with your `requestId`. Fire an
 rather than awaiting inside one turn — a reply is delivered while a promise registered in the same
 tick is still resolving, so awaiting it there deadlocks into a timeout even though the toggle worked.
 
-Signed, per-device tokens instead of one shared secret are not in this release yet; see
-[issue #36](https://github.com/Popoboxxo/bluepencil/issues/36) for what is still open.
+Both credential phases of [#36](https://github.com/Popoboxxo/bluepencil/issues/36) are in this
+release. What is deliberately *not* here: there is no token refresh (an expired token is replaced by
+hand) and the revocation list is read when the sidecar starts, so revoking a device means restarting
+it. See *Known gaps* in [CHANGELOG.md](../CHANGELOG.md) for the current list.
 
 ## Permissions, and why these
 

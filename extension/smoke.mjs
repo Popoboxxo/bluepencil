@@ -312,6 +312,78 @@ async function checkInBrowser() {
     ok("switching off hides the layer without tearing it out",
       after.stillThere === true && after.enabled === "true" && after.barVisible >= 5,
       `after toggle: present=${after.stillThere} enabled=${after.enabled} buttons=${after.barVisible}`);
+
+    // 6. The options page — the extension's own UI, and the only place a credential is entered.
+    //
+    //    Mounting was covered and the settings page was not, which is the wrong way round: the
+    //    credential is what decides which header leaves the browser, and the whole reason the mode is
+    //    a select rather than a header name is that the wrong one fails as a 401 that reads like a
+    //    dead server. Nothing here needs a signing key: the page reads `exp` out of a token to tell
+    //    the user when it dies and verifies nothing (the sidecar is the only party that decides), so
+    //    a hand-built payload is enough — and asserting on it *is* the check that the page does not
+    //    pretend to verify anything.
+    await browser.attachTo((t) => t.type === "service_worker" && t.url.endsWith("/sw.js"));
+    const openedTab = await browser.evaluate(`(async () => {
+      const tab = await chrome.tabs.create({ url: chrome.runtime.getURL("options.html"), active: true });
+      return tab.id ?? null;
+    })()`);
+    ok("the options page can be opened from the extension", openedTab !== null, `tab id ${openedTab}`);
+
+    await browser.attachToPageWhere((t) => t.url.endsWith("/options.html"));
+    await browser.waitFor('document.querySelector("#auth") !== null');
+
+    const modes = JSON.parse(
+      await browser.evaluate(
+        'JSON.stringify(Array.from(document.querySelectorAll("#auth option"), (o) => o.value))',
+      ),
+    );
+    ok("the options page offers every credential mode",
+      modes.join(",") === "none,secret,token", modes.join(","));
+
+    // Six hours out, in the JWT's own unit (seconds since the epoch). The signature is nonsense on
+    // purpose: nothing on this page may look at it.
+    const expSeconds = Math.floor(Date.now() / 1000) + 6 * 60 * 60;
+    const payload = Buffer.from(JSON.stringify({ exp: expSeconds, device: "smoke-laptop" })).toString("base64url");
+    const smokeToken = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${payload}.signature-nobody-checks`;
+
+    const saved = JSON.parse(await browser.evaluate(`(async () => {
+      const set = (id, value) => {
+        const el = document.getElementById(id);
+        el.value = value;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      set("store", "http");
+      set("endpoint", "http://127.0.0.1:8787/bluepencil");
+      set("auth", "token");
+      set("deviceName", "smoke-laptop");
+      set("token", ${JSON.stringify(smokeToken)});
+      document.getElementById("form").requestSubmit();
+      await new Promise((done) => setTimeout(done, 400));
+      const stored = await chrome.storage.local.get("bluepencil:settings");
+      const state = document.getElementById("token-state");
+      return JSON.stringify({
+        settings: stored["bluepencil:settings"] ?? null,
+        stateHidden: state.hidden,
+        stateText: state.textContent,
+        deviceVisible: document.getElementById("device-field").hidden === false,
+        hint: document.getElementById("credential-hint").textContent,
+        status: document.getElementById("status").textContent,
+      });
+    })()`));
+
+    ok("the options page stores the credential mode, not just a token",
+      saved.settings?.auth === "token" && saved.settings?.deviceName === "smoke-laptop",
+      JSON.stringify(saved.settings));
+    ok("the stored expiry is read out of the token rather than typed",
+      typeof saved.settings?.tokenExpiresAt === "string" &&
+        Math.abs(Date.parse(saved.settings.tokenExpiresAt) - expSeconds * 1000) < 5000,
+      `tokenExpiresAt=${saved.settings?.tokenExpiresAt} expected≈${new Date(expSeconds * 1000).toISOString()}`);
+    ok("the page tells the user when the token expires, and shows the device field",
+      saved.stateHidden === false && /expires in about/i.test(saved.stateText) && saved.deviceVisible === true,
+      `hidden=${saved.stateHidden} text=${JSON.stringify(saved.stateText)} device=${saved.deviceVisible}`);
+    ok("the token mode names the header it will send",
+      /Authorization: Bearer/i.test(saved.hint),
+      JSON.stringify(saved.hint));
   } finally {
     await browser.close();
     server.close();

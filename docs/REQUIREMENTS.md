@@ -9,7 +9,7 @@
 > `N` = concrete product need (admin debug mode in an ALM system).
 >
 > **This file is the source of truth.** The machine-checkable projection lives in
-> [`spec/`](../spec/README.md) — 127 requirements as a [reqmd](https://reqmd.dev) tree,
+> [`spec/`](../spec/README.md) — 130 requirements as a [reqmd](https://reqmd.dev) tree,
 > regenerated with `npm run spec` and validated in CI with `reqmd check`. Edit the table
 > below, never the generated spec.
 
@@ -96,6 +96,9 @@
 | FR-6.4 | A reference server exists (small, single dependency budget) for self-hosting | P1 | M2 | P | Serves the page *and* the API; runs from a single command |
 | FR-6.5 | Notes are persisted atomically and never half-written | P0 | M2 | P | Write is atomic (temp + rename or transaction); no truncated file after interruption |
 | FR-6.6 | An MCP tool group exposes list/create/update/export/bulk-delete to agents | P1 | M4 | N | Tools callable from an agent runtime; documented in ARCHITECTURE |
+| FR-6.7 | **Sidecar authentication, required as soon as it leaves loopback**: a configured credential must be presented on every request under the base, and a missing or wrong one is answered `401 unauthorized` before routing | P0 | M3 | G | A sidecar started with `--auth-secret` refuses an unauthenticated request and answers one carrying the secret; a sidecar with no credential configured behaves exactly as before |
+| FR-6.8 | **Signed, per-device tokens**: the sidecar signs expiring tokens carrying a `jti` and a read/write scope, verifies `Authorization: Bearer` before routing, and keeps `token_expired`, `token_revoked` and `insufficient_scope` apart from a plain `unauthorized` | P1 | M3 | N | A token minted locally is accepted by the running sidecar; an expired one answers `token_expired`, a revoked one `token_revoked` (401), a read-only token attempting a write `insufficient_scope` (403); `write` implies `read`; a revoked id is refused from startup |
+| FR-6.9 | **The extension carries either credential** (`none`, shared secret, signed token), sends it under the header that credential uses, and reports a signed token's expiry to the user without treating it as a decision | P1 | M3 | N | Each mode produces its own header on the wire; the options page shows expires-in, expired or unreadable, and only the sidecar decides whether a token is valid |
 
 ## FR-7 Export
 

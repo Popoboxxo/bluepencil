@@ -1,0 +1,33 @@
+{
+  // The extension is typechecked on its own, not by the root `tsconfig.json`.
+  //
+  // It is a different runtime: MV3 service worker and content scripts, no Node globals, no `node:`
+  // imports, and `chrome.*` is declared per file rather than pulled from `@types/chrome` (the
+  // sources declare the few members they use). Sharing the root config would drag the Node types
+  // into the browser sources and make the extension look like a Node program.
+  //
+  // This config exists because the extension was previously not typechecked anywhere: the root
+  // `include` covers `src/`, `server/`, `tests/` and `vitest.config.ts` only, so `tsc --noEmit` was
+  // green while `extension/src/settings.ts` held a possibly-undefined index access. A green
+  // typecheck that does not look at a quarter of the shipped code is worse than no typecheck.
+  "compilerOptions": {
+    "target": "ES2022",
+    // Browser only: this code runs in a page, a worker and an options page — never in Node.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "types": [],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"]
+}

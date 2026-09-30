@@ -37,7 +37,15 @@ interface MountConfig {
     identity: string;
     /** Sidecar base URL; only read when `store` is `http` (#36). */
     endpoint: string;
-    /** Shared secret for the sidecar; only read when `store` is `http` (#36). */
+    /**
+     * Which credential the sidecar expects. `token` is phase 2's signed token and goes out as
+     * `Authorization: Bearer …`; `secret` is phase 1's shared secret in `x-bluepencil-auth`. The
+     * two are different headers, so the field has to travel from settings to here rather than being
+     * inferred — an inference would guess `secret` for a token and produce a 401 that looks like a
+     * dead server.
+     */
+    auth: string;
+    /** Shared secret or signed token; only read when `store` is `http` (#36). */
     token: string;
   };
   tabUrl: string;
@@ -91,9 +99,19 @@ function mount(): void {
         attributes["data-endpoint"] = config.settings.endpoint;
       }
       if (config.settings.token.length > 0) {
-        // The sidecar's own header name, so the two agree by construction rather than by convention.
-        attributes["data-token"] = config.settings.token;
-        attributes["data-token-header"] = "x-bluepencil-auth";
+        // The two phases use different headers, and this is where it is decided — not by convention.
+        // A token under `x-bluepencil-auth` is a 401 that reads like a broken sidecar, because the
+        // value looks right and the header is the only thing wrong.
+        if (config.settings.auth === "token") {
+          attributes["data-token"] = config.settings.token;
+          attributes["data-token-header"] = "authorization";
+          // `token-scheme` is what turns a bare token into `Bearer <token>`; the element's
+          // attribute contract already knows how to do that, so nothing is assembled by hand here.
+          attributes["data-token-scheme"] = "Bearer";
+        } else if (config.settings.auth === "secret") {
+          attributes["data-token"] = config.settings.token;
+          attributes["data-token-header"] = "x-bluepencil-auth";
+        }
       }
     }
     for (const [name, value] of Object.entries(attributes)) el.setAttribute(name, value);

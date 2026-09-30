@@ -6,7 +6,7 @@
  * writing go through `chrome.storage.local` directly — the same key the worker reads, so there is
  * one source of truth rather than a page-local copy that can drift.
  */
-import { DEFAULT_SETTINGS, normalizeSettings, type ExtensionSettings } from "./settings";
+import { DEFAULT_SETTINGS, expiryOfToken, normalizeSettings, type ExtensionSettings } from "./settings";
 
 declare const chrome: {
   runtime: {
@@ -31,7 +31,9 @@ const FIELDS = [
   "identity",
   "store",
   "endpoint",
+  "auth",
   "token",
+  "deviceName",
 ] as const satisfies readonly (keyof ExtensionSettings)[];
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -67,9 +69,14 @@ async function load(): Promise<void> {
   try {
     const stored = await chrome.storage.local.get(SETTINGS_KEY);
     // normalizeSettings, not a cast: a hand-edited or older blob must not reach the form as-is.
-    fill(normalizeSettings(stored[SETTINGS_KEY]));
+    const settings = normalizeSettings(stored[SETTINGS_KEY]);
+    fill(settings);
+    // Described on load, not only on save: opening the options page is how someone checks whether
+    // their token is still alive, so leaving the state blank until they press Save would defeat it.
+    describeCredential(settings);
   } catch (error) {
     fill({ ...DEFAULT_SETTINGS });
+    describeCredential({ ...DEFAULT_SETTINGS });
     say(`Could not read the stored settings: ${String(error)}`, "error");
   }
 }
@@ -82,13 +89,17 @@ form.addEventListener("submit", (event) => {
 async function save_(): Promise<void> {
   save.disabled = true;
   try {
-    const raw: Record<string, unknown> = {};
-    for (const field of FIELDS) raw[field] = byId<HTMLInputElement | HTMLSelectElement>(field).value;
-    const settings = normalizeSettings(raw);
+    const settings = normalizeSettings(readForm());
     // Save the normalized form, not the raw input: what is stored is exactly what the worker will
     // read back, so a bad value cannot sit in storage until the next mount fails.
-    await chrome.storage.local.set({ [SETTINGS_KEY]: settings });
-    fill(settings);
+    // The expiry is derived from the token rather than typed, so the user cannot state a wrong one.
+    await chrome.storage.local.set({
+      [SETTINGS_KEY]: { ...settings, tokenExpiresAt: expiryOfToken(settings.token) },
+    });
+    const stored = await chrome.storage.local.get(SETTINGS_KEY);
+    const current = normalizeSettings(stored[SETTINGS_KEY]);
+    fill(current);
+    describeCredential(current);
     say("Saved.", "ok");
   } catch (error) {
     say(`Could not save: ${String(error)}`, "error");
@@ -99,6 +110,78 @@ async function save_(): Promise<void> {
 
 byId<HTMLSelectElement>("store").addEventListener("change", (event) => {
   showSidecar((event.target as HTMLSelectElement).value);
+});
+
+/**
+ * The form's current values, in the shape the settings object uses.
+ *
+ * Shared between saving and the live description of the credential, so the two cannot disagree about
+ * what is on screen. Reading the form in two places is how a field ends up shown but not stored.
+ */
+function readForm(): Record<string, unknown> {
+  const raw: Record<string, unknown> = {};
+  for (const field of FIELDS) raw[field] = byId<HTMLInputElement | HTMLSelectElement>(field).value;
+  return raw;
+}
+
+/**
+ * Says what the selected credential actually is, and how long it lasts.
+ *
+ * Two things a user cannot otherwise find out, both of which end in lost notes: a token that is
+ * already expired, and a token whose expiry could not be read. The first is a warning; the second is
+ * stated plainly rather than hidden, because "unknown" and "never expires" must not look alike.
+ */
+function describeCredential(settings: ExtensionSettings): void {
+  const hint = byId("credential-hint");
+  const label = byId("credential-label");
+  const state = byId("token-state");
+  // The device name only means something for a signed token; shown for a shared secret it would
+  // suggest a per-device credential that does not exist.
+  byId("device-field").hidden = settings.auth !== "token";
+  if (settings.auth === "secret") {
+    label.textContent = "Shared secret";
+    hint.textContent =
+      "Sent as x-bluepencil-auth. Stored in this browser only. The sidecar needs --auth-secret with the same value.";
+    state.hidden = true;
+    return;
+  }
+  if (settings.auth === "none") {
+    label.textContent = "Credential";
+    hint.textContent =
+      "None. Anyone who can reach the sidecar URL can read and write your notes, so it must stay on loopback.";
+    state.hidden = true;
+    return;
+  }
+  label.textContent = "Signed token";
+  hint.textContent =
+    "Sent as Authorization: Bearer. Mint one with `bluepencil token --device <name>`; it expires, and the sidecar can revoke it on its own without touching your other devices.";
+  if (settings.token.length === 0) {
+    state.hidden = false;
+    state.textContent = "No token stored yet — notes will not reach the sidecar until you paste one.";
+    return;
+  }
+  if (settings.tokenExpiresAt === "") {
+    state.hidden = false;
+    // Not a warning about the token being bad: the extension cannot read an expiry out of a token it
+    // does not understand, and pretending otherwise would be worse than saying so.
+    state.textContent =
+      "The expiry of this token could not be read. It may already be expired — the sidecar decides, not the extension.";
+    return;
+  }
+  const remaining = Date.parse(settings.tokenExpiresAt) - Date.now();
+  state.hidden = false;
+  if (remaining <= 0) {
+    state.textContent = "This token has expired. Mint a new one — notes are not reaching the sidecar until you do.";
+    return;
+  }
+  const hours = Math.floor(remaining / 3_600_000);
+  const minutes = Math.floor((remaining % 3_600_000) / 60_000);
+  state.textContent =
+    hours > 0 ? `Expires in about ${hours} h ${minutes} min.` : `Expires in about ${minutes} min.`;
+}
+
+byId<HTMLSelectElement>("auth").addEventListener("change", () => {
+  describeCredential(normalizeSettings(readForm()));
 });
 
 /**

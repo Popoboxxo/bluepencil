@@ -74,7 +74,77 @@ against a `script-src 'self'` host.
 Host access is `http://*/*` and `https://*/*` plus `activeTab`. `file:///*` is deliberately absent,
 and so is `<all_urls>`.
 
+**A sidecar can hand out signed, per-device tokens (`--token-key`, #36 phase 2).** The shared secret
+has no expiry, no scope and no revocation: every client holds the same string, so withdrawing it
+means rotating it everywhere at once, and a lost laptop keeps working until somebody notices. With
+`BLUEPENCIL_TOKEN_KEY` (or `--token-key`) set, the sidecar signs an HS256 token per device instead
+and clients present it as `Authorization: Bearer …`. Verification runs before routing, exactly like
+the secret check, and the verdicts stay apart because the advice differs: `401 token_expired`
+(replace it) is not `401 token_revoked` (do not replace it — that device was cut off on purpose), and
+a valid token missing the required scope is `403 insufficient_scope`, because re-authenticating
+cannot help. `GET` needs `read`, every mutation needs `write`, and `write` implies `read`. Tokens
+carry a `jti`; `--revoked-tokens <file>` (a JSON array of ids, read once at startup — a revocation
+list kept in memory would be undone by the next restart) refuses them by id. A corrupt or unreadable
+file is a startup failure rather than a silently empty list.
+
+`bluepencil token --device <name> [--scope read|write] [--ttl <seconds>]` mints one — a local
+command, not an HTTP endpoint, because issuing credentials must not require an unauthenticated route
+on the thing those credentials protect. The token is the only thing on stdout and the context goes to
+stderr, so `export BLUEPENCIL_TOKEN=$(bluepencil token --device work-laptop)` works, and the printed
+id is what goes into the revocation file.
+
+**The extension can carry either credential.** The options page asks *which* credential the sidecar
+expects instead of guessing a header: *None*, *Shared secret* (`x-bluepencil-auth`, phase 1) or
+*Signed token* (`Authorization: Bearer`, phase 2). The value is not a free-form header name on
+purpose — the right secret under the wrong header is a 401 that reads like a dead server. A signed
+token also brings a device name (a revocation list is read by a human) and a status line: the
+extension reads `exp` out of the token when it is saved and says "expires in about 6 h 12 min", or
+"this token has expired", or plainly that the expiry could not be read. It is a warning and never a
+decision — the sidecar is the only party that decides whether a token is good.
+
+**The extension smoke now covers the options page.** Six cases open `options.html` in the running
+extension, assert the three credential modes, save a token mode with a device name, and read back
+what actually landed in `chrome.storage`: the mode, the device name and an expiry derived from the
+token rather than typed. The page is where a credential is entered and it had no test at all — the
+suite covered mounting and nothing else. 40 checks now (was 34).
+
+**A signed token is accepted before the shared secret.** Both credentials can be configured at once:
+the token is checked first (it is the stronger one) and the shared secret is still honoured, so a CLI
+without a token flow keeps working. A *configured* credential is then required — and a sidecar with
+no credential configured stays exactly as it was: it serves anyone who asks, and does not judge an
+`Authorization` header it never asked for (a page may well be sending one for its own API on the
+same origin).
+
 ### Fixed
+
+**`--auth-secret` never reached the handler, so a real sidecar with a shared secret served every
+request unauthenticated.** It was parsed, validated, resolved into the options — and then not passed
+into the `HandlerContext` the routes read. The unit tests could not see it, because they build the
+context themselves: they proved the *check* worked, not that it was *installed*. Found while wiring
+phase 2 through the same object. Three cases that start a real server
+(`tests/unit/server-token-wiring.test.ts`) now cover that level.
+
+**The extension was not typechecked anywhere.** The root `tsconfig.json` includes `src/`, `server/`,
+`tests/` and `vitest.config.ts` — not `extension/` — so `tsc --noEmit` stayed green while
+`extension/src/settings.ts` held a possibly-undefined index access (`parts[1]` under
+`noUncheckedIndexedAccess`) and `sw.ts` carried a constant nothing read. The extension has its own
+config now (browser libraries, no Node types, `chrome.*` still declared per file) wired in as
+`npm run typecheck:ext`, and the built element bundle it imports is described by an ambient
+declaration so the check does not depend on `npm run build` having run first.
+
+**The declaration build silently depended on nothing in `src/` importing `server/`.**
+`tsconfig.types.json` maps `src/` one-to-one onto `dist/types/`, and that only holds while every file
+in that program lives under `src/`. The new `bluepencil token` dispatch imports `server/mint-cli.ts`
+from `src/cli/bin.ts` — the first such import — which widened the inferred `rootDir` to the
+repository root, moved every declaration to `dist/types/src/…`, and failed the packaging smoke with
+twelve missing paths. `src/cli/**` is excluded from the declaration emit (its `bin` has no `types`
+entry in `exports`); `npm run typecheck` still covers it, because the root config includes `src/` and
+`server/`.
+
+**CI did not run the extension it claimed to.** The 0.2.0 entry below says the extension is covered
+by CI. It was not: `build:ext` and `smoke:ext` lived only in `npm run verify`, which CI never calls,
+so the extension was built and smoke-tested locally and nowhere else. Both are steps of the `verify`
+job now.
 
 **The `chromeStorage` adapter was not emitted by the build, while `package.json` exported it.** The
 adapters build lists its entry points explicitly and the new adapter was missing from that list, so
@@ -150,6 +220,14 @@ of them were reproduced against the shipped builds before the fix and carry a re
 
 ### Changed
 
+- The extension's credential is a **mode** (`none` / `secret` / `token`) instead of a bare token
+  field, and the token's expiry is derived from the token at save time rather than typed by the user.
+  The options page can therefore tell a shared secret from a signed token, which no amount of
+  guessing a header name would have made reliable.
+- The two per-file test environments the new token suites need are declared in `vitest.config.ts`. A
+  suite that runs in the wrong environment fails for a reason that says nothing about the code
+  (eleven `createHmac is not a function` errors under jsdom) — and a suite that is not collected at
+  all is worse: it is a silent green.
 - The CLI derives the export environment from the notes instead of inventing `dev`, and only
   re-tags when `--environment` is given explicitly. A bare `Note[]` carrying a `live` note was
   silently rewritten to `dev`; a mixed set is now refused with exit code 3, the same rule the
@@ -195,6 +273,14 @@ of them were reproduced against the shipped builds before the fix and carry a re
 
 ### Known gaps
 
+- There is no token **refresh**: an expired token is replaced by hand (mint a new one, paste it into
+  the options page). Nothing hands out credentials automatically — deliberately, since that would
+  need an unauthenticated route on the sidecar the token protects. The options page says when the
+  token expires, which is as much warning as this release offers.
+- The revocation list is read **once at startup**. Revoking a device means editing the file and
+  restarting the sidecar; the list is not watched, so a running sidecar does not notice an edit.
+- `--token-ttl` applies to newly issued tokens only. A token already in the wild keeps the lifetime
+  it was minted with, which is what makes the value safe to change on a running deployment.
 - `F` arms the feedback flag only; an element is picked while a mode (`C`/`D`) is armed. The fixture
   checklist claimed otherwise and now says so — the layer behaviour is unchanged, the documentation
   was one step short.

@@ -103,6 +103,15 @@ export const ERROR_CODES = [
   // Authentication is refused before routing, so it is answered with a code of its own rather than
   // being folded into a 403 that also means "this sidecar does not accept writes" (#36).
   "unauthorized",
+  // A token that is expired and a token that was revoked are the same status and opposite advice: an
+  // expired one should be replaced, a revoked one must not be. A client that cannot tell them apart
+  // either mints tokens forever for a device that was deliberately cut off, or gives up on a token
+  // that was merely old (#36, phase 2).
+  "token_expired",
+  "token_revoked",
+  // A valid token that does not carry the scope this request needs. 403, not 401: re-authenticating
+  // will not help, because the credential is good and the permission is missing.
+  "insufficient_scope",
   "unsupported_media_type",
   "payload_too_large",
   "store_write_failed",
@@ -160,6 +169,33 @@ export interface HandlerContext {
    * an unauthenticated local store is the same trust boundary as the file it writes to.
    */
   authSecret?: string;
+  /**
+   * Verifies signed per-device tokens presented as `Authorization: Bearer …` (#36, phase 2).
+   *
+   * Set this *instead of* `authSecret` when devices are individually revocable — the two are
+   * alternatives, not layers. A sidecar with an issuer hands out short-lived signed tokens and
+   * drops one device by recording its `jti`; a sidecar with only a secret has every client holding
+   * the same string, so withdrawing it means rotating it everywhere at once. What the issuer returns
+   * is deliberately just a verdict: the handler does not need to know the format, only whether this
+   * request may proceed and under which scope, so the token format can change without touching a
+   * route.
+   */
+  verifyToken?: TokenVerifier;
+  /**
+   * Scope a presented token must carry, as a function of the request.
+   *
+   * A function rather than a fixed value because the required scope is not a property of the
+   * deployment but of the request: `GET` needs `read`, every mutation needs `write`. `write` implies
+   * `read` on the token side, so a write-scoped device reads and writes with one token.
+   */
+  requiredScope?: (request: { method: string }) => "read" | "write";
+  /**
+   * Token ids that must be refused even though their signature is valid (#36, phase 2).
+   *
+   * This is the property the shared secret could not offer. A default of "nothing revoked" is the
+   * right one: an empty list is a working deployment, not a broken one.
+   */
+  revokedTokens?: ReadonlySet<string>;
   /** `--allow-env-mismatch`: a foreign-environment write is promoted instead of refused (FR-14.8). */
   allowEnvMismatch?: boolean;
   /** `--cors <origin|*>`: the allowed origin; unset means no CORS headers at all. */
@@ -227,6 +263,80 @@ function oneLine(value: string): string {
 
 /** The header an authenticated client presents its shared secret in (#36). */
 const AUTH_HEADER = "x-bluepencil-auth";
+
+/** The header a client presents a signed token in (#36, phase 2). */
+const BEARER_HEADER = "authorization";
+const BEARER_PREFIX = "bearer ";
+
+/**
+ * The default revocation list: nothing is revoked.
+ *
+ * A shared frozen empty set rather than `new Set()` per request, so the common path of "no
+ * revocation configured" allocates nothing and cannot be mutated by a verifier that tries.
+ */
+const EMPTY_REVOKED: ReadonlySet<string> = new Set<string>();
+
+/**
+ * What the handler needs to know about a presented token — and nothing more.
+ *
+ * Deliberately narrower than `server/tokens.ts`'s own verdict: the handler asks "may this request
+ * proceed, and may it write", never "what format was this". That keeps the token format a detail of
+ * one module, so a future non-HMAC scheme does not ripple into every route.
+ */
+export type TokenVerifier = (
+  token: string,
+  required: "read" | "write",
+  revoked: ReadonlySet<string>,
+) =>
+  | { readonly ok: true; readonly device?: string }
+  | { readonly ok: false; readonly reason: "expired" | "revoked" | "insufficient-scope" | "other" };
+
+/** Why a token was refused, mapped to what the client is told (#36, phase 2). */
+function tokenRefusal(reason: "expired" | "revoked" | "insufficient-scope" | "other"): {
+  status: number;
+  code: ServerErrorCode;
+  advice: string;
+} {
+  switch (reason) {
+    case "expired":
+      return {
+        status: 401,
+        code: "token_expired",
+        advice: "request a new token from the sidecar",
+      };
+    case "revoked":
+      return {
+        status: 401,
+        code: "token_revoked",
+        // The distinction from `expired` is the whole point: a revoked device must not come back with
+        // a fresh token, so the message says so rather than inviting one.
+        advice: "this device was revoked; do not retry with a new token",
+      };
+    case "insufficient-scope":
+      return {
+        status: 403,
+        code: "insufficient_scope",
+        advice: "the token is valid but does not carry the scope this request needs",
+      };
+    default:
+      return {
+        status: 401,
+        code: "unauthorized",
+        advice: "the token is not valid for this sidecar",
+      };
+  }
+}
+
+/** Reads `Authorization: Bearer <token>`, case-insensitively, as any HTTP client may write it. */
+function bearerToken(request: ServerRequest): string | undefined {
+  const raw = headerValue(request.headers, BEARER_HEADER);
+  if (raw === undefined) return undefined;
+  // `Bearer` is case-insensitive per RFC 7235; the scheme and the single space are not optional in
+  // practice, so anything else is a different scheme and belongs to somebody else.
+  if (raw.slice(0, BEARER_PREFIX.length).toLowerCase() !== BEARER_PREFIX) return undefined;
+  const token = raw.slice(BEARER_PREFIX.length).trim();
+  return token.length > 0 ? token : undefined;
+}
 
 /**
  * Constant-time string comparison, so a wrong secret cannot be discovered one character at a time.
@@ -947,15 +1057,60 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   // It deliberately sits *after* the "not even under the base" 404. A request for something that is
   // not this API at all is not the sidecar's business, and answering 401 to it would turn every
   // sidecar on a shared host into something that 401s unrelated traffic.
-  if (typeof context.authSecret === "string" && context.authSecret.length > 0) {
-    const presented = headerValue(request.headers, AUTH_HEADER);
-    if (presented === undefined || !secretsMatch(context.authSecret, presented)) {
+  //
+  // A signed token is accepted first when the sidecar has a verifier, because a token is the
+  // stronger credential and accepting the weaker one alongside it would let an old deployment's
+  // long-lived secret outlive the day someone switched to tokens. The secret is still honoured
+  // alongside it, because a CLI without a token flow is a real client and refusing it would be a
+  // regression with no security gain.
+  //
+  // The trigger is a *configured* credential, and nothing else. Refusing a request merely because it
+  // carries an `Authorization` header sounds stricter and is in fact a breakage: a page may send its
+  // own bearer header for its own API on the same origin, and a sidecar that never asked for a
+  // credential has no business judging one. Measured, not hypothetical — `examples/attach` passes
+  // `token`/`token-header`/`token-scheme` on purpose, and the embed smoke's host probe fails with
+  // `401 … no token key configured` the moment the header alone arms the check. What must not happen
+  // is the *opposite* mistake: a presented token being dropped while a credential is required, which
+  // is why the token path below is tried first whenever a verifier exists.
+  const verifier = context.verifyToken;
+  const secret = context.authSecret;
+  const presentedToken = bearerToken(request);
+  if (verifier !== undefined || (typeof secret === "string" && secret.length > 0)) {
+    const required = context.requiredScope?.({ method }) ?? (method === "GET" ? "read" : "write");
+    const token = presentedToken;
+
+    if (token !== undefined && verifier !== undefined) {
+      const verdict = verifier(token, required, context.revokedTokens ?? EMPTY_REVOKED);
+      if (!verdict.ok) {
+        const refusal = tokenRefusal(verdict.reason);
+        return errorResponse(
+          refusal.status,
+          refusal.code,
+          `${refusal.advice} — the token was refused because it is ${verdict.reason}`,
+          context,
+        );
+      }
+    } else if (typeof secret === "string" && secret.length > 0) {
+      const presented = headerValue(request.headers, AUTH_HEADER);
+      if (presented === undefined || !secretsMatch(secret, presented)) {
+        return errorResponse(
+          401,
+          "unauthorized",
+          presented === undefined
+            ? `missing ${AUTH_HEADER} — this sidecar requires authentication (--auth-secret)`
+            : `invalid ${AUTH_HEADER} — this sidecar requires authentication (--auth-secret)`,
+          context,
+        );
+      }
+    } else {
+      // A key is configured and no token arrived — either none was sent at all or one came in a
+      // different scheme (`Authorization: Basic …` is somebody else's credential, and treating its
+      // value as a token would be leniency in the one place leniency is a bypass). Answering 401 is
+      // the whole point of having configured a key.
       return errorResponse(
         401,
         "unauthorized",
-        presented === undefined
-          ? `missing ${AUTH_HEADER} — this sidecar requires authentication (--auth-secret)`
-          : `invalid ${AUTH_HEADER} — this sidecar requires authentication (--auth-secret)`,
+        `missing ${BEARER_HEADER}: Bearer <token> — this sidecar requires a signed token (--token-key)`,
         context,
       );
     }
