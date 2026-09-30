@@ -24,8 +24,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to release, e.g. v0.3.0"
-        required: true
+        description: "Existing tag to release (default: v<version in package.json>)"
+        required: false
+      dry_run:
+        description: "Build and verify everything, but do not publish"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -57,12 +61,27 @@ jobs:
         with:
           python-version: "3.12"
 
+      # A dispatch without a tag is a rehearsal against whatever ref was chosen; the version in
+      # `package.json` is the one the assets are named after anyway, so it is the honest default.
+      - name: Resolve the tag
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG}"
+          if [ -z "${tag}" ]; then
+            tag="v$(node -p "require('./package.json').version")"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "releasing ${tag}"
+
       - name: Install dependencies
         run: npm ci
 
       - name: Preflight — tag matches versions and changelog
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: node scripts/release-preflight.mjs --tag "$TAG" --notes release-notes.md
 
       - name: Verify (typecheck, tests, build, size, every smoke)
@@ -107,13 +126,14 @@ jobs:
 
       - name: Verify the asset set and its checksums
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: node scripts/release-preflight.mjs --tag "$TAG" --assets release-assets
 
       - name: Publish the release
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -128,8 +148,25 @@ jobs:
 
       - name: Attest the assets
         # Provenance is hardening, not the deliverable: the release is already published above, so a
-        # failure here is reported in the summary and does not cost the release.
+        # failure here is reported and does not cost the release.
+        if: ${{ !inputs.dry_run }}
         continue-on-error: true
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: release-assets/*
+
+      - name: Summary
+        if: always()
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          suffix=""
+          if [ "${DRY_RUN}" = "true" ]; then suffix=" (dry run — nothing published)"; fi
+          {
+            echo "### ${TAG}${suffix}"
+            echo
+            echo '```'
+            cat release-assets/SHA256SUMS 2>/dev/null || echo 'no assets were produced'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
