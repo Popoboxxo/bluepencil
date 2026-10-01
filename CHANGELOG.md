@@ -1,4 +1,4 @@
-## [Unreleased]
+## [0.3.1] - 2026-10-01
 
 ### Changed
 
@@ -29,6 +29,23 @@ popup it opens get a background and a text colour that belong together, and the 
 text, borders, warning, status) is defined per scheme instead of being inherited. `npm run smoke:ext`
 measures the contrast of every field in both schemes and fails below 4.5:1, so the next palette change
 has to keep the page readable rather than merely keeping it pretty.
+
+### Verified
+
+`npm run verify` green on this branch — 666 unit tests on Vitest 5 (Node 22.23), the packaging,
+embed and e2e smokes, and 41 extension smoke checks including the contrast cases in both colour
+schemes. `npm run secret-scan` clean, and `scripts/release-preflight.mjs --tag v0.3.1` accepts the
+tag against `package.json`, `extension/manifest.json` and this section.
+
+### Known gaps
+
+- The open `<select>` dropdown is a platform window, so the smoke measures the `Field`/`FieldText`
+  pair the browser paints for the control *and* that window — not the popup's pixels. It still
+  wants one look from a human in a real Chrome.
+- Publishing to the npm registry is not part of the release (no token set): install from the tag
+  (`npm i github:Popoboxxo/bluepencil#v0.3.1`) or take the `.tgz` from the GitHub release.
+- Vitest 5 needs Node ≥ 22.12 for the *toolchain*; the library itself is unchanged and still
+  declares `engines: node >= 20`.
 
 ## [0.3.0] - 2026-10-01
 

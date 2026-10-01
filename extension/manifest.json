@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bluepencil Review Layer",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Annotate and review any page: design and text notes, kept across tabs and sites.",
   "minimum_chrome_version": "116",
   "background": {
