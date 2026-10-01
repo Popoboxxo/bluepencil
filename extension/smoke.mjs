@@ -522,6 +522,15 @@ async function checkInBrowser() {
     const payload = Buffer.from(JSON.stringify({ exp: expSeconds, device: "smoke-laptop" })).toString("base64url");
     const smokeToken = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${payload}.signature-nobody-checks`;
 
+    // The page's own `load()` fills the form asynchronously: it reads `chrome.storage` first and then
+    // writes every field. `#auth` is in the parsed HTML before `options.js` (a deferred module) has
+    // run, so waiting for it proves nothing, and filling the form while `load()` is still in flight
+    // lets that `fill()` overwrite what this check set — after which the save stores the defaults and
+    // the poll below times out. Measured on CI: identical commit, one run green and one red on exactly
+    // that poll. `#credential-hint` ships empty and is written only by `describeCredential()`, which is
+    // the last thing `load()` does — so a non-empty hint is the page saying "I am filled".
+    await browser.waitFor('document.getElementById("credential-hint").textContent.trim().length > 0');
+
     // Fill and save in one call, then *poll* for the effect instead of sleeping: `chrome.storage` is
     // the contract, and a fixed 400 ms is the kind of assumption that holds on a laptop and fails on
     // a loaded runner. Measured: this check died once with "Inspected target navigated or closed"
@@ -563,6 +572,11 @@ async function checkInBrowser() {
     ok("the options page stores the credential mode, not just a token",
       saved.settings?.auth === "token" && saved.settings?.deviceName === "smoke-laptop",
       JSON.stringify(saved.settings));
+    // A save that never happened must not look like a slow one: the page says so itself, and this
+    // turns "timed out after 20000 ms" into the sentence that says why (a refused sidecar URL, a
+    // validation block) — the failure mode measured on CI.
+    ok("the page says it saved, rather than refusing silently",
+      saved.status === "Saved.", `status=${JSON.stringify(saved.status)}`);
     ok("the stored expiry is read out of the token rather than typed",
       typeof saved.settings?.tokenExpiresAt === "string" &&
         Math.abs(Date.parse(saved.settings.tokenExpiresAt) - expSeconds * 1000) < 5000,
