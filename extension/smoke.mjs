@@ -486,6 +486,82 @@ async function checkInBrowser() {
     ok("the token mode names the header it will send",
       /Authorization: Bearer/i.test(saved.hint),
       JSON.stringify(saved.hint));
+
+    // Readability, in both schemes.
+    //
+    // The page paints its own text and the browser paints the controls and their popup, so the two
+    // can disagree: on a dark-mode screenshot (2026-10-01) the option row of the open dropdown was
+    // white on white — invisible — and the sidecar warning inherited the browser's white text onto
+    // its own light background, 1.05:1. The pair is therefore the contract, and it is measured
+    // rather than trusted: any field below 4.5:1 fails, in either scheme.
+    const contrastProbe = `(() => {
+      const probe = document.createElement("span");
+      probe.style.display = "none";
+      document.body.append(probe);
+      // System colours ("Field", "FieldText") are valid colour values; reading them back through a
+      // probe resolves whichever keyword the browser used into rgb() we can compare.
+      const toRgb = (value) => {
+        probe.style.color = value;
+        const match = getComputedStyle(probe).color.match(/[0-9.]+/g);
+        return match ? match.slice(0, 3).map(Number) : null;
+      };
+      const channel = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+      const lum = (rgb) => 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
+      const ratio = (a, b) => {
+        const x = lum(a), y = lum(b);
+        return Math.round(((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05)) * 100) / 100;
+      };
+      const sample = (selector, label) => {
+        const el = document.querySelector(selector);
+        if (!el) return { label, background: null, color: null, ratio: null };
+        // A transparent field paints nothing itself: the colour a reader sees is the first opaque
+        // background above it, which is what the text has to contrast with. This block stays free of
+        // backslashes and backticks on purpose: it is a template literal, so a single backslash
+        // reaches the browser as an escape and silently broke the transparency test (a transparent
+        // background was reported as opaque, which is the opposite of what this check needs).
+        const alpha = (value) => {
+          if (value === "transparent") return 0;
+          const parts = String(value).match(/[0-9.]+/g) || [];
+          return parts.length >= 4 ? Number(parts[3]) : parts.length ? 1 : 0;
+        };
+        const opaque = (value) => Boolean(value) && alpha(value) > 0;
+        let node = el, background = null;
+        while (node && !opaque(background)) {
+          background = getComputedStyle(node).backgroundColor;
+          node = node.parentElement;
+        }
+        if (!opaque(background)) background = "Canvas";
+        const cs = getComputedStyle(el);
+        // Keep the walk in the failure message: a contrast failure is nearly always a field that
+        // never got a background of its own, and then the chain is the whole answer.
+        const chain = [];
+        for (let walk = el; walk; walk = walk.parentElement) {
+          chain.push(walk.tagName.toLowerCase() + ":" + getComputedStyle(walk).backgroundColor);
+        }
+        const bg = toRgb(background), fg = toRgb(cs.color);
+        return { label, background, color: cs.color, chain,
+                 ratio: bg && fg ? ratio(fg, bg) : null };
+      };
+      return JSON.stringify([
+        sample("#environment", "the environment select"),
+        sample("#appName", "a text field"),
+        sample("#token", "the credential field"),
+        sample("#auth option", "an option in the open dropdown"),
+        sample(".warn", "the sidecar warning"),
+        sample(".hint", "a hint line"),
+      ]);
+    })()`;
+
+    for (const scheme of ["light", "dark"]) {
+      await browser.setColorScheme(scheme);
+      const fields = JSON.parse(await browser.evaluate(contrastProbe));
+      const unreadable = fields.filter((f) => typeof f.ratio !== "number" || f.ratio < 4.5);
+      ok(`the options page stays readable in ${scheme} mode`, unreadable.length === 0,
+        unreadable.length
+          ? unreadable.map((f) => `${f.label}: ${f.color} on ${f.background} = ${f.ratio ?? "unmeasurable"} [${(f.chain ?? []).join(" < ")}]`).join("; ")
+          : fields.map((f) => `${f.label} ${f.ratio}:1`).join(", "));
+    }
+    await browser.setColorScheme("light");
   } finally {
     await browser.close();
     server.close();

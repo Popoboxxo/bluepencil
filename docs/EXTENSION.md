@@ -12,7 +12,7 @@ npm run build:ext     # writes extension/dist/
 Then load it: `chrome://extensions` → enable *Developer mode* → *Load unpacked* → pick
 `extension/dist`.
 
-`npm run smoke:ext` verifies the build: 39 checks, of which the last dozen drive a real Chrome against
+`npm run smoke:ext` verifies the build: 41 checks, of which the last dozen drive a real Chrome against
 a host page with `script-src 'self'` and assert the layer actually mounted there. The options page
 has its own cases in that suite — the credential mode, the header it means, and the expiry line —
 because the settings UI is the only place a credential is entered and it was otherwise untested.
