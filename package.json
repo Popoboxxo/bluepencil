@@ -105,7 +105,7 @@
   "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.10.2",
-    "esbuild": "^0.24.2",
+    "esbuild": "^0.28.2",
     "jsdom": "^25.0.1",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
