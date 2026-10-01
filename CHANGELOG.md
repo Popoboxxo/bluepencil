@@ -2,6 +2,19 @@
 
 Nothing here yet — the next section will say what changed after 0.3.0.
 
+### Fixed
+
+**The settings page is readable in either colour scheme.** It inherited the browser's text colour for
+everything it did not paint itself — which is exactly the text the browser paints. In dark mode the
+sidecar warning and the options of the open dropdown were white on white; on the shipped 0.3.0 page the
+warning measured **1.04:1**, rendered but unreadable, and the option row vanished completely.
+
+Native controls now carry the browser's own `Field`/`FieldText` pair, so the closed field *and* the
+popup it opens get a background and a text colour that belong together, and the page's palette (muted
+text, borders, warning, status) is defined per scheme instead of being inherited. `npm run smoke:ext`
+measures the contrast of every field in both schemes and fails below 4.5:1, so the next palette change
+has to keep the page readable rather than merely keeping it pretty.
+
 ## [0.3.0] - 2026-10-01
 
 ### Added

@@ -4,22 +4,54 @@
 <meta charset="utf-8">
 <title>Bluepencil — settings</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: light dark;
+    /* The page owns its colours. Relying on the browser's text colour worked for the text the page
+       paints itself and broke everything the browser paints: the *open* <select> list and the
+       warning box take their background from the markup and their text from the UA, so on a dark
+       screenshot (2026-10-01) the sidecar warning rendered white on light amber (1.05:1) and an
+       option row in the open dropdown was white on white — invisible. Both are measured now, per
+       scheme, by `npm run smoke:ext`. */
+    --bp-border: #d1d5db;
+    --bp-muted: #4b5563;
+    --bp-warn-bg: #fffbeb;
+    --bp-warn-fg: #78350f;
+    --bp-warn-edge: #d97706;
+    --bp-error: #b91c1c;
+    --bp-ok: #15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bp-border: #52525b;
+      --bp-muted: #a1a1aa;
+      --bp-warn-bg: #2a2109;
+      --bp-warn-fg: #fde68a;
+      --bp-error: #fca5a5;
+      --bp-ok: #86efac;
+    }
+  }
   body {
     font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
     margin: 0 auto; padding: 2rem 1.5rem 4rem; max-width: 42rem;
+    background: Canvas; color: CanvasText;
   }
   h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
-  p.lede { margin: 0 0 2rem; color: #6b7280; }
-  fieldset { border: 1px solid #d1d5db; border-radius: 8px; margin: 0 0 1.25rem; padding: 1rem 1.15rem 1.15rem; }
+  p.lede { margin: 0 0 2rem; color: var(--bp-muted); }
+  fieldset { border: 1px solid var(--bp-border); border-radius: 8px; margin: 0 0 1.25rem; padding: 1rem 1.15rem 1.15rem; }
   legend { padding: 0 .4rem; font-weight: 600; font-size: .9rem; }
   label { display: block; margin: 0 0 .9rem; }
   label > span { display: block; font-weight: 500; margin-bottom: .2rem; }
   select, input[type=text], input[type=password] {
     width: 100%; padding: .45rem .55rem; font: inherit;
-    border: 1px solid #d1d5db; border-radius: 6px; background: transparent; color: inherit;
+    border: 1px solid var(--bp-border); border-radius: 6px;
+    /* `Field`/`FieldText` are the browser's own pair for form controls: it uses the same pair for the
+       control and for the popup it opens, so the option list can no longer be white on white. */
+    background-color: Field;
+    color: FieldText;
   }
-  .hint { display: block; margin-top: .25rem; font-size: .82rem; color: #6b7280; }
+  option { background-color: Field; color: FieldText; }
+  ::placeholder { color: GrayText; opacity: 1; }
+  .hint { display: block; margin-top: .25rem; font-size: .82rem; color: var(--bp-muted); }
   .row { display: flex; gap: .6rem; align-items: center; }
   .row input[type=checkbox] { width: auto; }
   button {
@@ -27,10 +59,13 @@
     border: 1px solid #2563eb; background: #2563eb; color: #fff; cursor: pointer;
   }
   button[disabled] { opacity: .6; cursor: default; }
-  #status { margin-left: .8rem; font-size: .9rem; color: #6b7280; }
-  #status[data-kind=error] { color: #b91c1c; }
-  #status[data-kind=ok] { color: #15803d; }
-  .warn { border-left: 3px solid #d97706; padding: .6rem .8rem; background: #fffbeb; border-radius: 0 6px 6px 0; }
+  #status { margin-left: .8rem; font-size: .9rem; color: var(--bp-muted); }
+  #status[data-kind=error] { color: var(--bp-error); }
+  #status[data-kind=ok] { color: var(--bp-ok); }
+  .warn {
+    border-left: 3px solid var(--bp-warn-edge); padding: .6rem .8rem;
+    background: var(--bp-warn-bg); color: var(--bp-warn-fg); border-radius: 0 6px 6px 0;
+  }
 </style>
 </head>
 <body>
