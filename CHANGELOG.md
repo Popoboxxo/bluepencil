@@ -1,9 +1,8 @@
-# Changelog
-
-All notable changes to this project are documented here.
-Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) · Versioning: [SemVer](https://semver.org/).
-
 ## [Unreleased]
+
+Nothing here yet — the next section will say what changed after 0.3.0.
+
+## [0.3.0] - 2026-10-01
 
 ### Added
 
@@ -129,6 +128,22 @@ body.
 **The MV3 extension is a release asset.** `bluepencil-extension-<version>.zip` — unpack the folder and
 load it as an unpacked extension — is built and smoke-tested in the same job that publishes it, and it
 is covered by the same `SHA256SUMS` as the loader, the layer and the tarball.
+
+
+- `GET {base}/notes/{id}` — one note, canonically (`?environment=` gates the read, NFR-18). The MCP
+  server already exposed this as `get_note`; over HTTP a tool had to fetch the whole set and pick the
+  entry out of it.
+
+- **E2E suite against the fixture app (NFR-11).** `tests/e2e/vanilla.e2e.mjs` walks the manual
+  checklist of `examples/vanilla/README.md` in a real browser: mount and surfaces, the four
+  shortcuts, the seed import (counters, markers, idempotence), text/design/quote capture with a
+  reload, panel order and filters, done-hidden default, feedback-only, the decision thread on the
+  shadow-DOM card, byte-identical exports and enable/disable cycles without residue. Wired into
+  `npm run verify` and CI.
+- `scripts/lib/browser.mjs` — the CDP browser layer the embed smoke used internally, now shared and
+  extended with real input (mouse clicks at an element, key events, downloads). It activates the
+  page target before synthesizing input (a headless target is otherwise not focused and clicks land
+  nowhere) and types with key events, because `Input.insertText` is missing from some Chrome builds.
 
 ### Fixed
 
@@ -278,24 +293,6 @@ of them were reproduced against the shipped builds before the fix and carry a re
   workflow checks, and what is deliberately not automated.
 
 
-### Added
-
-- `GET {base}/notes/{id}` — one note, canonically (`?environment=` gates the read, NFR-18). The MCP
-  server already exposed this as `get_note`; over HTTP a tool had to fetch the whole set and pick the
-  entry out of it.
-
-- **E2E suite against the fixture app (NFR-11).** `tests/e2e/vanilla.e2e.mjs` walks the manual
-  checklist of `examples/vanilla/README.md` in a real browser: mount and surfaces, the four
-  shortcuts, the seed import (counters, markers, idempotence), text/design/quote capture with a
-  reload, panel order and filters, done-hidden default, feedback-only, the decision thread on the
-  shadow-DOM card, byte-identical exports and enable/disable cycles without residue. Wired into
-  `npm run verify` and CI.
-- `scripts/lib/browser.mjs` — the CDP browser layer the embed smoke used internally, now shared and
-  extended with real input (mouse clicks at an element, key events, downloads). It activates the
-  page target before synthesizing input (a headless target is otherwise not focused and clicks land
-  nowhere) and types with key events, because `Input.insertText` is missing from some Chrome builds.
-
-### Changed
 
 - `POST {base}/notes` refuses an unknown body field with `400 invalid_payload` instead of silently
   dropping it. `{"route": "/cart"}` (or `"session": "s1"`) used to answer `200` while storing
