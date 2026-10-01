@@ -72,7 +72,7 @@ jobs:
             echo 'A tag gets this zip attached to its release by the `release` workflow; here it is a build artefact with a 14-day lifetime.'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bluepencil-extension
           path: dist-artifacts/*.zip
