@@ -1,21 +1,26 @@
 name: extension
 
-# Builds the Chromium extension and publishes it as a download.
+# Builds the Chromium extension on every push to main, so there is always a download that matches
+# the merged source, and packages it as a versioned zip.
 #
-# Two triggers, deliberately:
-#   - every push to main, so the artefact always matches the merged source;
-#   - a tag, so a release has something to point at.
-# The ordinary CI workflow already runs `build:ext` and `smoke:ext` on every
-# PR — this one exists to produce the *packaged* thing, not to test it.
-
+# It deliberately does NOT create releases: the `release` workflow owns tags, runs the checks and
+# attaches the zip. Two workflows publishing the same release was a race over the release body —
+# whichever ran first decided whether the notes were the changelog or auto-generated.
+#
+# The ordinary CI workflow already runs `build:ext` and `smoke:ext` on pull requests, so this one
+# exists to produce the *packaged* thing rather than to test it. It still smokes it, because a zip
+# that does not mount is worse than no zip.
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: extension-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -26,7 +31,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
 
       - name: install
@@ -40,28 +45,32 @@ jobs:
       - name: build the extension
         run: npm run build:ext
 
-      # Re-run the smoke test on the CI machine. It is the only check that
-      # proves the layer actually mounts under a strict page CSP, and a build
-      # that passes on a laptop can still fail here.
+      # Re-run the smoke test on the CI machine. It is the only check that proves the layer actually
+      # mounts under a strict page CSP, and a build that passes on a laptop can still fail here.
       - name: verify it mounts in a real browser
+        env:
+          BP_REQUIRE_BROWSER: "1"
         run: npm run smoke:ext
 
       - name: package
         run: |
-          cd extension/dist
-          zip -r "../bluepencil-extension-${{ github.ref_name }}.zip" . -x '.*'
-          cd ../..
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
           mkdir -p dist-artifacts
-          mv "bluepencil-extension-${{ github.ref_name }}.zip" dist-artifacts/
+          (cd extension/dist && zip -qr ../../dist-artifacts/"bluepencil-extension-${version}.zip" . -x '.*')
           ls -la dist-artifacts/
 
       - name: summarise
         run: |
-          echo "### Extension build" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          cat extension/dist/build-info.json >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Unpacked for a local install: \`extension/dist\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Extension build"
+            echo
+            cat extension/dist/build-info.json
+            echo
+            echo 'Unpacked for a local install: `extension/dist`'
+            echo
+            echo 'A tag gets this zip attached to its release by the `release` workflow; here it is a build artefact with a 14-day lifetime.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -69,25 +78,3 @@ jobs:
           path: dist-artifacts/*.zip
           if-no-files-found: error
           retention-days: 14
-
-  attach-to-release:
-    name: attach to the release
-    needs: build
-    # Only a tag produces a release; on a plain push to main there is nothing to
-    # attach to, and creating one would be a surprise.
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: bluepencil-extension
-          path: artifacts
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*.zip
-          # A tag that was pushed without a matching release is the normal case
-          # here; create one rather than failing the build.
-          generate_release_notes: true

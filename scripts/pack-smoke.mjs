@@ -101,7 +101,11 @@ for (const [name, bin] of Object.entries(pkg.bin ?? {})) {
 // What would actually be published?
 try {
   const raw = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf8" });
-  const [result] = JSON.parse(raw);
+  // `npm pack` runs `prepare`, so stdout can carry a build log before the JSON report. Take the last
+  // top-level array in the output instead of parsing it whole: a lifecycle script printing a line
+  // used to fail this smoke with "Unexpected token", which reads like a packaging bug and is not one.
+  const jsonStart = raw.lastIndexOf("\n[");
+  const [result] = JSON.parse(jsonStart === -1 ? raw : raw.slice(jsonStart + 1));
   const packed = new Set((result.files ?? []).map((file) => file.path));
   const required = [
     "dist/bluepencil.js",

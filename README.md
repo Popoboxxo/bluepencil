@@ -29,8 +29,10 @@ bundle, 503 unit tests and the browser legs of the embed smoke.
 
 Honest gaps: no Playwright E2E suite against the fixture, no import/merge surface in the UI, no bulk
 delete or retention control, i18n only `en`/`de`, and no npm publish — install from the tag
-(`npm i github:Popoboxxo/bluepencil#v0.2.0`) or use the release artefacts. Milestones and their
-state are tracked in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), the history in
+(`npm i github:Popoboxxo/bluepencil#v0.2.0`; the `prepare` script builds `dist/` during install) or
+use the release artefacts: loader, layer, package tarball, the MV3 browser extension and one
+`SHA256SUMS` over all of them. How a release is cut: [docs/RELEASING.md](docs/RELEASING.md).
+Milestones and their state are tracked in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), the history in
 [CHANGELOG.md](CHANGELOG.md). This repository is the home of the library; the interaction model
 itself is already proven in a production-used prototype (see
 [docs/CONCEPT.md](docs/CONCEPT.md#7-proven-prior-art)).
@@ -47,8 +49,8 @@ There is no npm release yet — build it from the repository. The library itself
 dependencies**; the dev dependencies are for the build and the tests only.
 
 ```bash
-npm install              # dev dependencies (esbuild, vitest, jsdom, typescript)
-npm run build            # writes dist/ — see the artifact table below
+npm install              # dev dependencies; the `prepare` script then builds dist/
+npm run build            # re-run it after changing src/
 node scripts/serve-example.mjs
 # open http://localhost:9283/examples/vanilla/
 ```

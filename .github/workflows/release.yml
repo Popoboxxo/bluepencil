@@ -1,0 +1,172 @@
+# The release pipeline. A tag is the only thing that publishes.
+#
+# One workflow owns the release, so the assets, the notes and the checks come from one place:
+#
+#   - it runs the full `verify` plus the secret scan and the spec check on the *tagged* commit. A tag
+#     used to be the one revision nothing checked: `ci.yml` listens to branches, so on a release only
+#     the extension build ran.
+#   - `scripts/release-preflight.mjs` refuses a tag whose version does not match `package.json`,
+#     `extension/manifest.json` and a non-empty `CHANGELOG.md` section, and it writes the release
+#     notes from that section — the notes are the changelog, not a second place to maintain.
+#   - it builds all five assets, writes ONE `SHA256SUMS` over them, and then runs the preflight again
+#     against the directory: a missing asset or a digest that does not match stops the release
+#     instead of shipping a download that fails to verify.
+#   - re-running it updates the existing release instead of failing, so a red run after a half-written
+#     release is recoverable by re-running the job.
+#
+# The extension is built and smoke-tested here as well as in the extension workflow: this is the copy
+# that gets attached to the release, and it should be the one that was proven to mount.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (default: v<version in package.json>)"
+        required: false
+      dry_run:
+        description: "Build and verify everything, but do not publish"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# A release is a decision, not a queue: never cancel one run in favour of another.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: publish the release assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create or update the release
+      id-token: write # signed provenance for the assets
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # A dispatch without a tag is a rehearsal against whatever ref was chosen; the version in
+      # `package.json` is the one the assets are named after anyway, so it is the honest default.
+      - name: Resolve the tag
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG}"
+          if [ -z "${tag}" ]; then
+            tag="v$(node -p "require('./package.json').version")"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "releasing ${tag}"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Preflight — tag matches versions and changelog
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: node scripts/release-preflight.mjs --tag "$TAG" --notes release-notes.md
+
+      - name: Verify (typecheck, tests, build, size, every smoke)
+        env:
+          # The browser legs must not turn into silent skips in the job that publishes.
+          BP_REQUIRE_BROWSER: "1"
+        run: npm run verify
+
+      - name: Secret scan
+        run: npm run secret-scan
+
+      - name: Spec is in sync with docs/REQUIREMENTS.md and valid
+        run: |
+          # Prebuilt single binary, checksum verified against the release manifest.
+          curl -sSL -o reqmd https://github.com/dVoo/reqmd/releases/download/v0.2-alpha/reqmd-linux-amd64
+          curl -sSL -o SHA256SUMS.txt https://github.com/dVoo/reqmd/releases/download/v0.2-alpha/SHA256SUMS.txt
+          grep 'reqmd-linux-amd64$' SHA256SUMS.txt | sed 's/reqmd-linux-amd64/reqmd/' | sha256sum -c -
+          chmod +x reqmd
+          sudo mv reqmd /usr/local/bin/reqmd
+          python3 scripts/build-reqmd-spec.py
+          if [ -n "$(git status --porcelain spec/)" ]; then
+            echo "::error::spec/ is out of sync with docs/REQUIREMENTS.md — run 'npm run spec'"
+            git --no-pager diff --stat spec/
+            exit 1
+          fi
+          reqmd check spec/
+
+      - name: Collect the assets
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          mkdir -p release-assets
+          npm run build
+          npm run build:ext
+          npm pack --pack-destination release-assets
+          cp dist/attach.js dist/bluepencil.element.min.js release-assets/
+          # `extension/dist` is what a user unpacks, so the zip is that directory and nothing else.
+          (cd extension/dist && zip -qr ../../release-assets/"bluepencil-extension-${version}.zip" . -x '.*')
+          (cd release-assets && sha256sum attach.js bluepencil.element.min.js \
+            "bluepencil-${version}.tgz" "bluepencil-extension-${version}.zip" > SHA256SUMS)
+          ls -la release-assets
+
+      - name: Verify the asset set and its checksums
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: node scripts/release-preflight.mjs --tag "$TAG" --assets release-assets
+
+      - name: Publish the release
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # A second run (or a release created by hand) updates instead of failing.
+            gh release edit "$TAG" --notes-file release-notes.md
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file release-notes.md \
+              --verify-tag release-assets/*
+          fi
+          gh release view "$TAG" --json assets --jq '.assets[].name' | sort
+
+      - name: Attest the assets
+        # Provenance is hardening, not the deliverable: the release is already published above, so a
+        # failure here is reported and does not cost the release.
+        if: ${{ !inputs.dry_run }}
+        continue-on-error: true
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: release-assets/*
+
+      - name: Summary
+        if: always()
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          suffix=""
+          if [ "${DRY_RUN}" = "true" ]; then suffix=" (dry run — nothing published)"; fi
+          {
+            echo "### ${TAG}${suffix}"
+            echo
+            echo '```'
+            cat release-assets/SHA256SUMS 2>/dev/null || echo 'no assets were produced'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

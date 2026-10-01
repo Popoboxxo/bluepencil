@@ -81,6 +81,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "node scripts/dev.mjs",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "typecheck:ext": "tsc --noEmit -p extension/tsconfig.json",
     "test": "vitest run",
