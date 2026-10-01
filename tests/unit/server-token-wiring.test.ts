@@ -1,4 +1,8 @@
 /**
+ * @vitest-environment node — starts real servers on real ports, so it needs Node's `fetch` and its
+ * network stack. Under jsdom the suite is not even collected: `server/index.ts` fails to load and
+ * vitest reports "no tests" rather than a failure, which is a silent green.
+ *
  * Authentication options reaching a *running* sidecar (#36, phase 2 — and the phase-1 gap).
  *
  * `server-auth.test.ts` and `server-token-auth.test.ts` call the handler directly, with a context

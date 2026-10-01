@@ -1,4 +1,8 @@
 /**
+ * @vitest-environment node — signs real HMACs *and* drives the handler over HTTP. Under jsdom every
+ * one of its eleven token cases fails with `createHmac is not a function`, and a suite that is red
+ * for an environment reason teaches nothing about the code.
+ *
  * Signed tokens at the HTTP boundary (#36, phase 2).
  *
  * `server-auth.test.ts` proved the shared secret is checked; this proves a signed token is, and — the

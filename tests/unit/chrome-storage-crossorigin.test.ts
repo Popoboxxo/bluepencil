@@ -55,6 +55,7 @@ function fakeChromeStorage(): FakeStorage {
  * Two of these are two different websites as far as the adapter is concerned: separate globals,
  * separate storage, no shared references.
  */
+
 function makeOrigin(opts: { host: string; chrome?: unknown }): {
   host: string;
   localStorage: Map<string, string>;
@@ -74,7 +75,7 @@ function makeOrigin(opts: { host: string; chrome?: unknown }): {
     },
   };
   g.window = { localStorage: localStorageShim };
-  g.localStorage = localStorageShim;
+  setGlobal("localStorage", localStorageShim);
   if (opts.chrome === undefined) delete g.chrome;
   else g.chrome = opts.chrome;
 
@@ -83,7 +84,7 @@ function makeOrigin(opts: { host: string; chrome?: unknown }): {
     localStorage: store,
     restore: () => {
       g.window = previous.window;
-      g.localStorage = previous.localStorage;
+      setGlobal("localStorage", previous.localStorage);
       g.chrome = previous.chrome;
     },
   };
@@ -94,6 +95,18 @@ function useOrigin(chrome: unknown | undefined): { localStorage: Map<string, str
   const origin = makeOrigin({ host: "t.test", chrome });
   restorers.push(origin.restore);
   return origin;
+}
+
+/**
+ * Installs a global that jsdom exposes as a getter.
+ *
+ * jsdom defines `localStorage` (and `customElements`) as accessor properties without a setter, so
+ * `globalThis.localStorage = shim` throws "Cannot set property localStorage of [object Window]
+ * which has only a getter". A descriptor is what makes a second "origin" testable at all, which is
+ * the whole point of this suite.
+ */
+function setGlobal(key: string, value: unknown): void {
+  Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
 }
 
 const restorers: (() => void)[] = [];

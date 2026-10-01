@@ -50,7 +50,9 @@ a running application instead of a screenshot.
 ## Quick start
 
 There is no npm release yet — build it from the repository. The library itself has **no runtime
-dependencies**; the dev dependencies are for the build and the tests only.
+dependencies**; the dev dependencies are for the build and the tests only. The toolchain needs
+**Node 22.12 or newer** — that is what Vitest 5 requires, and on an older release the test suite dies
+inside a transitive dependency with a message that names neither Node nor Vitest.
 
 ```bash
 npm install              # dev dependencies; the `prepare` script then builds dist/

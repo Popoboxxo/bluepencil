@@ -1,4 +1,6 @@
 /**
+ * @vitest-environment node — reads and writes real files, so it needs the Node file system, not jsdom.
+ *
  * Unit tests of the store journal (FR-18).
  *
  * The file backend is tested against a real file (chain, tamper detection, `since`), the git backend

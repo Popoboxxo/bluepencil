@@ -307,6 +307,11 @@ describe("layer lifecycle", () => {
   it("renders nothing while it is not enabled (FR-1.1)", async () => {
     document.body.innerHTML = `<main id="host"><p>host text</p></main>`;
     const tracker = trackListeners();
+    // jsdom's own selector engine installs a click/keydown pair on the document the first time it
+    // queries (through @asamuzakjp/dom-selector). Those listeners are not the layer's, so the
+    // baseline is taken after one query instead of assuming a silent document.
+    document.querySelector("#baseline");
+    const baseline = tracker.total();
     const store = makeStore();
     const handle = createLayer({ store, document });
     await flush();
@@ -314,7 +319,7 @@ describe("layer lifecycle", () => {
     expect(handle.isEnabled()).toBe(false);
     expect(document.querySelector('[data-bp-part="root"]')).toBeNull();
     expect(document.querySelectorAll("style[data-bp-styles]").length).toBe(0);
-    expect(tracker.total()).toBe(0);
+    expect(tracker.total()).toBe(baseline);
     expect(observersCreated).toBe(0);
     expect(byId("host").textContent).toBe("host text");
     expect(store.notes()).toEqual([]);

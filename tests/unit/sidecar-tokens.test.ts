@@ -1,4 +1,7 @@
 /**
+ * @vitest-environment node — signs and verifies HMACs, and under jsdom `node:crypto` carries only
+ * `default`, so `createHmac` is `undefined` there.
+ *
  * Signed per-device tokens (#36, phase 2).
  *
  * The shared secret's job was "is this the right string". A token's job is narrower and harder: a
