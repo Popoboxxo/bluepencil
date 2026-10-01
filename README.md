@@ -19,17 +19,21 @@ no "the second badge in the header".
 
 ![The review layer on the vanilla fixture: five notes from a review round, the bar with its counters, the marker on the annotated element and the note list](docs/images/fixture-review.png)
 
-**Status:** `0.2.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
+**Status:** `0.3.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
 `main`: the core model, anchoring (now including **transient container reveal**), capture, store and
 the four adapters (with a conformance suite); canonical, diffable bundles with
 `merge`/`upsert`/`replace-session` and migrations; Markdown/JSON export; the collaboration protocol;
 the review layer with i18n; the public API and the `<bluepencil-notes>` element; the CLI, the MCP
-server (read-only by default) and the reference sidecar; the vanilla fixture app with its seed
-bundle, 503 unit tests and the browser legs of the embed smoke.
+server (read-only by default) and the reference sidecar, which now takes **per-device signed tokens**
+(shared secret or token, per-environment and revocable); a **Chromium MV3 extension** that mounts the
+layer in pages you do not build yourself; the vanilla fixture app with its seed bundle, 666 unit
+tests and the browser legs of the embed smoke, the E2E suite and the extension smoke.
 
-Honest gaps: no Playwright E2E suite against the fixture, no import/merge surface in the UI, no bulk
-delete or retention control, i18n only `en`/`de`, and no npm publish — install from the tag
-(`npm i github:Popoboxxo/bluepencil#v0.2.0`; the `prepare` script builds `dist/` during install) or
+Honest gaps: the E2E suite is hand-rolled over the CDP pipe rather than Playwright (NFR-4 says no
+test framework), token refresh is manual (an expired token is replaced by hand, and revocation is
+read at sidecar start), no import/merge surface in the UI, no bulk delete or retention control, i18n
+only `en`/`de`, and no npm publish — install from the tag
+(`npm i github:Popoboxxo/bluepencil#v0.3.0`; the `prepare` script builds `dist/` during install) or
 use the release artefacts: loader, layer, package tarball, the MV3 browser extension and one
 `SHA256SUMS` over all of them. How a release is cut: [docs/RELEASING.md](docs/RELEASING.md).
 Milestones and their state are tracked in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), the history in
