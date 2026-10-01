@@ -37,13 +37,21 @@ zip), its settings and the credential it sends — `x-bluepencil-auth` for a sha
 ### Verified
 
 `npm run verify` green on this branch — 675 unit tests (30 files), the packaging, embed and e2e
-smokes, and **45 extension smoke checks** in a real Chrome (42 of 44 before the bridge landed). The
-extension smoke now asserts the effect instead of the attribute it used to read: the layer's `adapter`
-is `chromeStorage`, no `data-*` configuration attribute is left on the element, and a sentinel written
-from the page comes back out of `chrome.storage.local` in the worker — a page → bridge → storage →
-page round trip with an independent readback. `npm run secret-scan` clean, and
-`scripts/release-preflight.mjs --tag v0.3.2` accepts the tag against `package.json`,
-`extension/manifest.json` and this section.
+smokes, and **46 extension smoke checks** in a real Chrome. The extension smoke now asserts the
+effect instead of the attribute it used to read: the layer's `adapter` is `chromeStorage`, no `data-*`
+configuration attribute is left on the element, and a sentinel written from the page comes back out of
+`chrome.storage.local` in the worker — a page → bridge → storage → page round trip with an independent
+readback. `npm run secret-scan` clean, and `scripts/release-preflight.mjs --tag v0.3.2` accepts the tag
+against `package.json`, `extension/manifest.json` and this section.
+
+The options-page check also stops racing the page it checks. It gated on `#auth`, which is in the
+parsed HTML before `options.js` — a deferred module — has run at all, so filling the form first let the
+page's own `load()` → `fill()` overwrite the values, the save stored the defaults, and the storage poll
+timed out after 20 s. It hit CI on this branch — the same commit ran green once and red once on exactly
+that poll, while 0.3.1 was green twice — so the race is older than the checks added here, which changed
+the timing that exposed it. The gate is now `#credential-hint`, empty in the markup and written only by
+`describeCredential()`, the last thing `load()` does, and a refused save reports the page's own
+sentence instead of looking like a slow one.
 
 ### Known gaps
 
