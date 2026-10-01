@@ -19,7 +19,7 @@ no "the second badge in the header".
 
 ![The review layer on the vanilla fixture: five notes from a review round, the bar with its counters, the marker on the annotated element and the note list](docs/images/fixture-review.png)
 
-**Status:** `0.3.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
+**Status:** `0.3.1` — the review layer, the headless data library and the CLI/MCP surfaces are on
 `main`: the core model, anchoring (now including **transient container reveal**), capture, store and
 the four adapters (with a conformance suite); canonical, diffable bundles with
 `merge`/`upsert`/`replace-session` and migrations; Markdown/JSON export; the collaboration protocol;
@@ -33,7 +33,7 @@ Honest gaps: the E2E suite is hand-rolled over the CDP pipe rather than Playwrig
 test framework), token refresh is manual (an expired token is replaced by hand, and revocation is
 read at sidecar start), no import/merge surface in the UI, no bulk delete or retention control, i18n
 only `en`/`de`, and no npm publish — install from the tag
-(`npm i github:Popoboxxo/bluepencil#v0.3.0`; the `prepare` script builds `dist/` during install) or
+(`npm i github:Popoboxxo/bluepencil#v0.3.1`; the `prepare` script builds `dist/` during install) or
 use the release artefacts: loader, layer, package tarball, the MV3 browser extension and one
 `SHA256SUMS` over all of them. How a release is cut: [docs/RELEASING.md](docs/RELEASING.md).
 Milestones and their state are tracked in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), the history in
