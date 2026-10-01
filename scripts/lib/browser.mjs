@@ -285,6 +285,20 @@ export class Browser {
     return this.attachTo((t) => t.type === "page" && predicate(t));
   }
 
+  /**
+   * Emulates `prefers-color-scheme` on the attached page.
+   *
+   * The options page has two palettes and the readable one is not always the one the runner happens
+   * to use, so a check that only looks at the default scheme proves half of what it claims.
+   */
+  async setColorScheme(scheme) {
+    await this.send(
+      "Emulation.setEmulatedMedia",
+      { features: [{ name: "prefers-color-scheme", value: scheme }] },
+      this.#session,
+    );
+  }
+
   /** Evaluates an expression in the page and returns its JSON value (promises are awaited). */
   async evaluate(expression) {
     try {
