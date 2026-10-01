@@ -11,8 +11,12 @@
  */
 
 export interface ExtensionSettings {
-  /** `dev` | `staging` | `prod` — the element's own environment switch. */
-  environment: "dev" | "staging" | "prod";
+  /**
+   * `dev` | `staging` | `live` — the element's own environment switch, and the vocabulary the data
+   * model and the sidecar both use (`ENVIRONMENTS` in `src/core/model.ts`). The page used to offer
+   * `prod`, which the element rejects with `environment must be dev, staging or live` (#53).
+   */
+  environment: "dev" | "staging" | "live";
   /** App name shown in the bar; defaults to the page's own title when empty. */
   appName: string;
   /** UI language: `auto` follows the browser, `en` / `de` pin it. */
@@ -28,10 +32,15 @@ export interface ExtensionSettings {
   /**
    * How the note's author is established.
    *
-   * `prompt` asks once and remembers it; `page` takes it from the page. The sidecar cannot verify
-   * either — it has no authentication (see #36) — so the extension says so rather than pretending.
+   * `prompt` asks once and remembers it; `anonymous` writes the note without a name. These are the
+   * two values the element accepts — the third the page used to offer, "take it from the page", had
+   * no counterpart in the element's contract at all (#53), and a page cannot hand an identity to a
+   * layer that runs in its own world without the host wiring one.
+   *
+   * The sidecar cannot verify either — it has no authentication of its own — so the page says so
+   * rather than pretending.
    */
-  identity: "prompt" | "page";
+  identity: "prompt" | "anonymous";
   /** Sidecar base URL; only used when `store` is `http`. Empty means local mode. */
   endpoint: string;
   /**
@@ -70,6 +79,20 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   deviceName: "",
 };
 
+/**
+ * The environment, with the page's old `prod` folded into `live`.
+ *
+ * `prod` was never a value the layer knew: writing it produced a `bp-error`
+ * (`environment must be dev, staging or live`) and the note carried no environment at all. A round
+ * stored as `prod` therefore means exactly what `live` means, so it is migrated rather than dropped.
+ */
+function pickEnvironment(value: unknown): ExtensionSettings["environment"] {
+  if (value === "prod") return "live";
+  return value === "dev" || value === "staging" || value === "live"
+    ? value
+    : DEFAULT_SETTINGS.environment;
+}
+
 /** Field-by-field validation, so a hand-edited storage blob cannot put the layer in a bad state. */
 export function normalizeSettings(value: unknown): ExtensionSettings {
   if (typeof value !== "object" || value === null) return { ...DEFAULT_SETTINGS };
@@ -79,13 +102,15 @@ export function normalizeSettings(value: unknown): ExtensionSettings {
     return allowed.includes(candidate as T) ? (candidate as T) : undefined;
   };
   return {
-    environment: pick("environment", ["dev", "staging", "prod"] as const) ?? DEFAULT_SETTINGS.environment,
+    environment: pickEnvironment(raw.environment),
     appName: typeof raw.appName === "string" ? raw.appName : DEFAULT_SETTINGS.appName,
     language: pick("language", ["auto", "en", "de"] as const) ?? DEFAULT_SETTINGS.language,
     store:
       pick("store", ["chromeStorage", "localStorage", "memory", "http"] as const) ??
       DEFAULT_SETTINGS.store,
-    identity: pick("identity", ["prompt", "page"] as const) ?? DEFAULT_SETTINGS.identity,
+    // An older blob may say "page" (a mode the element never had); it is dropped to the documented
+    // default rather than carried, so the page cannot offer a choice the layer cannot honour (#53).
+    identity: pick("identity", ["prompt", "anonymous"] as const) ?? DEFAULT_SETTINGS.identity,
     endpoint: typeof raw.endpoint === "string" ? raw.endpoint : DEFAULT_SETTINGS.endpoint,
     auth: pick("auth", ["none", "secret", "token"] as const) ?? DEFAULT_SETTINGS.auth,
     token: typeof raw.token === "string" ? raw.token : DEFAULT_SETTINGS.token,
