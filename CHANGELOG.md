@@ -1,6 +1,21 @@
 ## [Unreleased]
 
-Nothing here yet — the next section will say what changed after 0.3.0.
+### Changed
+
+**The test suite runs on Vitest 5, which needs Node 22.12 or newer.** The version bump alone was not
+enough: three things in the harness stopped working with it.
+
+- `environmentMatchGlobs` is gone. Each Node-facing suite now says what it needs itself, with a
+  `@vitest-environment node` docblock in its header — the same reason, in the file that has the
+  requirement, instead of a list in the config that can drift from it.
+- jsdom exposes `localStorage` and `customElements` as getters with no setter, so the tests that
+  install their own version of either need a property descriptor: a plain assignment throws
+  `Cannot set property … which has only a getter`. Where a case used `delete` to simulate "no
+  `customElements` at all", that deletion was a silent no-op on jsdom's getter — it now goes through
+  the descriptor, so the case tests the guard rather than re-testing the happy path.
+- jsdom's selector engine installs a `click`/`keydown` pair on the document the first time it
+  queries. The "a disabled layer attaches no listener" case therefore measures the delta around
+  `createLayer` instead of assuming a silent document, which is what it always meant.
 
 ### Fixed
 

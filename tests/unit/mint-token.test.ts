@@ -1,4 +1,6 @@
 /**
+ * @vitest-environment node — mints real tokens with `node:crypto`, exactly as the issuer does.
+ *
  * Minting a token (`bluepencil token`, #36 phase 2).
  *
  * The sidecar half of phase 2 is covered by `sidecar-tokens.test.ts` and `server-token-wiring.test.ts`.

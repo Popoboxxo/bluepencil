@@ -1,4 +1,6 @@
 /**
+ * @vitest-environment node — drives the handler over real sockets and real files, which jsdom cannot.
+ *
  * Sidecar server tests (FR-17 §3 — the frozen embed/attach contract).
  *
  * `server/handler.ts` is the pure half of the sidecar, so the whole documented contract is tested

@@ -27,17 +27,29 @@ type MutableGlobal = { customElements?: CustomElementRegistry | null };
 const mutable = globalThis as unknown as MutableGlobal;
 const original = mutable.customElements;
 
+/**
+ * jsdom exposes `customElements` as a getter without a setter, so a plain assignment throws
+ * ("Cannot set property customElements of [object Window] which has only a getter"). A descriptor is
+ * the only way to reach the two states this suite is about: a registry that is null, and none at all.
+ */
+function setRegistry(value: CustomElementRegistry | null | undefined): void {
+  Object.defineProperty(globalThis, "customElements", { value, configurable: true, writable: true });
+}
+
 afterEach(() => {
-  mutable.customElements = original;
+  setRegistry(original);
 });
 
 describe("defineBluepencilElement — a missing registry is a no-op, not a throw", () => {
   it("does not throw when customElements is null (the Chromium isolated world)", () => {
-    mutable.customElements = null;
+    setRegistry(null);
     expect(() => defineBluepencilElement()).not.toThrow();
   });
 
   it("does not throw when customElements is absent entirely", () => {
+    setRegistry(undefined);
+    // The descriptor above is configurable, so this really removes the property — jsdom's own
+    // `customElements` is a getter and could not be deleted, which is what made this case a no-op.
     delete mutable.customElements;
     expect(() => defineBluepencilElement()).not.toThrow();
   });
