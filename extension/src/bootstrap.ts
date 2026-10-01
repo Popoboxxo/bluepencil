@@ -20,40 +20,56 @@
  * That leaves exactly one channel for the worker, and it is deliberately a *data* channel: the
  * settings. The worker places them in the page, this file reads them, and the layer mounts. Code
  * crosses the boundary at install time, not at mount time.
+ *
+ * Two things this file owns, and both were wrong before #53:
+ *
+ *   1. **The element's vocabulary.** Attributes are written without the `data-` prefix — `adapter`,
+ *      `environment`, `app`, `identity`, `endpoint`, `token…`. `data-*` is the *loader's* spelling,
+ *      which `dist/attach.js` translates when it creates the element. Writing it onto the element
+ *      meant the layer read nothing: it fell back to its default `memory` store while the attribute
+ *      readback still said `chromeStorage`. `handoff.ts` holds that translation, unit-tested.
+ *   2. **The store's area.** The layer runs in the page's own world, where `chrome.storage` does not
+ *      exist (measured: the page's `chrome` object carries `loadTimes`, `csi` and `app`, and no
+ *      `storage`). The isolated-world bridge does have it, so the `chromeStorage` factory registered
+ *      here relays through that bridge instead of reading a global that is not there.
  */
-import { defineBluepencilElement } from "../../dist/bluepencil.element.js";
+import { createChromeStorageAdapter } from "../../dist/adapters/chrome-storage.js";
+import type { ChromeStorageArea } from "../../dist/adapters/chrome-storage.js";
+import { defineBluepencilElement, registerAdapter } from "../../dist/bluepencil.element.js";
+import { elementAttributesFor } from "./handoff";
+import type { ExtensionSettings } from "./settings";
 
 /** The settings for this mount, placed here by the worker. Absent until the user asks for the layer. */
 const CONFIG_KEY = "__bluepencilConfig__";
 /** Set once the layer is up, so a second injection in the same document is a no-op. */
 const MOUNTED_KEY = "__bluepencilMounted";
+/** The in-flight storage relays, shared by every adapter area this document creates. */
+const STORAGE_PENDING_KEY = "__bluepencilStoragePending";
+
+/** How long a storage relay may take before the store is told it failed. */
+const BRIDGE_TIMEOUT_MS = 8_000;
 
 interface MountConfig {
-  settings: {
-    environment: string;
-    appName: string;
-    language: string;
-    store: string;
-    identity: string;
-    /** Sidecar base URL; only read when `store` is `http` (#36). */
-    endpoint: string;
-    /**
-     * Which credential the sidecar expects. `token` is phase 2's signed token and goes out as
-     * `Authorization: Bearer …`; `secret` is phase 1's shared secret in `x-bluepencil-auth`. The
-     * two are different headers, so the field has to travel from settings to here rather than being
-     * inferred — an inference would guess `secret` for a token and produce a 401 that looks like a
-     * dead server.
-     */
-    auth: string;
-    /** Shared secret or signed token; only read when `store` is `http` (#36). */
-    token: string;
-  };
+  settings: ExtensionSettings;
+  /**
+   * The tab's URL, recorded by the worker. It is no longer written onto the element: no attribute
+   * reads it (`data-bluepencil-url` reached nothing), and the element's own `route="url"` gives every
+   * note the page it was taken on — which is what the URL was kept for. The field stays because the
+   * worker's handshake still carries it.
+   */
   tabUrl: string;
+}
+
+interface BridgeReply {
+  ok?: boolean;
+  value?: unknown;
+  error?: string;
 }
 
 type BpGlobal = typeof globalThis & {
   [CONFIG_KEY]?: MountConfig;
   [MOUNTED_KEY]?: boolean;
+  [STORAGE_PENDING_KEY]?: Map<string, (reply: BridgeReply) => void>;
   /** Lets the worker wake this script on a tab that was already open. */
   __bluepencilTryMount?: () => void;
 };
@@ -76,44 +92,24 @@ function mount(): void {
   g[MOUNTED_KEY] = true;
 
   try {
+    // Registered *before* the element is defined: the store consults the registry when it loads its
+    // adapter, and the built-in `chromeStorage` would find no `chrome.storage` in this world.
+    if (config.settings.store === "chromeStorage") {
+      registerAdapter("chromeStorage", () =>
+        createChromeStorageAdapter({ area: createBridgedStorageArea() }),
+      );
+    }
+
     // The element code was bundled into this file, so there is nothing left to fetch or evaluate —
     // registering it is a plain function call.
     defineBluepencilElement();
 
     const tag = "bluepencil-notes";
     const el = document.createElement(tag);
-    // The element already understands an HTTP store through `data-endpoint`, and a credential
-    // through `data-token` / `data-token-header` (docs/INTEGRATION.md). The extension's job is
-    // only to hand those two across — without them the `http` store setting would silently stay
-    // local, because the element has no other way to learn where the sidecar lives (#36).
-    const attributes: Record<string, string> = {
-      "data-environment": config.settings.environment,
-      "data-app-name": config.settings.appName,
-      "data-language": config.settings.language,
-      "data-store": config.settings.store,
-      "data-identity": config.settings.identity,
-      "data-bluepencil-url": config.tabUrl,
-    };
-    if (config.settings.store === "http") {
-      if (config.settings.endpoint.length > 0) {
-        attributes["data-endpoint"] = config.settings.endpoint;
-      }
-      if (config.settings.token.length > 0) {
-        // The two phases use different headers, and this is where it is decided — not by convention.
-        // A token under `x-bluepencil-auth` is a 401 that reads like a broken sidecar, because the
-        // value looks right and the header is the only thing wrong.
-        if (config.settings.auth === "token") {
-          attributes["data-token"] = config.settings.token;
-          attributes["data-token-header"] = "authorization";
-          // `token-scheme` is what turns a bare token into `Bearer <token>`; the element's
-          // attribute contract already knows how to do that, so nothing is assembled by hand here.
-          attributes["data-token-scheme"] = "Bearer";
-        } else if (config.settings.auth === "secret") {
-          attributes["data-token"] = config.settings.token;
-          attributes["data-token-header"] = "x-bluepencil-auth";
-        }
-      }
-    }
+    // One vocabulary, translated in one place: `handoff.ts`. It answers with the element's own
+    // attribute names, the credential header the chosen mode implies, and `route="url"` so a note
+    // carries the page it was taken on.
+    const attributes = elementAttributesFor(config.settings, navigator.language ?? "");
     for (const [name, value] of Object.entries(attributes)) el.setAttribute(name, value);
     (document.body ?? document.documentElement).append(el);
 
@@ -122,6 +118,94 @@ function mount(): void {
     g[MOUNTED_KEY] = false;
     report(false, error instanceof Error ? error.message : String(error));
   }
+}
+
+/**
+ * The relay's in-flight requests, installed once and shared by every area in this document.
+ *
+ * Kept on the global rather than in a closure: the adapter factory runs per mount, and a second area
+ * must not lose its answers to a listener that holds a different map.
+ */
+function bridgePending(): Map<string, (reply: BridgeReply) => void> {
+  const existing = g[STORAGE_PENDING_KEY];
+  if (existing !== undefined) return existing;
+
+  const pending = new Map<string, (reply: BridgeReply) => void>();
+  g[STORAGE_PENDING_KEY] = pending;
+  window.addEventListener("message", (event: MessageEvent) => {
+    if (event.source !== window) return;
+    const data = event.data as { source?: unknown; requestId?: unknown; reply?: unknown } | null;
+    if (typeof data !== "object" || data === null) return;
+    // The bridge answers on the channel the page already uses for mount and toggle, echoing the
+    // requestId it was given. Anything else on this channel is not ours to consume.
+    if (data.source !== "bluepencil-page" || typeof data.requestId !== "string") return;
+    // A request and its answer share this channel *and* the requestId, and `postMessage` delivers a
+    // message to the listener of the window that sent it. Matching on `source` + `requestId` alone
+    // therefore matches the request itself: the pending call would resolve with its own payload
+    // (which has no `reply`) and the real answer would arrive after the entry was deleted. Measured
+    // in the extension smoke — every storage write reported "refused" while the value was already
+    // sitting in `chrome.storage.local`. Only an answer carries `reply`; only a request carries `kind`.
+    if (!("reply" in data)) return;
+    const resolve = pending.get(data.requestId);
+    if (resolve === undefined) return;
+    pending.delete(data.requestId);
+    resolve((typeof data.reply === "object" && data.reply !== null ? data.reply : {}) as BridgeReply);
+  });
+  return pending;
+}
+
+/**
+ * A `chrome.storage.local`-shaped area that relays through the isolated-world bridge.
+ *
+ * A relay that never answers must not hang the store: the call rejects after `BRIDGE_TIMEOUT_MS` and
+ * the adapter's documented degrade path takes over — the change stays in memory and is reported once,
+ * the same contract `localStorage` and `chromeStorage` already have for a full quota.
+ */
+function createBridgedStorageArea(): ChromeStorageArea {
+  let sequence = 0;
+
+  const call = (payload: Record<string, unknown>): Promise<BridgeReply> =>
+    new Promise((resolve) => {
+      const requestId = `bp-storage-${++sequence}`;
+      const pending = bridgePending();
+      const timer = window.setTimeout(() => {
+        pending.delete(requestId);
+        resolve({
+          ok: false,
+          error: `the extension did not answer the storage request within ${BRIDGE_TIMEOUT_MS} ms`,
+        });
+      }, BRIDGE_TIMEOUT_MS);
+      pending.set(requestId, (reply) => {
+        window.clearTimeout(timer);
+        resolve(reply);
+      });
+      window.postMessage(
+        { source: "bluepencil-page", kind: "storage", ...payload, requestId },
+        window.location.origin === "null" ? "*" : window.location.origin,
+      );
+    });
+
+  const unwrap = async (payload: Record<string, unknown>): Promise<BridgeReply> => {
+    const reply = await call(payload);
+    if (reply.ok !== true) {
+      throw new Error(reply.error ?? "the extension refused the storage request");
+    }
+    return reply;
+  };
+
+  return {
+    get: async (keys) => {
+      const reply = await unwrap({ op: "get", keys });
+      const value = reply.value;
+      return (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
+    },
+    set: async (items) => {
+      await unwrap({ op: "set", items });
+    },
+    remove: async (keys) => {
+      await unwrap({ op: "remove", keys });
+    },
+  };
 }
 
 function report(ok: boolean, error: string): void {

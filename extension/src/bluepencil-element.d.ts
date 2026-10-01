@@ -28,8 +28,34 @@ declare module "*/dist/bluepencil.element.js" {
    */
   export function defineBluepencilElement(tagName?: string): void;
 
+  /**
+   * Registers a named adapter factory in the store's registry. The extension uses it for
+   * `chromeStorage`: the page's own world cannot reach `chrome.storage`, so the factory installs an
+   * area that relays to the extension through the bridge.
+   */
+  export function registerAdapter(name: string, factory: () => unknown): void;
+
   /** The custom element the layer mounts as. */
   export class BluepencilNotesElement extends HTMLElement {
     static readonly tagName: string;
   }
+}
+
+declare module "*/dist/adapters/chrome-storage.js" {
+  /** The slice of `chrome.storage.local` an adapter area has to provide. */
+  export interface ChromeStorageArea {
+    get(keys: string | string[]): Promise<Record<string, unknown>>;
+    set(items: Record<string, unknown>): Promise<void>;
+    remove(keys: string | string[]): Promise<void>;
+  }
+
+  /**
+   * The `chrome.storage` adapter, built around an injectable area. The extension passes an area
+   * that relays over the bridge instead of reading the global `chrome`, because the layer runs in the
+   * page's world where that global has no `storage`.
+   */
+  export function createChromeStorageAdapter(options?: {
+    key?: string;
+    area?: ChromeStorageArea | null;
+  }): unknown;
 }

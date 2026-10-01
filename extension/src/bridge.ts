@@ -14,6 +14,7 @@
  * - `bluepencil:mount` — a page-side or test-side request to mount without the toolbar.
  * - `bluepencil:mounted` — the MAIN world's outcome, so a caller can learn whether the layer came
  *   up. The MAIN world cannot answer the worker directly, so the message has to pass through here.
+ * - `storage` — one `chrome.storage.local` call, relayed in both directions (see `relayStorage`).
  */
 declare const chrome: {
   runtime: {
@@ -29,6 +30,18 @@ declare const chrome: {
     sendMessage(message: unknown): Promise<unknown>;
     lastError?: { message?: string };
   };
+  /**
+   * Present in this world and absent in the page's. Measured in the extension smoke: the page's
+   * `chrome` object carries `loadTimes`, `csi` and `app` — and no `storage`. That asymmetry is the
+   * whole reason `relayStorage` exists.
+   */
+  storage?: {
+    local?: {
+      get(keys: string | string[]): Promise<Record<string, unknown>>;
+      set(items: Record<string, unknown>): Promise<void>;
+      remove(keys: string | string[]): Promise<void>;
+    };
+  };
 };
 
 type Envelope = {
@@ -40,6 +53,10 @@ type Envelope = {
   enabled?: unknown;
   /** Echoed back on the answer, so a page can match a reply to its request. */
   requestId?: unknown;
+  /** Only on a `storage` relay: the operation and its payload. */
+  op?: unknown;
+  keys?: unknown;
+  items?: unknown;
 };
 
 /**
@@ -61,6 +78,36 @@ function answerPage(envelope: Envelope, reply: unknown): void {
   );
 }
 
+/**
+ * One `chrome.storage.local` call from the page, answered on the same channel.
+ *
+ * The layer's store runs in the page, and the page has no `chrome.storage`; this world does. Without
+ * this relay the extension's default store degrades to memory and a review round is gone on reload
+ * (#53). Only a key and a JSON blob cross, and only the layer's own store asks.
+ */
+async function relayStorage(envelope: Envelope): Promise<unknown> {
+  const area = chrome.storage?.local;
+  if (area === undefined) {
+    return { ok: false, error: "chrome.storage.local is unavailable in this extension world" };
+  }
+  try {
+    if (envelope.op === "get") {
+      return { ok: true, value: await area.get((envelope.keys ?? []) as string | string[]) };
+    }
+    if (envelope.op === "set") {
+      await area.set((envelope.items ?? {}) as Record<string, unknown>);
+      return { ok: true };
+    }
+    if (envelope.op === "remove") {
+      await area.remove((envelope.keys ?? []) as string | string[]);
+      return { ok: true };
+    }
+    return { ok: false, error: `unknown storage operation ${String(envelope.op)}` };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 // Page → bridge, over `window.postMessage`.
 //
 // This is the *entry* point the earlier listener above is reached from, and the two are not
@@ -73,7 +120,18 @@ window.addEventListener("message", (event: MessageEvent) => {
   const data = event.data as Envelope | null;
   if (typeof data !== "object" || data === null) return;
   if (data.source !== "bluepencil-page") return;
-  if (data.kind !== "request-mount" && data.kind !== "toggle") return;
+  if (data.kind !== "request-mount" && data.kind !== "toggle" && data.kind !== "storage") return;
+
+  // A storage relay never reaches the worker: the answer comes from this world, which is the only
+  // one that has `chrome.storage`.
+  if (data.kind === "storage") {
+    void relayStorage(data)
+      .then((reply) => answerPage(data, reply))
+      .catch((error: unknown) =>
+        answerPage(data, { ok: false, error: error instanceof Error ? error.message : String(error) }),
+      );
+    return;
+  }
 
   // The page cannot hear a `sendResponse` — that channel only exists inside the extension — so the
   // answer goes back out through `postMessage` either way. A request without a `requestId` still

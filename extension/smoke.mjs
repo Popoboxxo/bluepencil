@@ -311,6 +311,19 @@ async function checkInBrowser() {
         csp: document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.content || '',
         hasElement: !!el,
         store: el?.getAttribute('data-store') ?? null,
+        // What the layer *did* with the configuration, read from its own handle. The attribute above
+        // is only what the wrong vocabulary left behind — #53 lived exactly in that gap. It must stay
+        // absent: the data- prefix is the loader's spelling, and the element never reads it.
+        legacyDataStoreAttribute: el?.getAttribute('data-store') ?? null,
+        adapterName: el?.blueprint?.store?.adapterName ?? null,
+        adapterAttribute: el?.getAttribute('adapter') ?? null,
+        environmentAttribute: el?.getAttribute('environment') ?? null,
+        // Is the extension storage API reachable from the page's own world? The layer runs in exactly
+        // this world, so this decides whether the chromeStorage adapter can persist anything here.
+        pageChromeStorage: typeof chrome === 'undefined'
+          ? 'no chrome object'
+          : (chrome.storage ? 'chrome.storage present' : 'chrome.storage absent'),
+        pageChromeKeys: typeof chrome === 'undefined' ? '(no chrome)' : Object.keys(chrome).join(','),
         hasRoot: !!root,
         position: cs?.position ?? null,
         zIndex: cs?.zIndex ?? null,
@@ -329,8 +342,70 @@ async function checkInBrowser() {
     ok("the element registered in the page's world", state.elementRegistered === true,
       "the custom element is missing — the injection did not run in the MAIN world");
     ok("the layer mounted", state.hasElement === true && state.hasRoot === true);
-    ok("the layer uses the extension's own store", state.store === "chromeStorage",
-      `data-store=${state.store}`);
+    ok("the layer uses the extension's own store", state.adapterAttribute === "chromeStorage",
+      `adapter=${state.adapterAttribute}`);
+    // The other half of #53: the wrong vocabulary must not come back. `data-store` was what the worker
+    // wrote, what nothing read, and what the attribute readback below used to be asserted on.
+    ok("no loader-vocabulary attribute is left on the element",
+      state.legacyDataStoreAttribute === null,
+      `data-store=${state.legacyDataStoreAttribute}`);
+
+    // 3b. The store's own path, end to end (#53). The layer runs in the page's world, where
+    //     `chrome.storage` does not exist, so its `chromeStorage` adapter relays through the
+    //     isolated-world bridge. That relay is new code and asserting the adapter's *name* would not
+    //     exercise it — measured: before the bridge existed the name already read `chromeStorage`
+    //     while every write went nowhere. So the round trip is driven here, on the page's own
+    //     channel, with a sentinel: page → bridge → chrome.storage → page. The worker reads the same
+    //     key back further down, which is what proves it landed in the extension's storage rather
+    //     than in something page-local.
+    const sentinel = JSON.parse(await browser.evaluate(`(async () => {
+      const origin = location.origin;
+      const key = 'bp-smoke-bridge-sentinel';
+      const replies = new Map();
+      const onReply = (event) => {
+        const data = event.data;
+        if (!data || data.source !== 'bluepencil-page' || typeof data.requestId !== 'string') return;
+        // The request this listener is waiting on is delivered here too (same window), and it carries
+        // no reply field — only an answer does. Without this, the first match is always the request.
+        if (!('reply' in data)) return;
+        const resolve = replies.get(data.requestId);
+        if (resolve) { replies.delete(data.requestId); resolve(data.reply ?? {}); }
+      };
+      window.addEventListener('message', onReply);
+      let seq = 0;
+      const call = (payload) => new Promise((resolve) => {
+        const requestId = 'smoke-' + (++seq);
+        const timer = setTimeout(() => {
+          replies.delete(requestId);
+          resolve({ ok: false, error: 'no answer within 5000 ms' });
+        }, 5000);
+        replies.set(requestId, (reply) => { clearTimeout(timer); resolve(reply); });
+        window.postMessage({ source: 'bluepencil-page', kind: 'storage', ...payload, requestId }, origin);
+      });
+      const set = await call({ op: 'set', items: { [key]: 'from-the-page' } });
+      const got = await call({ op: 'get', keys: [key] });
+      window.removeEventListener('message', onReply);
+      return JSON.stringify({
+        key,
+        setOk: set.ok === true,
+        error: set.error ?? got.error ?? null,
+        getOk: got.ok === true,
+        value: got.value ? got.value[key] ?? null : null,
+      });
+    })()`));
+
+    ok("a page can persist into the extension's storage over the bridge",
+      sentinel.setOk === true && sentinel.getOk === true && sentinel.value === "from-the-page",
+      JSON.stringify(sentinel));
+    // The gap #53 was: the worker wrote the configuration, the layer never read it. Asserting the
+    // attribute alone cannot fail for that reason, so this reads the store the layer actually uses.
+    ok("the configured store reached the layer, not just the element",
+      state.adapterName === "chromeStorage",
+      `adapterName=${state.adapterName} — the element reads unprefixed attribute names (adapter, environment, app, identity, endpoint, token…)`);
+    console.log(
+      `INFO page world: ${state.pageChromeStorage}; chrome keys: ${state.pageChromeKeys}; ` +
+      `adapter attribute: ${state.adapterAttribute}; environment attribute: ${state.environmentAttribute}`,
+    );
     ok("the layer is styled under a strict CSP",
       state.position === "fixed" && state.zIndex !== null && state.zIndex !== "auto",
       `position=${state.position} zIndex=${state.zIndex} — the constructable fallback did not run`);
@@ -412,6 +487,18 @@ async function checkInBrowser() {
     //    a hand-built payload is enough — and asserting on it *is* the check that the page does not
     //    pretend to verify anything.
     await browser.attachTo((t) => t.targetId === worker.targetId);
+
+    // The other half of the sentinel round trip in step 3b: the page cannot see this object, so a
+    // value here is what makes that check mean "it was persisted", not "it was echoed back".
+    const persisted = JSON.parse(await browser.evaluate(`(async () => {
+      const key = 'bp-smoke-bridge-sentinel';
+      const stored = await chrome.storage.local.get(key);
+      await chrome.storage.local.remove(key);
+      return JSON.stringify({ value: stored[key] ?? null });
+    })()`));
+    ok("the sentinel the page wrote is in the extension's own storage",
+      persisted.value === "from-the-page", JSON.stringify(persisted));
+
     const openedTab = await browser.evaluate(`(async () => {
       const tab = await chrome.tabs.create({ url: chrome.runtime.getURL("options.html"), active: true });
       return tab.id ?? null;

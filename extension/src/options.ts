@@ -90,6 +90,12 @@ async function save_(): Promise<void> {
   save.disabled = true;
   try {
     const settings = normalizeSettings(readForm());
+    // A sidecar store without a URL is a store that cannot be reached: the element would fall back to
+    // its default `memory` and the notes would be gone on reload. Refusing to save says so instead.
+    if (settings.store === "http" && settings.endpoint.trim().length === 0) {
+      say("A sidecar needs a URL — without one the notes would be kept in this tab only.", "error");
+      return;
+    }
     // Save the normalized form, not the raw input: what is stored is exactly what the worker will
     // read back, so a bad value cannot sit in storage until the next mount fails.
     // The expiry is derived from the token rather than typed, so the user cannot state a wrong one.

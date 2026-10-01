@@ -18,7 +18,7 @@ describe("normalizeSettings", () => {
 
   it("returns a fresh copy, so a caller cannot mutate the defaults", () => {
     const first = normalizeSettings(null);
-    first.environment = "prod";
+    first.environment = "live";
     expect(normalizeSettings(null).environment).toBe("dev");
     expect(DEFAULT_SETTINGS.environment).toBe("dev");
   });
@@ -29,7 +29,7 @@ describe("normalizeSettings", () => {
       appName: "Wolfenbütteler Zeitung",
       language: "de",
       store: "http",
-      identity: "page",
+      identity: "anonymous",
       endpoint: "https://notes.example.test",
       auth: "token",
       token: "shared-secret",
@@ -51,7 +51,9 @@ describe("normalizeSettings", () => {
       ["language", "fr", "language"],
       ["store", "chrome", "store"],
       ["store", "chrome_storage", "store"],
-      ["identity", "anonymous", "identity"],
+      // `page` was the options page's "take it from the page", a mode the element never had; it is
+      // rejected like any other unknown value (#53).
+      ["identity", "page", "identity"],
       // The credential mode decides which header a credential goes out in, so a value outside the
       // set is not a cosmetic problem: it is the difference between a working request and a 401 that
       // looks like a dead server.
@@ -106,14 +108,14 @@ describe("normalizeSettings", () => {
   it("ignores unknown keys instead of passing them through", () => {
     // Forward compatibility runs the other way too: a newer version's key must not end up in the
     // object the worker hands to the page. It would be dead weight in a postMessage payload.
-    const result = normalizeSettings({ environment: "prod", futureFlag: true, __proto__: "x" });
-    expect(result).toEqual({ ...DEFAULT_SETTINGS, environment: "prod" });
+    const result = normalizeSettings({ environment: "live", futureFlag: true, __proto__: "x" });
+    expect(result).toEqual({ ...DEFAULT_SETTINGS, environment: "live" });
     expect(Object.keys(result)).toEqual(Object.keys(DEFAULT_SETTINGS));
     expect("futureFlag" in result).toBe(false);
   });
 
   it("is idempotent, so normalising a normalised value changes nothing", () => {
-    const once = normalizeSettings({ environment: "prod", appName: "WZ", store: "http" });
+    const once = normalizeSettings({ environment: "live", appName: "WZ", store: "http" });
     expect(normalizeSettings(once)).toEqual(once);
   });
 
@@ -121,9 +123,9 @@ describe("normalizeSettings", () => {
     // A JSON-parsed blob carrying __proto__ must not end up as a real prototype edit. The result is
     // a fresh object literal, so this holds structurally; the test pins it so a future refactor
     // that spreads the input cannot break it silently.
-    const result = normalizeSettings(JSON.parse('{"__proto__":{"polluted":true},"environment":"prod"}'));
+    const result = normalizeSettings(JSON.parse('{"__proto__":{"polluted":true},"environment":"live"}'));
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
-    expect(result.environment).toBe("prod");
+    expect(result.environment).toBe("live");
   });
 
   it("defaults to local-first, so a fresh install needs no server and no credential", () => {

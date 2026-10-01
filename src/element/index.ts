@@ -299,4 +299,16 @@ export function defineBluepencilElement(tagName: string = BluepencilNotesElement
   registry.define(tagName, BluepencilNotesElement);
 }
 
+/**
+ * The store's adapter registry, re-exported for hosts that build the element in a page's own world.
+ *
+ * The extension needs it: its store is `chromeStorage`, and `chrome.storage` is **not** reachable
+ * from the page a tab shows its user (measured: the page's `chrome` object carries `loadTimes`, `csi`
+ * and `app`, and no `storage`). The only party that can reach it is the extension's own isolated
+ * content script, so the page-side bootstrap registers a factory here whose area relays over the
+ * existing bridge — before `defineBluepencilElement()` runs, so the element reads the registered
+ * factory rather than the built-in one.
+ */
+export { registerAdapter } from "../index";
+
 defineBluepencilElement();
