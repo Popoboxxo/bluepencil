@@ -1,3 +1,63 @@
+## [0.3.2] - 2026-10-02
+
+### Fixed
+
+**The extension's settings reach the layer — and its rounds survive a reload (#53, #55).** The worker
+wrote its configuration onto `<bluepencil-notes>` in the *loader's* spelling (`data-store`,
+`data-adapter`, …), which only `dist/attach.js` translates. The element reads the plain names, so it
+read nothing and used its default `memory` store while the attribute readback still said
+`chromeStorage`: the settings page looked connected and every round died with the tab. Measured against
+the built bundle before the fix — `adapter="localStorage"` → `localStorage`, but
+`data-store="chromeStorage"` → `memory`.
+
+The translation now lives in one place, `extension/src/handoff.ts` (unit-tested), and the worker builds
+the element's attributes from it. The vocabulary that comes with it: the environment is
+`dev|staging|live` (the page offered `prod`, which the element rejects, and a stored `prod` is read as
+`live`), `identity` is `prompt|anonymous` (`page` was never a mode the element had), a note's route
+comes from `route="url"` instead of the `data-bluepencil-url` that nothing read, and a sidecar store
+without a URL is refused when it is saved rather than failing on the first note.
+
+**The store the extension ships with can now persist.** The layer runs in the page's own world, and
+that world has no `chrome.storage` at all — the page's `chrome` object carries `loadTimes`, `csi` and
+`app`. So the configured store degraded to `memory` even once the settings arrived. The isolated-world
+bridge now relays `get`/`set`/`remove`, and the element bundle re-exports `registerAdapter` so the page
+can point `chromeStorage` at that relay before the element is defined. A relay that never answers does
+not hang the store: it rejects after 8 s and the adapter's documented degrade path takes over.
+
+### Changed
+
+**The README describes every way in, and the extension itself (#54).** Eight integration modes — npm
+subpaths, the classic `<script>`/IIFE build, the one-tag attach loader, the element alone, a
+bookmarklet, a self-hosted sidecar, the Chromium extension and the headless CLI/MCP/`bluepencil/data`
+surfaces — each checked against the code rather than paraphrased, plus the extension's requirements
+(Chrome 116+, `npm run build` → `build:ext`, *Load unpacked* from `extension/dist`, or the release
+zip), its settings and the credential it sends — `x-bluepencil-auth` for a shared secret,
+`Authorization: Bearer …` for a token.
+
+### Verified
+
+`npm run verify` green on this branch — 675 unit tests (30 files), the packaging, embed and e2e
+smokes, and **45 extension smoke checks** in a real Chrome (42 of 44 before the bridge landed). The
+extension smoke now asserts the effect instead of the attribute it used to read: the layer's `adapter`
+is `chromeStorage`, no `data-*` configuration attribute is left on the element, and a sentinel written
+from the page comes back out of `chrome.storage.local` in the worker — a page → bridge → storage →
+page round trip with an independent readback. `npm run secret-scan` clean, and
+`scripts/release-preflight.mjs --tag v0.3.2` accepts the tag against `package.json`,
+`extension/manifest.json` and this section.
+
+### Known gaps
+
+- The bridge relays over the page's own message channel, so a page that blocks `postMessage` on its
+  window (a hostile CSP, a script that stops the event) keeps the layer on `memory`. The smoke covers
+  the normal path, and the relay fails loudly rather than silently — but it is a dependency on the
+  host page that was not there before.
+- Two traps found while verifying are fixed, and worth knowing as a class: `postMessage` delivers a
+  message to the listener of the window that sent it (so matching `source` + `requestId` alone matches
+  the *request*, not the answer), and a backtick inside a comment inside a template literal ends the
+  literal. Both bit the extension's page-side probes before they bit anything else.
+- Publishing to the npm registry is still not part of the release (no token set): install from the tag
+  (`npm i github:Popoboxxo/bluepencil#v0.3.2`) or take the `.tgz` from the GitHub release.
+
 ## [0.3.1] - 2026-10-01
 
 ### Changed
