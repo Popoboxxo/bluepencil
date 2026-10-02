@@ -45,8 +45,10 @@ The workflow then:
 - publishes the release with the changelog section as its body, then attests build provenance. The
   release is published before the attestation, and an attestation failure is reported without costing
   the release;
-- and that publish is what starts the store leg: `chrome-webstore.yml` hands the release's own
-  extension zip to the Chrome Web Store (see [The Chrome Web Store](#the-chrome-web-store)).
+- and then dispatches the store leg: `chrome-webstore.yml` hands the release's own extension zip to the
+  Chrome Web Store (see [The Chrome Web Store](#the-chrome-web-store)). The dispatch is explicit
+  because a release published with `GITHUB_TOKEN` does not start workflow runs — the listener cannot
+  hear it, which is how v0.4.0 shipped its extension nowhere.
 
 Assets: `attach.js`, `bluepencil.element.min.js`, `bluepencil-<version>.tgz`,
 `bluepencil-extension-<version>.zip` (unpack it and load the folder as an unpacked MV3 extension) and
@@ -57,12 +59,19 @@ failing, so a half-written release is recoverable.
 
 ## The Chrome Web Store
 
-Publishing the release also triggers `.github/workflows/chrome-webstore.yml`, which hands
-`bluepencil-extension-<version>.zip` — the asset the release just published, not a second build — to
-the Chrome Web Store. Before it uploads, it checks the digest against the release's `SHA256SUMS` and
-the zip's `manifest.json` version against the tag, so the store cannot receive anything other than the
-artefact `verify` smoke-tested. Prereleases are skipped: an `-alpha` tag is a release object too, and
-the public store is not where those belong.
+The release job dispatches `.github/workflows/chrome-webstore.yml` once the release is published, and
+that workflow hands `bluepencil-extension-<version>.zip` — the asset the release just published, not a
+second build — to the Chrome Web Store. The dispatch is deliberate rather than a `release: published`
+trigger: a release published with `GITHUB_TOKEN` does not start workflow runs at all, so that listener
+would never fire (measured on v0.4.0, whose extension reached no store). The release job therefore
+calls `gh workflow run chrome-webstore.yml` itself, which needs `actions: write` on its token — and a
+dispatch that fails marks the release run red *after* the release is published, which is the honest
+place for it: the release is out, the store leg is not started, and someone has to know.
+
+Before it uploads, that workflow checks the digest against the release's `SHA256SUMS` and the zip's
+`manifest.json` version against the tag, so the store cannot receive anything other than the artefact
+`verify` smoke-tested. Prereleases are not dispatched: an `-alpha` tag is a release object too, and the
+public store is not where those belong.
 
 It needs five repository secrets: `EXTENSION_ID`, `PUBLISHER_ID`, and the OAuth trio `CLIENT_ID`,
 `CLIENT_SECRET`, `REFRESH_TOKEN`. To test them without touching the store, dispatch the workflow with
@@ -95,3 +104,7 @@ it in front of review.
   credentials (`action: check-credentials` says so on its own), the asset (the digest and version check
   refuses before the store sees it), or the store itself (a version that already exists, or an item
   that does not exist yet — the API cannot create one).
+- **A store leg that never started** → the release run's own `Start the store leg` step fails, because
+  the dispatch is what starts it and the step does not swallow that. The usual cause is a token
+  without `actions: write`; without the step, a release looks entirely successful while its extension
+  goes nowhere.
