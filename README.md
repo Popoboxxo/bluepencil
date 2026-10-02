@@ -337,6 +337,12 @@ so CI, scripts and agents use exactly the same data and validators as the UI.
   rule applies to bundles handed to CI or checked into a repo.
 * **No self-deletion.** The browser library never deletes notes on its own (D5): bulk delete
   (FR-8.2, M2) and retention (FR-8.4, M4) are not part of M1.
+* **The store-facing policy is [docs/PRIVACY.md](docs/PRIVACY.md).** It is the privacy policy
+  published with the extension, and it carries the required Limited Use statement: *the use of
+  information received from Google APIs will adhere to the Chrome Web Store User Data Policy,
+  including the Limited Use requirements.* The dashboard copy lives in
+  [docs/WEBSTORE.md](docs/WEBSTORE.md), and `npm run smoke:webstore` keeps the manifest, the shipped
+  code and that copy in step.
 
 The pipeline keeps these claims checkable: `.github/workflows/ci.yml` runs the typecheck, the unit
 tests, the build, the size guard, the CLI/MCP/packaging smoke scripts (`scripts/cli-smoke.mjs`,
