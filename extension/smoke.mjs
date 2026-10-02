@@ -516,6 +516,24 @@ async function checkInBrowser() {
     ok("the options page offers every credential mode",
       modes.join(",") === "none,secret,token", modes.join(","));
 
+    // The disclosure, and it is checked here rather than trusted from the HTML: the Chrome Web Store
+    // requires a prominent disclosure *in the product's own UI* (User Data FAQ §10), so "the markup
+    // exists in the source" is the wrong question — what has to be true is that the rendered page
+    // says what is stored and points at the policy.
+    const disclosure = JSON.parse(await browser.evaluate(`(() => {
+      const el = document.querySelector(".disclosure");
+      return JSON.stringify({
+        present: el !== null,
+        heading: el?.querySelector("h2")?.textContent ?? null,
+        bullets: el?.querySelectorAll("li").length ?? 0,
+        policyLink: el?.querySelector("a")?.getAttribute("href") ?? null,
+      });
+    })()`));
+    ok("the options page discloses what is stored and links the policy",
+      disclosure.present === true && /What Bluepencil stores/.test(disclosure.heading ?? "") &&
+        disclosure.bullets >= 3 && /privacy/i.test(disclosure.policyLink ?? ""),
+      JSON.stringify(disclosure));
+
     // Six hours out, in the JWT's own unit (seconds since the epoch). The signature is nonsense on
     // purpose: nothing on this page may look at it.
     const expSeconds = Math.floor(Date.now() / 1000) + 6 * 60 * 60;
@@ -650,6 +668,7 @@ async function checkInBrowser() {
         sample("#auth option", "an option in the open dropdown"),
         sample(".warn", "the sidecar warning"),
         sample(".hint", "a hint line"),
+        sample(".disclosure", "the data disclosure"),
       ]);
     })()`;
 

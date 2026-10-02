@@ -90,6 +90,8 @@
     "serve": "node dist/server.js",
     "build:ext": "node extension/build.mjs",
     "smoke:ext": "node extension/smoke.mjs",
+    "smoke:webstore": "node scripts/webstore-compliance.mjs",
+    "build:site": "node scripts/build-site.mjs",
     "smoke:cli": "node scripts/cli-smoke.mjs",
     "smoke:mcp": "node scripts/mcp-smoke.mjs",
     "smoke:pack": "node scripts/pack-smoke.mjs",
@@ -99,7 +101,7 @@
     "spec:check": "reqmd check spec/",
     "spec:ls": "reqmd ls spec/",
     "spec:stats": "reqmd stats spec/",
-    "verify": "npm run typecheck && npm run typecheck:ext && npm run test && npm run build && npm run build:ext && npm run size && npm run smoke:pack && npm run smoke:embed && npm run smoke:e2e && npm run smoke:ext",
+    "verify": "npm run typecheck && npm run typecheck:ext && npm run test && npm run build && npm run build:ext && npm run size && npm run smoke:pack && npm run smoke:embed && npm run smoke:e2e && npm run smoke:ext && npm run smoke:webstore",
     "smoke:e2e": "node tests/e2e/vanilla.e2e.mjs"
   },
   "dependencies": {},

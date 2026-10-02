@@ -24,6 +24,12 @@
 #     malformed requirement block fails the build. The regeneration step also proves the committed
 #     spec/ matches the source table — a drifted spec fails instead of passing silently.
 #
+#   - webstore-compliance: the manifest, the shipped code and the dashboard copy (docs/WEBSTORE.md)
+#     against the Chrome Web Store program policies. Its hard checks are MV3, no remote code, no
+#     obfuscation, the permission set, and that every permission is justified in the copy — so the
+#     form cannot drift away from the artefact. Judgement calls (permission breadth, in-product
+#     disclosure) are printed as ADVICE and never fail the build.
+#
 # Both real-browser legs need a Chrome/Chromium; the runner image ships one, and BP_REQUIRE_BROWSER=1
 # makes a missing browser a failure so the browser round cannot be skipped silently.
 name: CI
@@ -132,6 +138,18 @@ jobs:
 
       - name: Build extension (MV3)
         run: npm run build:ext
+
+      - name: Chrome Web Store compliance
+        # The manifest, the shipped code and the dashboard copy (docs/WEBSTORE.md) are checked against
+        # the store's program policies here. It runs on the built extension, so a permission added to
+        # the manifest without a justification in the copy fails the build instead of the review.
+        run: npm run smoke:webstore
+
+      - name: Build the policy site
+        # `docs/PRIVACY.md` is the single source for the URL the store form points at. The Pages
+        # workflow renders it, but only on main — this catches a renderer that lost the Limited Use
+        # sentence (or the document outline) before the policy is published.
+        run: npm run build:site
 
       - name: Extension smoke (MV3 extension in a real Chrome)
         env:

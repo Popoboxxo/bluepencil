@@ -269,6 +269,14 @@ chrome.commands.onCommand.addListener((command) => {
 });
 
 // Declared for the type checker; the object itself is provided by the extension host.
+//
+// `url` is declared because the calls below still read `tab.url` and pass it to `mountOnTab`, where it
+// feeds the `tabUrl` field of the mount configuration. Nothing consumes that field: the page a note
+// belongs to comes from the element's own `route="url"`, which reads the page's `location.href`. So the
+// `tabs` permission is deliberately NOT requested — the active tab's URL is covered by the http/https
+// host permission, and `chrome.tabs.query` / `tab.id` never needed a permission at all. Re-adding
+// `tabs` would be an extra permission for data nothing reads; `npm run smoke:webstore` fails if it
+// comes back.
 declare const chrome: {
   runtime: {
     getURL(path: string): string;

@@ -1,0 +1,77 @@
+# The website the Chrome Web Store privacy-policy field points at.
+#
+# `docs/PRIVACY.md` is the single source of the policy; `scripts/build-site.mjs` renders it (plus a
+# one-screen landing page) into `site/`, which is a build artefact and gitignored. This workflow
+# publishes that output to the `gh-pages` branch, which is what GitHub Pages serves.
+#
+# Why a branch and not `actions/deploy-pages`: this publishes from `main` only, and the whole point of
+# the page is that its URL is stable for as long as the store item is published. A branch is one thing
+# to reason about — `git show gh-pages:privacy/index.html` tells you exactly what the store links to —
+# and re-running it is idempotent.
+#
+# Pages has to be enabled once for this repository (Settings → Pages → Source: "Deploy from a branch",
+# branch `gh-pages`, folder `/`). Until then the push here succeeds and serves nothing.
+name: pages
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "docs/PRIVACY.md"
+      - "docs/WEBSTORE.md"
+      - "scripts/build-site.mjs"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One publisher at a time: two force-pushes to gh-pages in flight is a race the second one loses.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish the policy site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # No `npm ci`: the generator is dependency-free by design (NFR-4), like every other script here.
+      - name: Render the site
+        run: npm run build:site
+
+      - name: Check the rendered policy, not just that the build exited 0
+        run: |
+          set -euo pipefail
+          for needle in "Chrome Web Store User Data Policy" "Limited Use" "Privacy policy"; do
+            grep -qF "$needle" site/privacy/index.html \
+              || { echo "::error::site/privacy/index.html lost \"$needle\" — refusing to publish"; exit 1; }
+          done
+          test -f site/index.html
+          test -f site/.nojekyll
+          echo "index.html $(wc -c < site/index.html) B, privacy/index.html $(wc -c < site/privacy/index.html) B"
+
+      - name: Publish to the gh-pages branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          cd site
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "chore(site): publish from ${SHA:0:7}"
+          # Only the token URL authenticates this push: the checkout's extraheader lives in the parent
+          # repository's local config, and clearing it here keeps exactly one credential on the wire.
+          git -c "http.https://github.com/.extraheader=" \
+            push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git" gh-pages
+          echo "published $(git rev-parse --short HEAD) to gh-pages"
