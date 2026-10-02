@@ -1,3 +1,96 @@
+## [0.4.0] - 2026-10-03
+
+### Added
+
+**The store submission is a build artefact now, not a form someone fills in from memory (#59).**
+`scripts/webstore-compliance.mjs` (`npm run smoke:webstore`) checks the three things that drift apart
+silently — the manifest, the shipped code and the dashboard copy in `docs/WEBSTORE.md` — against the
+program policies: MV3, no string evaluation, no remote import, no obfuscation, no `code:` injection, no
+hardcoded remote origin, the permission set, and that every permission the manifest requests has a
+justification block in the copy that names it. **38 checks**, of which four are judgement calls
+(permission breadth, the in-product disclosure, the plain-http sidecar endpoint) and print as `ADVICE`:
+they never fail the build. It runs inside `npm run verify` and as its own CI step after `build:ext`, so
+a permission added to the manifest without a justification fails the build instead of the review.
+
+**The dashboard copy lives in one place, written to be pasted verbatim** (`docs/WEBSTORE.md`): the
+single purpose, the five permission justifications, the remote-code answer, the data-usage
+disclosures, the privacy-policy URL, the listing copy — and the five decisions with the evidence behind
+them, because the next person to touch the manifest has to know *why* it looks the way it does.
+
+**The privacy policy is published from one source** (`docs/PRIVACY.md` → `scripts/build-site.mjs` →
+`site/`, gitignored artefact → `gh-pages` via `.github/workflows/pages.yml`). The workflow greps the
+rendered page for the *Limited Use* sentence and the User Data Policy before it publishes, so a
+renderer that loses either stops instead of serving a policy that no longer says what the store
+requires. Live at **https://popoboxxo.github.io/bluepencil/privacy/** — checked from here: `200`,
+7,446 bytes, the sentence present twice. The README links the policy, so the statement is one click
+from the project homepage.
+
+**Publishing a release now hands the extension to the Chrome Web Store** (#57,
+`.github/workflows/chrome-webstore.yml`). It takes the release's **own** zip — nothing is rebuilt, so
+the bytes the store serves are the bytes `npm run smoke:ext` tested — verifies its digest against the
+release's `SHA256SUMS` and its `manifest.json` version against the tag, skips prereleases, and only
+then calls the store. `workflow_dispatch` offers `check-credentials`, `upload` (stages a version
+without publishing it) and `publish`.
+
+### Changed
+
+**The extension asks for one permission less: `tabs` is gone (D2).** Nothing needed it. `chrome.tabs.query`
+and `tab.id` never required a permission; `tab.url` fed only the `tabUrl` field of the mount
+configuration, and nothing reads that field — the page a note belongs to comes from the element's own
+`route="url"`, which reads the page's `location.href` in the page itself; and the http/https host
+permission covers a tab's URL anyway. `scripts/webstore-compliance.mjs` fails the build if `tabs` ever
+comes back, and `extension/src/sw.ts` carries that reasoning right above the `chrome` declaration.
+
+**The options page discloses what is stored, before any field (D3).** It names the categories that
+actually exist — the notes you create, the settings, and the sidecar URL and credential if you enter
+them — and links the policy. Checked twice over: statically in the compliance script, and in
+`smoke:ext` on the **rendered** page (present, the heading, at least three bullets, a policy link),
+including its contrast in both colour schemes, the same guard the other fields carry. The grep for
+the markup is deliberately not the test: what the User Data FAQ asks for is a disclosure in the
+product's own UI, and the markup existing in the source is not that.
+
+**Two decisions recorded so a well-meaning cleanup does not undo them.** D1: the broad
+`http(s)://*/*` host permission **stays** — it exists for the registered MAIN-world content script,
+which is what keeps the overlay alive when the user navigates — and the form justifies it by exactly
+that behaviour and by nothing else. That testability is also true, and is not a justification the
+store accepts, which is why the copy does not mention it. D4: a non-loopback plain-http sidecar
+endpoint is **justified, not a gap** — the endpoint is user-specified and no developer server is
+involved (User Data FAQ §15), loopback additionally exempt (§16).
+
+**CI runs both new checks**, and the policy site is built there too, so a broken renderer fails before
+anything is published.
+
+### Verified
+
+`npm run verify` green on this branch: `typecheck` + `typecheck:ext`, **675 unit tests** in 30 files,
+`build` + `build:ext`, the size guard, the pack/embed/e2e smokes, **47 extension smoke checks** in a
+real Chrome (46 in 0.3.2; the disclosure case is new) and the new **38-check** store compliance smoke.
+`npm run secret-scan` clean, `npm run spec` **130/130 valid**, and
+`scripts/release-preflight.mjs --tag v0.4.0` accepts the tag against `package.json`,
+`extension/manifest.json` and this section.
+
+The extension smoke's attach probe has a fixed 20 s budget and no retry, and one local run on this
+commit lost that race — `no extension service worker matching /bluepencil/i`, with a worker whose URL
+ends in `/sw.js` (the file the manifest registers) probed once, recorded as `no manifest` and skipped
+for the rest of the budget. The same commit then passed twice in a row and passed in CI, so it is a
+false negative in the harness, not a regression here. Filed as #60.
+
+### Known gaps
+
+- **The store credentials do not work yet (#58).** `action: check-credentials` gets
+  `401 unauthorized_client` from Google's token endpoint: the refresh token is not accepted for the
+  client id in the secrets (a token minted for another client, or one expired — the documented setup
+  keeps the consent screen in *Testing*, where Google expires refresh tokens after 7 days). Until it
+  is regenerated, the store leg starts on every release and fails there: the release itself is
+  unaffected, and nothing is uploaded or staged. #58 has the fix and the command that re-tests it.
+- **The first submission and the listing stay manual.** The API can publish a new version of an item;
+  it cannot create one, so the artefact and the form go in by hand once (icon, screenshots, the
+  privacy-practices fields from `docs/WEBSTORE.md`).
+- **The broad host permission costs review time** — the accepted price of D1. The narrower
+  `activeTab`-only shape is written up in `docs/WEBSTORE.md` as the alternative, not as work in flight.
+- Publishing to the npm registry is still not part of the release (no token set): install from the tag
+  (`npm i github:Popoboxxo/bluepencil#v0.4.0`) or take the `.tgz` from the GitHub release.
+
 ## [0.3.2] - 2026-10-02
 
 ### Fixed
