@@ -145,6 +145,12 @@ jobs:
         # the manifest without a justification in the copy fails the build instead of the review.
         run: npm run smoke:webstore
 
+      - name: Build the policy site
+        # `docs/PRIVACY.md` is the single source for the URL the store form points at. The Pages
+        # workflow renders it, but only on main — this catches a renderer that lost the Limited Use
+        # sentence (or the document outline) before the policy is published.
+        run: npm run build:site
+
       - name: Extension smoke (MV3 extension in a real Chrome)
         env:
           # Loads the built extension into Chrome and needs a browser for every one of its checks;
