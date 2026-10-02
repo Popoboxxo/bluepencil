@@ -44,7 +44,9 @@ The workflow then:
   missing asset or a digest that no longer matches stops the release;
 - publishes the release with the changelog section as its body, then attests build provenance. The
   release is published before the attestation, and an attestation failure is reported without costing
-  the release.
+  the release;
+- and that publish is what starts the store leg: `chrome-webstore.yml` hands the release's own
+  extension zip to the Chrome Web Store (see [The Chrome Web Store](#the-chrome-web-store)).
 
 Assets: `attach.js`, `bluepencil.element.min.js`, `bluepencil-<version>.tgz`,
 `bluepencil-extension-<version>.zip` (unpack it and load the folder as an unpacked MV3 extension) and
@@ -53,14 +55,31 @@ Assets: `attach.js`, `bluepencil.element.min.js`, `bluepencil-<version>.tgz`,
 Re-running the workflow (`workflow_dispatch` with an existing tag) **updates** the release instead of
 failing, so a half-written release is recoverable.
 
+## The Chrome Web Store
+
+Publishing the release also triggers `.github/workflows/chrome-webstore.yml`, which hands
+`bluepencil-extension-<version>.zip` — the asset the release just published, not a second build — to
+the Chrome Web Store. Before it uploads, it checks the digest against the release's `SHA256SUMS` and
+the zip's `manifest.json` version against the tag, so the store cannot receive anything other than the
+artefact `verify` smoke-tested. Prereleases are skipped: an `-alpha` tag is a release object too, and
+the public store is not where those belong.
+
+It needs five repository secrets: `EXTENSION_ID`, `PUBLISHER_ID`, and the OAuth trio `CLIENT_ID`,
+`CLIENT_SECRET`, `REFRESH_TOKEN`. To test them without touching the store, dispatch the workflow with
+`action: check-credentials`; `action: upload` stages a version without publishing it, which is how to
+find out whether the store accepts an artefact at all; `action: publish` — what a release does — puts
+it in front of review.
+
 ## Deliberately not automated
 
 - **npm publish.** The package is installable from the tag —
   `npm i github:Popoboxxo/bluepencil#v<version>` — because `prepare` builds `dist/` during install
   (without it, a git install has no `dist/` and every entry in `exports` points at nothing). Publishing
   to the registry is a separate decision and would need an `NPM_TOKEN` secret plus `--provenance`.
-- **Chrome Web Store.** The extension ships as a zip for `chrome://extensions` → *Load unpacked*. A
-  store listing is its own project: review, permission justifications, screenshots.
+- **The first store submission, and the listing.** The Web Store API can publish a new *version* of an
+  item that exists; it cannot create one. Listing copy, permission justifications and screenshots are
+  dashboard work, and the review that follows is not something a workflow can hurry. Everything after
+  that first submission is automated — see above.
 
 ## Failure modes worth knowing
 
@@ -70,3 +89,9 @@ failing, so a half-written release is recoverable.
   published.
 - **An extension that no longer mounts** → `smoke:ext` runs inside the release job, on the copy that
   would be attached. There is no path that publishes an extension the smoke never saw.
+- **A store upload that does not happen** → the release is already published by then, so the store leg
+  is a separate job (`.github/workflows/chrome-webstore.yml`) and re-running it is safe: everything up
+  to the upload is a download and a check. Read the failure for which of the three it is — the
+  credentials (`action: check-credentials` says so on its own), the asset (the digest and version check
+  refuses before the store sees it), or the store itself (a version that already exists, or an item
+  that does not exist yet — the API cannot create one).

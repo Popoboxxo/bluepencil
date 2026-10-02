@@ -12,7 +12,7 @@ npm run build:ext     # writes extension/dist/
 Then load it: `chrome://extensions` → enable *Developer mode* → *Load unpacked* → pick
 `extension/dist`.
 
-`npm run smoke:ext` verifies the build: 41 checks, of which the last dozen drive a real Chrome against
+`npm run smoke:ext` verifies the build: 46 checks, of which the last dozen drive a real Chrome against
 a host page with `script-src 'self'` and assert the layer actually mounted there. The options page
 has its own cases in that suite — the credential mode, the header it means, and the expiry line —
 because the settings UI is the only place a credential is entered and it was otherwise untested.
@@ -23,6 +23,12 @@ Every push to `main` builds the packaged extension and attaches it as a workflow
 (`.github/workflows/extension.yml`). A `v*` tag additionally creates a GitHub release with the zip
 attached, so a Chrome Web Store upload is a download of that artefact — no local build needed. The
 artefact is the content of `extension/dist` zipped, which is also what *Load unpacked* takes.
+
+That upload is automated. Publishing the release runs `.github/workflows/chrome-webstore.yml`, which
+takes the release's own zip — nothing is rebuilt, so the bytes the store serves are the bytes
+`npm run smoke:ext` tested — and hands it to the store. It needs the five store secrets, and it is the
+one step that requires the extension to exist in the store already: the API can publish new versions
+of an item, never create one.
 
 ## What it looks for on a page
 
