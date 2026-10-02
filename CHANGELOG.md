@@ -32,6 +32,13 @@ release's `SHA256SUMS` and its `manifest.json` version against the tag, skips pr
 then calls the store. `workflow_dispatch` offers `check-credentials`, `upload` (stages a version
 without publishing it) and `publish`.
 
+> **Correction (0.4.1).** This paragraph is what 0.4.0 shipped, and the first half of it was wrong:
+> the workflow listened for `release: published`, and a release published with `GITHUB_TOKEN` does not
+> start workflow runs, so that listener never fired and 0.4.0's extension reached no store at all. The
+> wiring itself (the download, the digest and version checks, the store call) was correct — only
+> nothing started it. The release job now dispatches the store workflow explicitly, which is why the
+> claim above is true from 0.4.1 on.
+
 ### Changed
 
 **The extension asks for one permission less: `tabs` is gone (D2).** Nothing needed it. `chrome.tabs.query`

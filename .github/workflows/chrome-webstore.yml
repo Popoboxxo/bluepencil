@@ -6,10 +6,12 @@
 # installs and the bytes the store serves are therefore the same bytes, and there is no second build
 # that could differ from the one that was checked.
 #
-# Triggered by the release being *published*, not by the tag: the tag starts `release.yml`, and this
-# runs after that has verified, built, checksummed and published. Re-publishing a release (a
-# `workflow_dispatch` run of `release.yml`) fires `release: edited`, so it does not push a duplicate
-# version at the store.
+# Started by `release.yml` once the release is published, not by the release event itself: a release
+# published with `GITHUB_TOKEN` does not start workflow runs — GitHub suppresses events raised by the
+# token so a workflow cannot recurse — so the release job dispatches this one explicitly (`gh workflow
+# run`), which is an API call rather than an event and does start a run. Required: `actions: write` on
+# the release job. Re-publishing a release (a `workflow_dispatch` run of `release.yml`) dispatches
+# again, and the store answers a version it already has with a rejection rather than a duplicate.
 #
 # Known limits, stated rather than discovered later:
 #

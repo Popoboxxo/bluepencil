@@ -45,6 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # create or update the release
+      actions: write # dispatch the store leg (see below)
       id-token: write # signed provenance for the assets
       attestations: write
     steps:
@@ -154,6 +155,25 @@ jobs:
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: release-assets/*
+
+      - name: Start the store leg
+        # `chrome-webstore.yml` listens for `release: published`, and that listener can never hear this
+        # release: events raised by `GITHUB_TOKEN` do not start workflow runs — GitHub suppresses them
+        # so a workflow cannot recurse into itself, and the release above is created with that token.
+        # Measured on v0.4.0: the release went out and no store run appeared at all. An explicit
+        # dispatch is an ordinary API call rather than an event, so it does start one.
+        #
+        # Not `continue-on-error`: a store leg that never starts is exactly the failure this step
+        # exists to prevent, and it must be loud. The release is already published by this point.
+        if: ${{ !inputs.dry_run && !contains(steps.release.outputs.tag, '-') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run chrome-webstore.yml --ref main -f tag="$TAG" -f action=publish
+          echo "dispatched chrome-webstore.yml for $TAG — the store leg reports its own outcome"
+          echo "(a prerelease tag is not dispatched; an '-alpha' tag has no business in the public store)"
 
       - name: Summary
         if: always()
