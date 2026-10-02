@@ -91,6 +91,7 @@
     "build:ext": "node extension/build.mjs",
     "smoke:ext": "node extension/smoke.mjs",
     "smoke:webstore": "node scripts/webstore-compliance.mjs",
+    "build:site": "node scripts/build-site.mjs",
     "smoke:cli": "node scripts/cli-smoke.mjs",
     "smoke:mcp": "node scripts/mcp-smoke.mjs",
     "smoke:pack": "node scripts/pack-smoke.mjs",

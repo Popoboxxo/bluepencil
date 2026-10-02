@@ -9,19 +9,23 @@ apart. `npm run smoke:webstore` checks the three against each other.
 Everything in the blocks below is written to be pasted **verbatim**. The character budgets are the
 form's own (1,000 per field, 2,048 for the privacy-policy URL) and each block stays well under.
 
-> **Status: not yet compliant.** Four items in [Findings](#findings--decide-before-submitting) need a
-> decision before the first submission. Nothing in the manifest's permission set may be justified
-> until they are settled, because F1/F2 change what the justification fields have to say.
+> **Status: submittable.** The decisions below are taken — the host permission is kept and justified,
+> `tabs` is gone, the in-product disclosure is in the options page, and the plain-http sidecar endpoint
+> is justified rather than a gap. What is left is mechanical: enable Pages once, then fill the form
+> from the blocks below.
 
 ## How to use this page
 
-1. Settle the findings below. F1 and F2 are manifest changes; F3 and F4 are small UI changes.
+1. Enable GitHub Pages once: *Settings → Pages → Deploy from a branch*, branch `gh-pages`, folder `/`.
+   `.github/workflows/pages.yml` builds the site and publishes it there; the branch appears with the
+   first run, and the first run needs the workflow on `main`.
 2. `npm run build:ext` and upload `extension/dist` (zipped) as a new item.
 3. Fill in the **Privacy practices** tab from the copy blocks below.
-4. Host `docs/PRIVACY.md` and paste the rendered URL into the *Privacy policy* field. The
-   *Limited Use* paragraph must be reachable one click from the project homepage — the README links
-   it for exactly that reason.
-5. `npm run smoke:webstore` — it fails if the copy and the manifest have drifted apart.
+4. Paste `https://popoboxxo.github.io/bluepencil/privacy/` into the *Privacy policy* field. The
+   *Limited Use* paragraph is on that page, and the README links `docs/PRIVACY.md`, so the statement is
+   one click from the project homepage as well.
+5. `npm run smoke:webstore` — it fails if the copy, the manifest and the shipped code have drifted
+   apart.
 
 ## Compliance at a glance
 
@@ -34,12 +38,12 @@ unless it is marked *manual*.
 | Technical → MV3 | Manifest V3, logic self-contained | ✅ `manifest_version: 3` |
 | Technical → MV3 §1 | No remote code, no string evaluation | ✅ no `eval`, no `new Function`, no dynamic `import()`, CSP `script-src 'self'` |
 | Technical → Code Readability | Not obfuscated | ✅ no packer artefacts; minification only |
-| Technical → API Use | Chrome APIs used for their purpose | ✅ `scripting`/`storage`/`activeTab`/`tabs` |
-| Privacy → Use of Permissions | Narrowest permission set | ⚠️ see **F1**, **F2** |
-| Privacy → Disclosure | In-product disclosure + consent | ⚠️ see **F3** |
-| Privacy → Privacy Policy | Accurate policy, posted in the dashboard | ⚠️ see **F5** — `docs/PRIVACY.md` exists, not yet hosted |
-| Privacy → Limited Use | Affirmative statement on a project page | ✅ `docs/PRIVACY.md` §Limited Use + README link |
-| Privacy → Handling | Secure transmission of user data | ⚠️ see **F4** |
+| Technical → API Use | Chrome APIs used for their purpose | ✅ `scripting`/`storage`/`activeTab` only |
+| Privacy → Use of Permissions | Narrowest permission set | ✅ `tabs` dropped (D2), host access kept and justified by behaviour (D1) |
+| Privacy → Disclosure | In-product disclosure + consent | ✅ options page, before any field; checked + contrast-measured |
+| Privacy → Privacy Policy | Accurate policy, posted in the dashboard | ✅ `docs/PRIVACY.md`, published at `/privacy/` (live) |
+| Privacy → Limited Use | Affirmative statement on a project page | ✅ live at `/privacy/` + linked from the README |
+| Privacy → Handling | Secure transmission of user data | ✅ sidecar endpoint is user-specified (FAQ §15), loopback exempt (§16) |
 | Quality → Single purpose | One narrow purpose | ✅ annotation layer, one sentence, nothing else |
 | Quality → Minimum Functionality | Real, working functionality | ✅ 46-check smoke in a real Chrome |
 | Marketing → Ads / Affiliate | No ads, no affiliate injection | ✅ none, and no permission that could inject |
@@ -47,68 +51,76 @@ unless it is marked *manual*.
 | Listing → Requirements | Icon, screenshots, accurate metadata | *manual* — dashboard upload, not code |
 | Technical → 2-Step Verification | 2SV enabled on the publisher account | *manual* — account setting |
 
-## Findings — decide before submitting
+## Decisions taken
 
-### F1 — `http://*/*` + `https://*/*` host access is broad (blocker)
+All four are settled. Each names the evidence, because the next person to touch the manifest or the
+options page has to know *why* it looks the way it does — otherwise the first well-meaning cleanup
+undoes it.
 
-**What the code does.** `sw.ts` registers a MAIN-world content script for `http://*/*` and
-`https://*/*` (`ensureBootstrapRegistered`), which is why the host permission is declared. The
-registration is what keeps the overlay alive when the user navigates within a page they switched the
-layer on for.
+### D1 — the `http(s)://*/*` host permission stays, justified by behaviour
 
-**Why it is a risk.** "Use of Permissions" asks for the narrowest scope that implements the existing
-feature, and the store warns that a host permission gets a thorough review. The reason written down
-in this repository (`extension/smoke.mjs`, `docs/EXTENSION.md`) is that the up-front grant is what
-makes the round trip testable in a headless browser — **true, and not a justification the store
-accepts.** The dashboard copy below therefore justifies it by user-facing behaviour only, which is
-also the only honest way to fill that field.
+**Decision: keep.** The registration in `sw.ts` (`ensureBootstrapRegistered`) is what keeps the overlay
+alive when the user navigates within a page they switched the layer on for; without it the user's notes
+would look lost on the first navigation. The dashboard text below justifies the permission by exactly
+that user-facing behaviour, and by nothing else.
 
-**Two ways out, pick one:**
+**What must not be written in the form.** `extension/smoke.mjs` and `docs/EXTENSION.md` say the
+up-front grant is what makes the round trip testable in a headless browser. That is true, and it is not
+a justification the store accepts — "Use of Permissions" is about the feature, not the test. The
+justification block deliberately does not repeat it. The cost of this choice is a slower review, which
+is the honest trade.
 
-- **A — keep it, justify it by behaviour.** The text in
-  [Justification — host permission](#justification--host-permission) already does this. Fastest, and
-  honest; the cost is a slower review and a permission prompt at install.
-- **B — drop it (recommended).** Remove `host_permissions`, drop `ensureBootstrapRegistered`, and
-  inject `bootstrap.js` + `bridge.js` with `chrome.scripting.executeScript` under the `activeTab`
-  grant that the toolbar click already provides (the mount path already does this for the current
-  tab — only the *persistent* registration is left). Result: no host permission at all, and `tabs`
-  goes with it (F2). Cost: the layer no longer reappears by itself after a navigation; the user
-  clicks again. The smoke test's host permission exemption would need rework, since CI loads the
-  extension with `Extensions.loadUnpacked` and can drive `executeScript` on a granted tab.
+### D2 — `tabs` is gone
 
-### F2 — `tabs` can be dropped (recommended)
+**Decision: removed from the manifest.** It was needed by nothing:
 
-`tabs` unlocks `url`/`title` for tabs the extension has **no host access to**. With `http://*/*` and
-`https://*/*` declared, the active tab's URL is readable without it — `chrome.tabs.query` itself never
-needed a permission. Everywhere the worker reads `tab.url` (`action.onClicked`, `commands.onCommand`,
-the `bluepencil:mount` message) it is either inside the host scope or after an `activeTab` grant.
-Requesting it is exactly the "extra permission" the minimum-permission policy is about.
+- `chrome.tabs.query` and `tab.id` never required a permission.
+- `tab.url` only ever fed the `tabUrl` field of the mount configuration, and nothing reads that field:
+  the page a note belongs to comes from the element's own `route="url"`, which reads the page's
+  `location.href` **in the page itself**.
+- For the tabs that remain in scope, the `http(s)://*/*` host permission already grants `url`.
 
-Removing it is a two-line change (`extension/manifest.json`, and the `chrome.tabs` declaration in
-`sw.ts` loses nothing). It pairs with **F1 option B**; under **F1 option A** the loopback test host is
-still covered by the host permission, so the smoke stays green either way.
+It is not needed by the on/off switch either: the options page asks the worker over
+`chrome.runtime.sendMessage` and never touches `chrome.tabs` (the `wireToggle` declaration in
+`options.ts` says so, and the code does not lie). `npm run smoke:webstore` fails if `tabs` comes back,
+and `sw.ts` records the reasoning next to the `chrome.tabs` declaration, so the decision is visible
+where a future reader would look.
 
-### F3 — the in-product disclosure is missing
+### D3 — the in-product disclosure is in the options page
 
-The User Data FAQ is explicit: the prominent disclosure and the consent must happen **in the
-product's UI**, and a store description does not satisfy it. The extension today says nothing about
-what it stores before it stores it. A short paragraph plus the privacy-policy link, shown in the
-options page and on the first mount, is the standard shape and is enough — the notes are created by
-the user's own explicit action, so the consent is a confirmation rather than a gate.
+**Decision: implemented.** `extension/options.html` opens with a *What Bluepencil stores* section,
+before any field: it names the categories that are actually stored (the notes, the settings, and — only
+in sidecar mode — the URL plus credential), says what is *not* touched, and links the policy. The
+compliance check fails if the block or its link disappears, and `npm run smoke:ext` measures its
+contrast in both colour schemes.
 
-### F4 — a non-loopback `http://` sidecar endpoint transmits in the clear
+The residual, stated rather than hidden: the options page is not shown automatically, so a notice at the
+first mount would be the stronger form of "before user data is handled". Judged sufficient, because a
+note only ever exists after the user's own explicit annotate action.
 
-Loopback is exempt (User Data FAQ §16), so the default `http://127.0.0.1:8787` is fine. The options
-page accepts *any* URL, though, and notes sent to a remote `http://` host would travel unencrypted —
-which "Handling Requirements" §2 forbids. A warning (or a refusal) for a non-loopback `http://`
-endpoint closes it.
+### D4 — the plain-http sidecar endpoint is justified, not a gap
 
-### F5 — the privacy policy has to be hosted
+**Decision: keep.** The sidecar is a **user-specified** server: the user types the URL, the developer
+operates no server, and no data reaches the developer. The User Data FAQ answers exactly that shape
+(§15, a client for an internet protocol with user-specified servers) — the Limited Use section and the
+secure-transmission requirement do not apply to traffic with the user's own server — and §16 additionally
+exempts same-machine traffic, which is where the default `http://127.0.0.1:8787` lives. So
+"Handling Requirements" §2 does not bite. A soft hint for a non-loopback `http://` host would still be
+cheap courtesy; it is not a requirement, and is not implemented.
 
-A policy is required even though the default store never leaves the browser profile (User Data FAQ
-§14). `docs/PRIVACY.md` is written and complete; it needs a URL. GitHub Pages on this repository, or
-any page you control, works. The README links it so the *Limited Use* statement is one click from the
-project homepage, which is what "Limited Use" §6 asks for.
+### D5 — the policy is published, from one source
+
+`docs/PRIVACY.md` is the single source. `scripts/build-site.mjs` (`npm run build:site`) renders it into
+`site/privacy/index.html` plus a one-screen landing page, and `.github/workflows/pages.yml` publishes
+`site/` to the `gh-pages` branch — so there is no second prose copy of the policy that can drift away
+from the dashboard fields. The workflow greps the rendered page for the *Limited Use* sentence before
+publishing, so a render that lost the paragraph stops instead of being served.
+
+**It is live, not a plan:** Pages is enabled on this repository with source `gh-pages`, and
+
+    https://popoboxxo.github.io/bluepencil/privacy/
+
+returns the policy (verified: 200, and the Limited Use sentence is in the page).
 
 ## Copy for the *Privacy practices* tab
 
@@ -203,14 +215,12 @@ user, and temporary.
 
 #### **Justification — `tabs`**
 
-```
-The extension reads the currently active tab so that a note can record which page it was taken on:
-chrome.tabs.query({ active: true, currentWindow: true }) returns the tab id the overlay is injected
-into, and its URL is stored with the note so an exported note set names its source page.
-
-It never lists, searches or enumerates other tabs, and it never reads a tab's URL in the background —
-the query runs only in response to the user invoking the extension.
-```
+Not requested. The manifest no longer contains it, so the form will not show a field for it, and
+`npm run smoke:webstore` fails if anyone adds it back. Kept here because the *reason* is the part that
+gets lost: nothing reads a tab URL. The worker's `chrome.tabs.query` and `tab.id` never needed a
+permission, `tab.url` fed only a configuration field nothing consumes (the note's page comes from the
+element's own `route="url"` in the page), and the http/https host permission covers the URL of every tab
+that matters anyway. See **D2**.
 
 #### **Justification — host permission**
 
@@ -242,11 +252,42 @@ only network call in the package belongs to the optional sidecar adapter, which 
 themselves, and it exchanges note data — never code.
 ```
 
+### **In-product disclosure** (not a dashboard field)
+
+Required by "Disclosure Requirements" §2 and User Data FAQ §10: the prominent disclosure and the consent
+have to happen **in the product's own UI**, and the FAQ says a store description does not satisfy it.
+This is the copy that ships in `extension/options.html`, as the first thing on the page — before any
+field, because "before" is the requirement:
+
+```
+What Bluepencil stores
+
+Everything stays in this browser profile unless you point Bluepencil at a sidecar URL of your own.
+
+- The notes you create — the text you type, the element each note is anchored to, and the page it was
+  taken on.
+- The settings on this page, and — only if you switch the notes store to a sidecar — the URL you enter
+  and the credential you paste.
+- Nothing else: no account, no analytics, no ads, and no browsing history.
+
+A note is sent only to the sidecar URL you enter yourself; with the default store nothing leaves your
+machine. Privacy policy: https://popoboxxo.github.io/bluepencil/privacy/
+```
+
+If the wording is ever changed, change it in `extension/options.html` too — `npm run smoke:webstore`
+checks the options page itself, not this page, and the two failing to agree is exactly the
+behaviour/declaration mismatch the store rejects.
+
 ### **Privacy policy URL**
 
-Paste the public URL of `docs/PRIVACY.md` (rendered, e.g. via GitHub Pages — a raw text URL works but
-reads poorly). Suggested: `https://<host>/bluepencil/privacy`. The policy must stay reachable for as
-long as the item is published.
+```
+https://popoboxxo.github.io/bluepencil/privacy/
+```
+
+That is the rendered `docs/PRIVACY.md`, published by `.github/workflows/pages.yml` from a single source
+(see **D5**). It must stay reachable for as long as the item is published; the workflow re-publishes it
+whenever the policy changes, and it greps the rendered page for the *Limited Use* sentence before
+publishing, so a half-rendered page cannot be served.
 
 ## Listing copy
 
@@ -287,7 +328,7 @@ WHAT IT DOES NOT DO
 The default store keeps your notes in the browser profile. Nothing leaves your machine unless you
 configure a sidecar yourself.
 
-Privacy policy: <URL of docs/PRIVACY.md>
+Privacy policy: https://popoboxxo.github.io/bluepencil/privacy/
 ```
 
 ## The *Limited Use* statement
@@ -302,14 +343,15 @@ Policy, including the Limited Use requirements.
 
 ## Checklist before the first submission
 
-- [ ] **F1** decided (keep + justify, or drop the host permission)
-- [ ] **F2** `tabs` removed from the manifest (pairs with F1-B)
-- [ ] **F3** in-product disclosure added (options page + first mount)
-- [ ] **F4** non-loopback `http://` endpoint warned about or refused
-- [ ] **F5** `docs/PRIVACY.md` hosted and linked from the README
+- [ ] **D1** decided: host permission kept, justified by behaviour only (never by testability)
+- [ ] **D2** `tabs` removed from the manifest — and still absent (`npm run smoke:webstore`)
+- [ ] **D3** in-product disclosure in the options page, and its wording matches this page
+- [ ] **D4** plain-http endpoint justified, not changed (FAQ §15/§16)
+- [ ] **D5** Pages serving `https://popoboxxo.github.io/bluepencil/privacy/` (it is, as of 2026-10-02)
 - [ ] `npm run build:ext` and `npm run smoke:ext` green on the exact zip that is uploaded
-- [ ] `npm run smoke:webstore` green (manifest ↔ dashboard copy ↔ shipped code in step)
+- [ ] `npm run smoke:webstore` green (manifest ↔ dashboard copy ↔ shipped code ↔ options page in step)
 - [ ] Icon, screenshots and category filled in the dashboard ("Listing Requirements" §1)
+- [ ] The short-description field matches the manifest's `description` (the block in "Listing copy")
 - [ ] 2-Step Verification enabled on the publisher account ("2-Step Verification" §1)
 - [ ] Contact e-mail address in the developer account is correct and reachable (Best Practices §7)
 

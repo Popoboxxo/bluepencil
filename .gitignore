@@ -5,6 +5,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# the generated policy site (published to the gh-pages branch by .github/workflows/pages.yml)
+site/
+
 # test artefacts
 coverage/
 playwright-report/

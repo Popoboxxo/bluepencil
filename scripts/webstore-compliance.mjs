@@ -83,7 +83,7 @@ function stripComments(source) {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
-const MANIFEST_PERMISSIONS = ["scripting", "storage", "activeTab", "tabs"];
+const MANIFEST_PERMISSIONS = ["scripting", "storage", "activeTab"];
 
 /**
  * Permissions the extension must never ask for. Each is either a tracking surface (history,
@@ -169,6 +169,17 @@ async function checkManifest() {
   // standing access. Its absence would be a product regression, not a compliance one — checked so
   // that removing it cannot happen silently.
   check("keeps activeTab (on-demand access)", permissions.includes("activeTab"), JSON.stringify(permissions));
+
+  // `tabs` unlocks url/title/favIconUrl for tabs the extension has **no host access to**. Nothing here
+  // needs that: the page a note belongs to comes from the layer's own `route="url"` in the page, and
+  // `chrome.tabs.query` / `tab.id` never required a permission. Measured in `smoke:ext` against a real
+  // Chrome — the mount, the notes and the options page all work with `tabs` gone. Requesting it would
+  // be an extra permission for data nothing reads, which is what "Use of Permissions" rejects.
+  check(
+    "does not request `tabs` (no code path reads a tab URL the host permission does not cover)",
+    !permissions.includes("tabs"),
+    `permissions=${JSON.stringify(permissions)}`,
+  );
 
   const hosts = manifest.host_permissions ?? [];
   check(
@@ -342,6 +353,13 @@ async function checkShippedCode() {
       !/<script(?![^>]*\bsrc=)[^>]*>[\s\S]*?\S[\s\S]*?<\/script>/i.test(html),
       "an inline <script> with content was found",
     );
+    // "Disclosure Requirements" §2 and User Data FAQ §10: the prominent disclosure and the consent have
+    // to happen **in the product's own UI** — a store description does not satisfy it.
+    check(
+      "the options page discloses what is stored and links the privacy policy",
+      /What Bluepencil stores/.test(html) && /<a [^>]*href="https:\/\/[^"]*privacy/i.test(html),
+      "the in-product data disclosure or its privacy link is missing",
+    );
   }
 }
 
@@ -402,6 +420,16 @@ async function checkDashboardCopy(permissions, hosts) {
       "README.md does not link docs/PRIVACY.md",
     );
   }
+
+  // "Limited Use" §6 wants the statement "on a website belonging to your extension". The policy has to
+  // be *reachable*, not merely written — so the wiring that publishes it is part of the compliance
+  // surface, and a deleted workflow would otherwise go unnoticed until the URL 404s.
+  check(
+    "a site is wired up to publish the privacy policy",
+    (await exists(join(root, "scripts", "build-site.mjs"))) &&
+      (await exists(join(root, ".github", "workflows", "pages.yml"))),
+    "no site generator and/or Pages workflow",
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -426,8 +454,9 @@ function adviseOnOpenQuestions(permissions, hosts) {
     advise(
       "`http://*/*` + `https://*/*` is broad host access",
       "it exists for the registered MAIN-world content script, which is what makes the overlay " +
-        "survive a navigation. activeTab-only injection (executeScript on click) is the narrower " +
-        "shape and needs no host permission at all — see the two options in docs/WEBSTORE.md §Findings.",
+        "survive a navigation — that is the justification the dashboard copy uses (docs/WEBSTORE.md " +
+        "D1). The narrower activeTab-only shape would drop the host permission entirely and is " +
+        "documented there as well.",
     );
     advise(
       "the host permission must not be justified by testability",
@@ -438,22 +467,25 @@ function adviseOnOpenQuestions(permissions, hosts) {
     );
   }
 
-  // "Disclosure Requirements" §2 + User Data FAQ §10: the prominent disclosure and the consent have
-  // to happen in the product's own UI, not only in the listing.
+  // Implemented: the options page carries the disclosure first, before any field — the hard check above
+  // fails if it or its privacy link disappears.
   advise(
-    "consider an in-product data disclosure",
-    "the User Data FAQ requires a prominent disclosure *in the product* before user data is handled " +
-      "(a store description does not satisfy it). A short 'what is stored' note in the options page, " +
-      "shown before/with the first mount, is the usual shape. Not yet implemented — see Findings.",
+    "the in-product disclosure lives in the options page",
+    "the User Data FAQ wants it in the product's own UI, and this is the product's own UI; the residual " +
+      "is that the options page is not shown automatically, so a notice at the first mount would be the " +
+      "stronger form. Judged sufficient: a note exists only after the user's own explicit annotate action.",
   );
 
-  // "Handling Requirements" §2: user data must travel over modern cryptography. Loopback is exempt
-  // (User Data FAQ §16); a plain-http endpoint on another host is not.
+  // Judged, not a gap: the sidecar is a **user-specified** server. The user types the URL, the developer
+  // operates no server, and no data reaches the developer. The User Data FAQ answers exactly this case
+  // (§15, a client for an internet protocol with user-specified servers), and §16 additionally exempts
+  // same-machine traffic, which is where the default `http://127.0.0.1:8787` lives. So the
+  // secure-transmission requirement the finding was raised under does not bite.
   advise(
-    "guard non-loopback plain-http sidecar endpoints",
-    "notes can be sent to any endpoint the user types. Loopback http is fine (FAQ §16); a remote " +
-      "http:// endpoint would transmit in the clear. The options page accepts it today — a warning " +
-      "or a refusal for non-loopback http would close it.",
+    "plain-http sidecar endpoints are justified (decision: keep)",
+    "endpoint is user-specified and no developer server is involved (User Data FAQ §15); loopback is " +
+      "additionally exempt (§16). A soft hint for a non-loopback http:// host stays cheap courtesy, " +
+      "not a requirement — not implemented.",
   );
 }
 

@@ -66,11 +66,43 @@
     border-left: 3px solid var(--bp-warn-edge); padding: .6rem .8rem;
     background: var(--bp-warn-bg); color: var(--bp-warn-fg); border-radius: 0 6px 6px 0;
   }
+  /* The in-product data disclosure. Own colours rather than an inherited pair, for the same reason
+     the controls have them: the browser paints what the page does not, and in dark mode an inherited
+     foreground on this box was the white-on-light-amber 1.05:1 case. Both colours are system colours,
+     so they follow the scheme. */
+  .disclosure {
+    border: 1px solid var(--bp-border); border-radius: 8px;
+    padding: .9rem 1.1rem; margin: 0 0 1.5rem;
+    background: Canvas; color: CanvasText;
+  }
+  .disclosure h2 { font-size: 1rem; margin: 0 0 .4rem; }
+  .disclosure p { margin: .3rem 0 .5rem; }
+  .disclosure ul { margin: .3rem 0 .6rem; padding-left: 1.15rem; }
+  .disclosure li { margin: 0 0 .25rem; }
+  .disclosure a { color: LinkText; }
 </style>
 </head>
 <body>
   <h1>Bluepencil</h1>
   <p class="lede">Click the toolbar button on any page to annotate it.</p>
+
+  <!-- The disclosure the Chrome Web Store's User Data FAQ requires *in the product's own UI* — a store
+       description does not satisfy it. It is the first thing on the page, before any field, and it
+       names the categories that are actually stored rather than a generic sentence. `npm run
+       smoke:webstore` fails if this block or the privacy link disappears. -->
+  <section class="disclosure" aria-labelledby="disclosure-title">
+    <h2 id="disclosure-title">What Bluepencil stores</h2>
+    <p>Everything stays in this browser profile unless you point Bluepencil at a sidecar URL of your own.</p>
+    <ul>
+      <li>The notes you create — the text you type, the element each note is anchored to, and the page
+        it was taken on.</li>
+      <li>The settings on this page, and — only if you switch the notes store to a sidecar — the URL you
+        enter and the credential you paste.</li>
+      <li>Nothing else: no account, no analytics, no ads, and no browsing history.</li>
+    </ul>
+    <p>A note is sent only to the sidecar URL you enter yourself; with the default store nothing leaves
+      your machine. <a href="https://popoboxxo.github.io/bluepencil/privacy/">Privacy policy</a></p>
+  </section>
 
   <form id="form">
     <fieldset>
