@@ -45,7 +45,7 @@ unless it is marked *manual*.
 | Privacy → Limited Use | Affirmative statement on a project page | ✅ live at `/privacy/` + linked from the README |
 | Privacy → Handling | Secure transmission of user data | ✅ sidecar endpoint is user-specified (FAQ §15), loopback exempt (§16) |
 | Quality → Single purpose | One narrow purpose | ✅ annotation layer, one sentence, nothing else |
-| Quality → Minimum Functionality | Real, working functionality | ✅ 46-check smoke in a real Chrome |
+| Quality → Minimum Functionality | Real, working functionality | ✅ 47-check smoke in a real Chrome |
 | Marketing → Ads / Affiliate | No ads, no affiliate injection | ✅ none, and no permission that could inject |
 | Marketing → Impersonation | No Chrome/OS mimicry, no fake badges | ✅ name and listing copy avoid both |
 | Listing → Requirements | Icon, screenshots, accurate metadata | *manual* — dashboard upload, not code |
