@@ -1,0 +1,182 @@
+# The Chrome Web Store leg of a release.
+#
+# `release.yml` already verified the tagged commit and published five assets — among them
+# `bluepencil-extension-<version>.zip`, the copy the extension smoke proved mounts in a real Chrome.
+# This workflow builds nothing: it takes that asset and hands it to the Web Store. The bytes a user
+# installs and the bytes the store serves are therefore the same bytes, and there is no second build
+# that could differ from the one that was checked.
+#
+# Triggered by the release being *published*, not by the tag: the tag starts `release.yml`, and this
+# runs after that has verified, built, checksummed and published. Re-publishing a release (a
+# `workflow_dispatch` run of `release.yml`) fires `release: edited`, so it does not push a duplicate
+# version at the store.
+#
+# Known limits, stated rather than discovered later:
+#
+#   - the Web Store API can only publish a *new version of an existing* item — the first submission of
+#     a new extension is the dashboard, by hand (listing, permission justifications, screenshots);
+#   - a version already uploaded to the store is rejected, so a mistake is fixed by bumping the version
+#     and releasing again, not by re-publishing the same tag;
+#   - prereleases are skipped: the `-alpha` tags must not reach the public store.
+name: chrome-webstore
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag whose extension asset to hand to the store (default: v<version in package.json>)"
+        required: false
+      action:
+        description: "check-credentials only proves the secrets work; upload stages a version without publishing it; publish uploads and publishes"
+        type: choice
+        options:
+          - check-credentials
+          - upload
+          - publish
+        default: check-credentials
+
+permissions:
+  contents: read
+
+# Two store uploads at once is a race the store answers with a rejection, not a queue.
+concurrency:
+  group: chrome-webstore
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: hand the release's extension to the Web Store
+    runs-on: ubuntu-latest
+    # A prerelease is a release object too; the public store is not where those belong.
+    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      # Everything the run needs is resolved in one place, including what to do: a release publishes,
+      # a dispatch may stage instead. Reading `inputs` into an env var here keeps the later `if:`
+      # conditions away from the `inputs` context, which only exists for a dispatch.
+      - name: Resolve the release tag and the action
+        id: release
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_ACTION: ${{ inputs.action }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-${EVENT_TAG:-}}"
+          if [ -z "${tag}" ]; then
+            tag="v$(node -p "require('./package.json').version")"
+          fi
+          version="${tag#v}"
+          # This workflow is the one that reaches the public store, so it refuses to guess about a
+          # version it cannot compare a manifest against.
+          case "${version}" in
+            *-*) echo "::error::${tag} is a prerelease — the public store only takes final versions"; exit 1 ;;
+          esac
+          action="${INPUT_ACTION:-publish}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "action=${action}" >> "$GITHUB_OUTPUT"
+          echo "${action}: ${tag} (extension ${version})"
+
+      - name: Download the extension the release published
+        if: ${{ steps.release.outputs.action != 'check-credentials' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p store-asset
+          gh release download "$TAG" --dir store-asset \
+            --pattern "bluepencil-extension-*.zip" --pattern "SHA256SUMS"
+          ls -la store-asset
+
+      # Two things the store decides on and this job cannot fix afterwards: the zip must carry the
+      # manifest at its root, and it must be the version this tag names. The digest check is the
+      # stronger statement — the store receives exactly the artefact the release checksummed.
+      #
+      # Python rather than `unzip`: the same code runs here and on the runner, so this step can be
+      # rehearsed locally instead of trusted.
+      - name: Check the asset before the store sees it
+        if: ${{ steps.release.outputs.action != 'check-credentials' }}
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd store-asset
+          grep "bluepencil-extension-" SHA256SUMS | sha256sum -c -
+          python3 - <<'PY'
+          import json, os, sys, zipfile
+
+          version = os.environ["VERSION"]
+          zip_path = next(
+              f for f in os.listdir(".") if f.startswith("bluepencil-extension-") and f.endswith(".zip")
+          )
+          with zipfile.ZipFile(zip_path) as archive:
+              names = archive.namelist()
+              if "manifest.json" not in names:
+                  print(f"::error::{zip_path} has no manifest.json at its root - the store would reject it")
+                  sys.exit(1)
+              manifest = json.loads(archive.read("manifest.json"))
+          if manifest.get("version") != version:
+              print(f"::error::the asset says {manifest.get('version')}, the tag says {version} - refusing")
+              sys.exit(1)
+          print(f"{zip_path}: manifest {manifest.get('version')} at the root, digest matches the release")
+          PY
+
+      # Cheap, and it separates the two failure modes: the credentials, or the upload. The action
+      # documents this mode as touching nothing in the store.
+      - name: Check the store credentials
+        if: ${{ steps.release.outputs.action != 'check-credentials' }}
+        uses: wdzeng/chrome-extension@v2
+        with:
+          client-id: ${{ secrets.CLIENT_ID }}
+          client-secret: ${{ secrets.CLIENT_SECRET }}
+          refresh-token: ${{ secrets.REFRESH_TOKEN }}
+          action: check-credentials
+
+      - name: Check the credentials only
+        if: ${{ steps.release.outputs.action == 'check-credentials' }}
+        uses: wdzeng/chrome-extension@v2
+        with:
+          client-id: ${{ secrets.CLIENT_ID }}
+          client-secret: ${{ secrets.CLIENT_SECRET }}
+          refresh-token: ${{ secrets.REFRESH_TOKEN }}
+          action: check-credentials
+
+      - name: Hand the extension to the store
+        if: ${{ steps.release.outputs.action != 'check-credentials' }}
+        uses: wdzeng/chrome-extension@v2
+        with:
+          extension-id: ${{ secrets.EXTENSION_ID }}
+          zip-path: store-asset/*.zip
+          publisher-id: ${{ secrets.PUBLISHER_ID }}
+          client-id: ${{ secrets.CLIENT_ID }}
+          client-secret: ${{ secrets.CLIENT_SECRET }}
+          refresh-token: ${{ secrets.REFRESH_TOKEN }}
+          # A release publishes; a dispatch may stage a version instead, which is the honest way to
+          # find out whether the store accepts the artefact at all.
+          action: ${{ steps.release.outputs.action }}
+
+      - name: Summary
+        if: always()
+        env:
+          TAG: ${{ github.event.release.tag_name || github.ref_name }}
+          ACTION: ${{ steps.release.outputs.action }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          {
+            echo "### Chrome Web Store"
+            echo
+            echo "triggered by \`${EVENT}\`, action \`${ACTION:-unknown}\`, tag \`${TAG}\`"
+            echo
+            echo '```'
+            ls -la store-asset 2>/dev/null || echo 'no asset downloaded (check-credentials, or the run stopped earlier)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
