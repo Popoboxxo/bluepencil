@@ -9,7 +9,7 @@
 > `N` = concrete product need (admin debug mode in an ALM system).
 >
 > **This file is the source of truth.** The machine-checkable projection lives in
-> [`spec/`](../spec/README.md) — 130 requirements as a [reqmd](https://reqmd.dev) tree,
+> [`spec/`](../spec/README.md) — 136 requirements as a [reqmd](https://reqmd.dev) tree,
 > regenerated with `npm run spec` and validated in CI with `reqmd check`. Edit the table
 > below, never the generated spec.
 
@@ -99,6 +99,10 @@
 | FR-6.7 | **Sidecar authentication, required as soon as it leaves loopback**: a configured credential must be presented on every request under the base, and a missing or wrong one is answered `401 unauthorized` before routing | P0 | M3 | G | A sidecar started with `--auth-secret` refuses an unauthenticated request and answers one carrying the secret; a sidecar with no credential configured behaves exactly as before |
 | FR-6.8 | **Signed, per-device tokens**: the sidecar signs expiring tokens carrying a `jti` and a read/write scope, verifies `Authorization: Bearer` before routing, and keeps `token_expired`, `token_revoked` and `insufficient_scope` apart from a plain `unauthorized` | P1 | M3 | N | A token minted locally is accepted by the running sidecar; an expired one answers `token_expired`, a revoked one `token_revoked` (401), a read-only token attempting a write `insufficient_scope` (403); `write` implies `read`; a revoked id is refused from startup |
 | FR-6.9 | **The extension carries either credential** (`none`, shared secret, signed token), sends it under the header that credential uses, and reports a signed token's expiry to the user without treating it as a decision | P1 | M3 | N | Each mode produces its own header on the wire; the options page shows expires-in, expired or unreadable, and only the sidecar decides whether a token is valid |
+| FR-6.10 | **The hub describes itself before any credential**: an unauthenticated `GET {base}/config` reports the version, the base path, the credential the hub requires and **the binding it actually has** (loopback-only or reachable from the network) — the live state of the running process, not the configured intent | P0 | M5 | N | A hub on loopback and one bound to the network answer with different, correct bind states at the same moment; the answer needs no credential and contains no note |
+| FR-6.11 | **No address to type in the normal case**: the extension offers the reachable hubs as a readable choice and resolves the addresses behind it; a custom address is an explicit override rather than the default path | P1 | M5 | N | A hub that is running can be selected on the options page without typing an address; the free-text field exists only behind the override |
+| FR-6.12 | **The UI states the live connectivity, not a promise**: the extension shows the result of a real check — reachable or not, loopback-only or open to the network, and which credential the hub asks for — and refreshes it | P0 | M5 | N | With the hub stopped the status says "not reachable"; with the hub bound to the network the status says so; both come from a request, not from the saved settings |
+| FR-6.13 | **One command to start, credential generated when it is needed**: the hub starts on loopback by default, and the network mode binds beyond loopback, generates the credential itself and prints exactly what to copy — no flag has to be guessed | P1 | M5 | N | Starting without flags works and needs no credential; the network mode prints one line a client can use as it stands |
 
 ## FR-7 Export
 
@@ -224,6 +228,8 @@ export. The MCP interface is therefore **not optional** (Daniel, 2026-09-14).
 | FR-16.5 | Notes are exposed as **resources** too (Markdown + JSON), so a host can read without tools | P1 | M4 | N | Resource returns the same content as `GET /api/comments.md` |
 | FR-16.6 | Prompts/templates for the loop (“work off the open notes”, “summarise decisions needed”) | P2 | M4 | N | Prompt produces a correct work list with no additional context |
 | FR-16.7 | The MCP server is a thin wrapper over `bluepencil/data` — no separate logic (FR-15.5) | P0 | M4 | N | Same merge/validation results via CLI and via MCP for the same input |
+| FR-16.8 | **The same MCP is reachable over HTTP**: the hub answers MCP at its own path in the current Streamable HTTP shape (POST only, no sessions, no server-initiated stream), with the same tools, validators and credential check as the stdio server, read-only by default | P1 | M5 | N | The same tool call over HTTP and over stdio returns the same result for the same store; a write tool is refused without the opt-in; a wrong credential is refused before the method is read |
+| FR-16.9 | **Two doors, one store**: the HTTP MCP endpoint and the notes API of one process share one store and one write path — no second file handle, no second truth | P0 | M5 | N | A note written through MCP is visible in the notes API of the same process without a restart, and the other way round |
 
 ---
 

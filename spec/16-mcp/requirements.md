@@ -114,3 +114,35 @@ requires-trace-from: []
 The MCP server is a thin wrapper over bluepencil/data — no separate logic (FR-15.5)
 
 *Acceptance criteria:* Same merge/validation results via CLI and via MCP for the same input
+
+## FR-16.8 The same MCP is reachable over HTTP: the hub answers MCP at its own path in the current…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+The same MCP is reachable over HTTP: the hub answers MCP at its own path in the current Streamable HTTP shape (POST only, no sessions, no server-initiated stream), with the same tools, validators and credential check as the stdio server, read-only by default
+
+*Acceptance criteria:* The same tool call over HTTP and over stdio returns the same result for the same store; a write tool is refused without the opt-in; a wrong credential is refused before the method is read
+
+## FR-16.9 Two doors, one store: the HTTP MCP endpoint and the notes API of one process share one s…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+Two doors, one store: the HTTP MCP endpoint and the notes API of one process share one store and one write path — no second file handle, no second truth
+
+*Acceptance criteria:* A note written through MCP is visible in the notes API of the same process without a restart, and the other way round
