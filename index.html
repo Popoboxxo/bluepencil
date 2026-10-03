@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bluepencil</title>
+<meta name="description" content="A review layer for any web page: annotate an element, keep the note, hand the set to a developer or an agent.">
+<style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+      margin: 0 auto; padding: 3rem 1.5rem 5rem; max-width: 44rem;
+      background: Canvas; color: CanvasText;
+    }
+    h1 { font-size: 1.7rem; margin: 0 0 .3rem; letter-spacing: -.01em; }
+    h2 { font-size: 1.15rem; margin: 2.2rem 0 .5rem; }
+    p, li { color: CanvasText; }
+    a { color: LinkText; }
+    .lede { color: GrayText; margin: 0 0 2rem; }
+    code {
+      font: .9em/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: color-mix(in srgb, CanvasText 8%, Canvas); padding: .1em .35em; border-radius: 4px;
+    }
+    footer {
+      margin-top: 3rem; padding-top: 1rem; border-top: 1px solid color-mix(in srgb, CanvasText 18%, Canvas);
+      font-size: .9rem; color: GrayText;
+    }
+  </style>
+</head>
+<body>
+<h1>bluepencil</h1>
+<p class="lede">A review layer for any web page.</p>
+<p>Click the toolbar button on a page, click the element you want to talk about, and leave a note about
+its wording or its appearance. The note is anchored to that element, so it survives a later edit
+elsewhere on the page. A set of notes exports as Markdown or JSON and can be handed to a developer or
+an AI agent to work off.</p>
+<p>Everything stays in your own browser profile: no account, no analytics, no ads, and no browsing
+history. Notes leave your machine only if you point bluepencil at a hub URL of your own.</p>
+<ul>
+  <li><a href="./privacy/">Privacy policy</a> — what is stored, how it is used, what is never done with it</li>
+  <li><a href="https://github.com/Popoboxxo/bluepencil">Source code</a> and issue tracker</li>
+</ul>
+<footer>bluepencil — MIT licensed. <a href="https://github.com/Popoboxxo/bluepencil">Source</a>.</footer>
+</body>
+</html>
