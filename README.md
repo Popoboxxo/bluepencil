@@ -19,24 +19,28 @@ no "the second badge in the header".
 
 ![The review layer on the vanilla fixture: five notes from a review round, the bar with its counters, the marker on the annotated element and the note list](docs/images/fixture-review.png)
 
-**Status:** `0.4.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
+**Status:** `0.5.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
 `main`: the core model, anchoring (now including **transient container reveal**), capture, store and
 the four adapters (with a conformance suite); canonical, diffable bundles with
 `merge`/`upsert`/`replace-session` and migrations; Markdown/JSON export; the collaboration protocol;
 the review layer with i18n; the public API and the `<bluepencil-notes>` element; the CLI, the MCP
-server (read-only by default) and the reference hub, which now takes **per-device signed tokens**
-(shared secret or token, per-environment and revocable); a **Chromium MV3 extension** that mounts the
+server (read-only by default) and the **hub** — one command, static site and notes API on one port,
+**MCP over HTTP** so an agent reaches the same notes the browser writes, per-device signed tokens
+(shared secret or token, per-environment and revocable), a `GET {base}/config` that describes the
+running process without a credential, and a container image (`docker compose up -d`) that generates
+its own credential; a **Chromium MV3 extension** that mounts the
 layer in pages you do not build yourself, with its settings reaching the layer and its rounds kept in
-the extension's own storage; the vanilla fixture app with its seed bundle, 675 unit tests and the
+the extension's own storage; the vanilla fixture app with its seed bundle, 697 unit tests and the
 browser legs of the embed smoke, the E2E suite and the extension smoke.
 
 Honest gaps: the E2E suite is hand-rolled over the CDP pipe rather than Playwright (NFR-4 says no
 test framework), token refresh is manual (an expired token is replaced by hand, and revocation is
 read at hub start), no import/merge surface in the UI, no bulk delete or retention control, i18n
 only `en`/`de`, and no npm publish — install from the tag
-(`npm i github:Popoboxxo/bluepencil#v0.4.0`; the `prepare` script builds `dist/` during install) or
-use the release artefacts: loader, layer, package tarball, the MV3 browser extension and one
-`SHA256SUMS` over all of them. How a release is cut: [docs/RELEASING.md](docs/RELEASING.md).
+(`npm i github:Popoboxxo/bluepencil#v0.5.0`; the `prepare` script builds `dist/` during install) or
+use the release artefacts: loader, layer, package tarball, the MV3 browser extension, one
+`SHA256SUMS` over all of them, and the hub image on `ghcr.io/popoboxxo/bluepencil`
+([docs/DOCKER.md](docs/DOCKER.md)). How a release is cut: [docs/RELEASING.md](docs/RELEASING.md).
 Milestones and their state are tracked in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), the history in
 [CHANGELOG.md](CHANGELOG.md). This repository is the home of the library; the interaction model
 itself is already proven in a production-used prototype (see

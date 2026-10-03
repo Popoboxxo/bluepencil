@@ -1,3 +1,89 @@
+## [0.5.0] - 2026-10-03
+
+### Added
+
+**The hub describes itself before it asks for anything: `GET {base}/config` (FR-6.10).** A client has
+to be able to learn *which* credential to bring — otherwise picking the wrong one is a `401` that
+reads like a dead server. The answer carries the name the hub was given, its version and base,
+`auth: none | secret | token` (**never** the value), whether it runs read-only, and **the binding the
+process actually has**: the address comes from the listening socket, not from `--host`, so `--host
+localhost` binding `::1` is reported as what it is. It is the one route in front of the authentication
+gate, on purpose, and `/notes` behind it stays `401`. Measured live: loopback → `loopbackOnly: true`,
+`--host 0.0.0.0` → `false` with the secret still enforced.
+
+**The same notes, reachable by an agent over HTTP: `POST {base}/mcp` (FR-16.8/16.9).** The stdio MCP
+server an agent starts as a child process could only ever see the file it was pointed at — notes the
+browser wrote were invisible to it. The hub now speaks MCP itself, over the store the browser writes
+to: **two doors, one store.** Both run the same protocol handling (`src/mcp/protocol.ts`) through the
+same atomic write path behind the same gate (the gate moved into `authorize()`; its tests are
+unchanged). POST only — the hub sends nothing on its own, so a GET is `405`; no sessions; JSON instead
+of SSE; `MCP-Protocol-Version` checked when a client claims one; `exit` refused, because a caller must
+not be able to stop the service it is talking to. Identity is checked first, then the write privilege,
+so a read-scoped device keeps its read tools and only a writing `tools/call` demands `write`.
+Measured both ways: an agent's `create_note` appeared in `GET /notes`, and a note POSTed by the
+browser appeared in the agent's next `list_notes`.
+
+**The hub runs as a container (FR-6.14).** `docker compose up -d`, one volume, and the release
+publishes the image to GHCR (`:0.5.0`, `:hub`, `:latest` for stable tags) with provenance and an SBOM.
+Inside a container loopback would make the hub unreachable, so the entrypoint binds beyond it *and*
+generates the credential that binding requires — kept in the data volume, because a restart that
+changes the secret silently invalidates every client that saved it. The first start prints one line to
+paste; later starts only name the file. The runtime stage carries the bundle and nothing else: measured
+by running `dist/server.js` from a directory holding that one file and no `node_modules`.
+[`docs/DOCKER.md`](docs/DOCKER.md) has the environment variables and the honest limits (no TLS in the
+image, bind-mount ownership, one writer per store).
+
+### Changed
+
+**"Sidecar" is gone: the service is called a hub wherever a person reads it.** The name made people
+expect something they had to run *somewhere* and administer; it is one command from this package, and
+on a single machine it never leaves loopback. 297 occurrences in 44 files — the options page, the docs,
+`--help`, the warnings — plus the identifiers `SIDECAR_APP_NAME`/`SIDECAR_EXPORTED_BY` →
+`HUB_APP_NAME`/`HUB_EXPORTED_BY` and `tests/unit/sidecar-tokens.test.ts` → `hub-tokens.test.ts`.
+Deliberately untouched: `CHANGELOG.md` (past releases describe what it was called then), the
+agent-meta infrastructure and the generated `spec/`. Bundle compatibility was checked rather than
+assumed: `HUB_EXPORTED_BY` keeps the value `server:bluepencil`, and a bundle whose header still says
+`app.name: "bluepencil sidecar"` validates and imports unchanged — the name travels as data, it is not
+a gate.
+
+**The hub can be named: `--name "Unraid"`** (default: the machine's hostname). It is what `{base}/config`
+reports, so a client can offer a name a human recognises instead of a container id. An empty value is
+refused rather than treated as "off".
+
+### Fixed
+
+**The store leg starts now (#62).** 0.4.0 shipped the store workflow wired to the `release: published`
+event, and `release.yml` publishes with `GITHUB_TOKEN` — events raised by that token do not start
+workflow runs, so the listener never fired and 0.4.0's extension reached no store at all. The release
+job now dispatches the store workflow itself (an ordinary API call, which does start a run) and the
+step is deliberately not `continue-on-error`. The correction is also written into the 0.4.0 section
+above, where the wrong claim was made.
+
+### Verified
+
+`npm run verify` green on this tree — `typecheck` + `typecheck:ext`, **697 unit tests** in 32 files,
+`build` + `build:ext`, the size guard, the pack smoke, **embed-smoke 14/14**, **e2e-vanilla 13/13**,
+**ext-smoke 47/47** in a real Chrome and **webstore-compliance 38/38** (four `ADVICE`, no failures).
+`npm run smoke:cli` 14/14, `npm run smoke:mcp` 23/23, `npm run secret-scan` clean (394 files), and
+`npm run spec` **137/137 valid** — 117 functional, 20 non-functional, no requirement without a verify
+method. The container was exercised without a Docker daemon: the bundle ran alone, and the entrypoint
+was driven through three starts (credential generated `0600`, enforced, `loopbackOnly: false`, nine
+tools over `POST {base}/mcp`, and the same credential still valid afterwards).
+
+### Known gaps
+
+- **The store credentials still do not work (#58).** Unchanged from 0.4.1: `action: check-credentials`
+  gets `401 unauthorized_client` from Google's token endpoint until the refresh token is regenerated.
+- **The image build is proven by CI, not by hand.** There is no Docker daemon in the environment this
+  was written in, so `Dockerfile` + `docker/entrypoint.sh` are verified by the new CI job, which builds
+  the image and then *starts* it, checks `{base}/config`, and requires the generated credential to be
+  enforced. The first run of that job is the real verdict; a claim from here would be a guess.
+- **The extension still asks for an address (FR-6.11/6.12).** The requirements exist and the data
+  source does too (`{base}/config` reports name, credential kind and live binding), but the readable
+  picker, the override checkbox and the live status line are not implemented in this release. The
+  free-text field stays for now.
+- Token refresh is still manual, and revocation is read at hub start.
+
 ## [0.4.0] - 2026-10-03
 
 ### Added
