@@ -32,6 +32,7 @@ import {
   type ServerResponse as NodeResponse,
 } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { hostname as osHostname } from "node:os";
 import { pathToFileURL } from "node:url";
 import { isRecord } from "../src/core/adapter";
 import { toMarkdown } from "../src/core/export/markdown";
@@ -56,6 +57,7 @@ import {
   errorBody,
   handleRequest,
   isApiPath,
+  isLoopbackAddress,
   normalizeBase,
   requestPath,
   type HandlerContext,
@@ -117,6 +119,11 @@ export interface ServerOptions {
   allowEnvMismatch?: boolean;
   /** Optional Markdown mirror of the note set (`--mirror`). */
   mirror?: string;
+  /**
+   * Name the hub reports over `GET {base}/config` (`--name`), so a client can offer a readable entry
+   * — "Unraid" instead of `c9da11460bfc`. Defaults to the machine's hostname (FR-6.10).
+   */
+  name?: string;
   /** Allowed CORS origin (`--cors <origin|*>`); unset means no CORS header at all. */
   cors?: string;
   quiet?: boolean;
@@ -672,6 +679,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     readOnly: resolved.readOnly,
     allowEnvMismatch: resolved.allowEnvMismatch,
     version: SERVER_VERSION,
+    hubName: options.name ?? osHostname(),
     appName: resolved.appName,
     exportedBy: resolved.exportedBy,
     // These two were parsed, validated and then never passed on, so `--auth-secret` had no effect on
@@ -714,10 +722,18 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
 
   const address = server.address();
   const port = address !== null && typeof address === "object" ? address.port : resolved.port;
+  // FR-6.10: the *live* binding, straight from the socket — this is what a client reads from
+  // `{base}/config`. Deliberately not `--host`: `--host localhost` binds `::1`, and a status display
+  // that repeated the flag would call a network-reachable hub "this machine only".
+  const boundHost = address !== null && typeof address === "object" ? address.address : resolved.host;
+  context.bind = { host: boundHost, port };
   if (!resolved.quiet) {
     process.stderr.write(
-      `bluepencil server: http://${resolved.host}:${port}${resolved.base || "/"} — ${store.state.notes.length} note(s), ` +
-        `environment ${resolved.environment}, ${resolved.readOnly ? "read-only" : "read-write"}, store ${resolved.storePath}\n`,
+      `bluepencil server: "${context.hubName}" on http://${resolved.host}:${port}${resolved.base || "/"} — ` +
+        `${store.state.notes.length} note(s), environment ${resolved.environment}, ` +
+        `${resolved.readOnly ? "read-only" : "read-write"}, ` +
+        `${isLoopbackAddress(boundHost) ? "reachable on this machine only" : `reachable from the network (bound ${boundHost})`}, ` +
+        `store ${resolved.storePath}\n`,
     );
   }
 
@@ -776,6 +792,12 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
   const mirror = get("--mirror");
   const host = get("--host");
   const base = get("--base");
+  // The name a client shows for this hub. An empty value is a configuration error rather than
+  // "use the hostname": `--name ""` reads as a typo, and a blank entry in a picker is worse than none.
+  const name = get("--name");
+  if (name !== undefined && name.trim().length === 0) {
+    return "--name must not be empty — omit it to use the machine's hostname";
+  }
   const journalRaw = get("--journal") ?? process.env.BLUEPENCIL_JOURNAL;
   if (journalRaw !== undefined && !["auto", "git", "file", "none"].includes(journalRaw)) {
     return `--journal must be one of auto, git, file, none (got ${JSON.stringify(journalRaw)})`;
@@ -846,6 +868,7 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
     storePath,
     port,
     ...(host !== undefined ? { host } : {}),
+    ...(name !== undefined ? { name } : {}),
     ...(base !== undefined ? { base } : {}),
     ...(root !== undefined ? { root } : {}),
     environment,
@@ -870,10 +893,10 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
   };
 }
 
-const HELP = `bluepencil sidecar ${SERVER_VERSION} — static site + notes API on one port.
+const HELP = `bluepencil hub ${SERVER_VERSION} — static site + notes API on one port.
 
 Usage:
-  node dist/server.js --store notes.json [--port 8787] [--host 127.0.0.1]
+  node dist/server.js --store notes.json [--port 8787] [--host 127.0.0.1] [--name "<text>"]
     [--base /api/v1/bluepencil] [--root <static dir>] [--environment dev|staging|live]
     [--read-only] [--auth-secret <value>] [--allow-env-mismatch] [--mirror notes.md] [--cors <origin|*>] [--quiet]
     [--journal auto|git|file|none] [--journal-dir <dir>] [--journal-repo <dir>]
@@ -892,6 +915,8 @@ Authentication:
   machine. An empty value is rejected rather than treated as "off".
 
 Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in http adapter):
+  GET    {base}/config              name, version, base, which credential, and the live binding —
+                                    needs no credential itself (FR-6.10)
   GET    {base}/health              { ok, status, version }
   GET    {base}/notes               filters: route, intent, type, session, source, environment,
                                     includeDone, since, repeated status  → { notes }

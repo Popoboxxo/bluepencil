@@ -206,6 +206,20 @@ export interface HandlerContext {
   appName?: string;
   /** Value of the bundle's `exportedBy` field. */
   exportedBy?: string;
+  /**
+   * How the hub calls itself (`--name`; `server/index.ts` defaults it to the machine's hostname).
+   * Reported by `GET {base}/config` so a client can offer a readable entry instead of an address —
+   * and so a container id (`c9da11460bfc`) can be replaced by a name a human recognises.
+   */
+  hubName?: string;
+  /**
+   * The address the process is *actually* listening on, filled in after `listen()` (FR-6.10).
+   *
+   * Read from the socket rather than from `--host`, because those differ: `--host localhost` may
+   * bind `::1`, and `0.0.0.0` is the address a client needs to know about. The point of the field is
+   * that a status display can say "this machine only" or "reachable from the network" and be right.
+   */
+  bind?: { host: string; port: number };
   /** Injectable clock, so tests are deterministic (NFR-17). */
   now?: () => string;
   /**
@@ -443,6 +457,7 @@ function allowedMethods(segments: readonly string[]): string[] | null {
   const first = segments[0];
   if (segments.length === 1) {
     if (first === "health") return ["GET"];
+    if (first === "config") return ["GET"];
     if (first === "notes") return ["GET", "POST"];
     if (first === "sessions") return ["GET"];
     if (first === "bundle") return ["GET"];
@@ -453,6 +468,48 @@ function allowedMethods(segments: readonly string[]): string[] | null {
   }
   if (segments.length === 3 && first === "notes" && segments[2] === "messages") return ["POST"];
   return null;
+}
+
+/** True for addresses only this machine can reach (IPv4/IPv6 loopback, incl. a mapped `::ffff:`). */
+export function isLoopbackAddress(host: string): boolean {
+  const plain = host.startsWith("::ffff:") ? host.slice("::ffff:".length) : host;
+  return plain === "::1" || plain === "localhost" || /^127\./.test(plain);
+}
+
+/**
+ * `GET {base}/config` (FR-6.10): everything a client needs in order to connect *before* it has a
+ * credential — the name this hub was given, its version and base, **which** credential it asks for
+ * (`none` | `secret` | `token`, never the value), and the binding the process actually has.
+ *
+ * The live part is `bind`: it is filled in from the listening socket by `server/index.ts` after
+ * `listen()`, so a status display reading this is right about "this machine only" versus "reachable
+ * from the network" even when `--host localhost` bound `::1` instead of `127.0.0.1`.
+ */
+function configResponse(context: HandlerContext): ServerResponse {
+  const secret = context.authSecret;
+  const auth =
+    context.verifyToken !== undefined
+      ? "token"
+      : typeof secret === "string" && secret.length > 0
+        ? "secret"
+        : "none";
+  const bind = context.bind;
+  return json(
+    200,
+    {
+      name: context.hubName ?? null,
+      version: context.version ?? SERVER_VERSION,
+      base: normalizeBase(context.base),
+      auth,
+      readOnly: context.readOnly === true,
+      environment: context.environment,
+      bind:
+        bind === undefined
+          ? null
+          : { host: bind.host, port: bind.port, loopbackOnly: isLoopbackAddress(bind.host) },
+    },
+    context,
+  );
 }
 
 /** CORS headers for one deployment; the default (no `--cors`) sends none at all. */
@@ -1049,6 +1106,24 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
 
   if (allow === null) {
     return errorResponse(404, "not_found", `unknown endpoint ${pathname} — the API lives under ${base || "/"}`, context);
+  }
+  // FR-6.10: the hub describes itself to a caller that has no credential yet — a client has to be
+  // able to ask *which* credential to bring, and a status display has to be able to ask what this
+  // process is actually bound to. This is the one route that cannot sit behind the gate below, so it
+  // sits in front of it on purpose; it carries no note and no secret (which credential, never the
+  // value). The method check is repeated here because the shared one runs after authentication.
+  if (segments.length === 1 && segments[0] === "config") {
+    if (method !== "GET") {
+      const response = errorResponse(
+        405,
+        "method_not_allowed",
+        `${method} is not allowed on ${pathname} — documented method(s): GET`,
+        context,
+      );
+      response.headers.allow = "GET";
+      return response;
+    }
+    return configResponse(context);
   }
   // Authentication comes before the method check and before any route, and that placement is the
   // security property rather than a style choice: an unauthenticated caller must not be able to
