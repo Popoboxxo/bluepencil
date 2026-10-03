@@ -67,6 +67,7 @@ import {
 } from "./handler";
 import { asHandlerVerifier, createTokenIssuer } from "./tokens";
 import { selectJournal, type Journal, type JournalRecord, type JournalStatus } from "./journal";
+import { handleMcpRoute } from "./mcp";
 
 /** Bind/port defaults: loopback only, and the port the contract documents. */
 export const DEFAULT_PORT = 8787;
@@ -581,6 +582,7 @@ async function respond(
   options: ResolvedOptions,
   context: HandlerContext,
   journal: Journal,
+  store: FileNoteStore,
 ): Promise<void> {
   const url = request.url ?? "/";
   const method = (request.method ?? "GET").toUpperCase();
@@ -608,6 +610,40 @@ async function respond(
         ? glueError(413, "payload_too_large", oneLine(errorText(error)), options)
         : glueError(400, "invalid_json", `the request body could not be read: ${errorText(error)}`, options),
     );
+    return;
+  }
+
+  // FR-16.9: the store file is the one truth both doors write to, so the in-memory set is refreshed
+  // before each request — a note an agent wrote over MCP (or a human wrote in an editor) is visible
+  // to the next browser request, and this hub's own writes are based on what is actually on disk.
+  try {
+    store.state.notes = loadNotes(options.storePath);
+  } catch (error) {
+    // A file that became unreadable mid-run keeps the last good set: refusing every request would
+    // turn one bad edit into an outage, and the next readable state wins.
+    if (!options.quiet) {
+      process.stderr.write(
+        `bluepencil server: keeping the last good note set — ${oneLine(errorText(error))}\n`,
+      );
+    }
+  }
+
+  // The MCP door (FR-16.8) is asynchronous, so it is answered here instead of inside the synchronous
+  // handler. It shares the store file, the atomic write path and the authentication gate.
+  const mcpResponse = await handleMcpRoute({ method, url, headers: request.headers, body }, context, {
+    read: async () => readTextIfExists(options.storePath),
+    write: async (text) => {
+      writeAtomic(options.storePath, text);
+      if (options.mirror !== undefined) {
+        // The mirror is a second rendering of the same set, so it is refreshed from what was just
+        // written — otherwise `--mirror` would silently drift behind an MCP write.
+        store.state.notes = loadNotes(options.storePath);
+        writeAtomic(options.mirror, store.mirrorText() ?? "");
+      }
+    },
+  });
+  if (mcpResponse !== null) {
+    write(response, mcpResponse);
     return;
   }
 
@@ -699,7 +735,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   };
 
   const server = createServer((request, response) => {
-    respond(request, response, resolved, context, journal).catch((error: unknown) => {
+    respond(request, response, resolved, context, journal, store).catch((error: unknown) => {
       if (response.headersSent) {
         response.end();
         return;
@@ -918,6 +954,9 @@ Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in h
   GET    {base}/config              name, version, base, which credential, and the live binding —
                                     needs no credential itself (FR-6.10)
   GET    {base}/health              { ok, status, version }
+  POST   {base}/mcp                 MCP over HTTP (tools/list, tools/call, resources, prompts) —
+                                    POST only, no sessions, same credential and same store as the
+                                    notes API (FR-16.8)
   GET    {base}/notes               filters: route, intent, type, session, source, environment,
                                     includeDone, since, repeated status  → { notes }
   POST   {base}/notes               NoteDraft JSON                     → { note }

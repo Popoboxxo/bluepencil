@@ -1077,6 +1077,69 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
   }, () => ({ op: "bulk-delete", ...(removedCount === 0 ? {} : { removed: removedCount }), ...(actor === undefined ? {} : { actor }) }));
 }
 
+/**
+ * The authentication gate, as one function so that both doors stand behind the same one (FR-16.9):
+ * the notes API and the MCP door differ in framing, never in who is allowed in.
+ *
+ * `scope` overrides the method-derived scope for a door where the verb does not carry the intent:
+ * `POST {base}/mcp` is a read when the message is `tools/list` and a write when it calls a writing
+ * tool, so the scope has to follow the message rather than the HTTP verb.
+ *
+ * Returns the refusal to answer with, or `null` when the request may proceed.
+ */
+export function authorize(
+  request: ServerRequest,
+  context: HandlerContext,
+  scope?: "read" | "write",
+): ServerResponse | null {
+  const method = (request.method ?? "GET").toUpperCase();
+  const verifier = context.verifyToken;
+  const secret = context.authSecret;
+  const presentedToken = bearerToken(request);
+  if (verifier !== undefined || (typeof secret === "string" && secret.length > 0)) {
+    const required =
+      scope ?? context.requiredScope?.({ method }) ?? (method === "GET" ? "read" : "write");
+    const token = presentedToken;
+
+    if (token !== undefined && verifier !== undefined) {
+      const verdict = verifier(token, required, context.revokedTokens ?? EMPTY_REVOKED);
+      if (!verdict.ok) {
+        const refusal = tokenRefusal(verdict.reason);
+        return errorResponse(
+          refusal.status,
+          refusal.code,
+          `${refusal.advice} — the token was refused because it is ${verdict.reason}`,
+          context,
+        );
+      }
+    } else if (typeof secret === "string" && secret.length > 0) {
+      const presented = headerValue(request.headers, AUTH_HEADER);
+      if (presented === undefined || !secretsMatch(secret, presented)) {
+        return errorResponse(
+          401,
+          "unauthorized",
+          presented === undefined
+            ? `missing ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`
+            : `invalid ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`,
+          context,
+        );
+      }
+    } else {
+      // A key is configured and no token arrived — either none was sent at all or one came in a
+      // different scheme (`Authorization: Basic …` is somebody else's credential, and treating its
+      // value as a token would be leniency in the one place leniency is a bypass). Answering 401 is
+      // the whole point of having configured a key.
+      return errorResponse(
+        401,
+        "unauthorized",
+        `missing ${BEARER_HEADER}: Bearer <token> — this hub requires a signed token (--token-key)`,
+        context,
+      );
+    }
+  }
+  return null;
+}
+
 /* ------------------------------------------------------------------------------------------------
  * Entry point
  * ---------------------------------------------------------------------------------------------- */
@@ -1147,48 +1210,9 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   // `401 … no token key configured` the moment the header alone arms the check. What must not happen
   // is the *opposite* mistake: a presented token being dropped while a credential is required, which
   // is why the token path below is tried first whenever a verifier exists.
-  const verifier = context.verifyToken;
-  const secret = context.authSecret;
-  const presentedToken = bearerToken(request);
-  if (verifier !== undefined || (typeof secret === "string" && secret.length > 0)) {
-    const required = context.requiredScope?.({ method }) ?? (method === "GET" ? "read" : "write");
-    const token = presentedToken;
-
-    if (token !== undefined && verifier !== undefined) {
-      const verdict = verifier(token, required, context.revokedTokens ?? EMPTY_REVOKED);
-      if (!verdict.ok) {
-        const refusal = tokenRefusal(verdict.reason);
-        return errorResponse(
-          refusal.status,
-          refusal.code,
-          `${refusal.advice} — the token was refused because it is ${verdict.reason}`,
-          context,
-        );
-      }
-    } else if (typeof secret === "string" && secret.length > 0) {
-      const presented = headerValue(request.headers, AUTH_HEADER);
-      if (presented === undefined || !secretsMatch(secret, presented)) {
-        return errorResponse(
-          401,
-          "unauthorized",
-          presented === undefined
-            ? `missing ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`
-            : `invalid ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`,
-          context,
-        );
-      }
-    } else {
-      // A key is configured and no token arrived — either none was sent at all or one came in a
-      // different scheme (`Authorization: Basic …` is somebody else's credential, and treating its
-      // value as a token would be leniency in the one place leniency is a bypass). Answering 401 is
-      // the whole point of having configured a key.
-      return errorResponse(
-        401,
-        "unauthorized",
-        `missing ${BEARER_HEADER}: Bearer <token> — this hub requires a signed token (--token-key)`,
-        context,
-      );
-    }
+  const refusal = authorize(request, context);
+  if (refusal !== null) {
+    return refusal;
   }
   if (method === "OPTIONS" && context.cors !== undefined && context.cors !== "") {
     return { status: 204, headers: corsHeaders(context.cors), body: "" };
