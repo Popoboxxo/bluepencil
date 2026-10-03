@@ -160,3 +160,44 @@ jobs:
 
       - name: Secret scan
         run: npm run secret-scan
+
+  image:
+    # The Dockerfile is a shipped artefact (FR-6.14), so it is built and *run* on every change instead
+    # of being discovered broken on release day. The build also proves the runtime stage: it copies the
+    # bundle without `node_modules`, so an image that secretly needs an install step fails here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the hub image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: bluepencil-hub:ci
+
+      - name: Run the image — it must answer, and say the truth about its binding
+        run: |
+          set -euo pipefail
+          docker run --rm -d --name bp-hub -p 8787:8787 -v bp-notes:/data bluepencil-hub:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/api/v1/bluepencil/config -o /tmp/config.json; then break; fi
+            sleep 1
+          done
+          cat /tmp/config.json
+          # A container that bound loopback would be unreachable, so the entrypoint must have generated
+          # a credential and bound beyond it — and the answer has to admit both.
+          node -e '
+            const config = require("/tmp/config.json");
+            if (config.auth !== "secret") throw new Error("expected a generated credential, got " + config.auth);
+            if (config.bind.loopbackOnly !== false) throw new Error("the container must bind beyond loopback");
+            if (!config.name) throw new Error("the hub must name itself");
+          '
+          docker logs bp-hub 2>&1 | head -20
+          # The generated credential is enforced, not decorative.
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/v1/bluepencil/notes)" = "401"
+          docker exec bp-hub wget -q -O /dev/null http://127.0.0.1:8787/api/v1/bluepencil/health || true
+          docker rm -f bp-hub

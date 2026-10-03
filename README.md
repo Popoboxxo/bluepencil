@@ -272,6 +272,7 @@ survive a reload.
 | [docs/EMBED.md](docs/EMBED.md) | One-tag attach: attribute reference, loader/update API, the store's endpoint table, the gate recipe |
 | [docs/INTERNAL-API.md](docs/INTERNAL-API.md) | Frozen module boundaries and the public API sketch for M1 (`0.1.0`) |
 | [docs/EXTENSION.md](docs/EXTENSION.md) | The Chromium MV3 extension: build, install, and how it gets past a page's CSP |
+| [docs/DOCKER.md](docs/DOCKER.md) | Running the hub as a container: compose, environment variables, the generated credential, honest limits |
 | [docs/HERMES.md](docs/HERMES.md) | Registering the MCP server in a host, and the environment binding it runs under |
 | [docs/RELEASING.md](docs/RELEASING.md) | How a release is cut: preflight, the tag-triggered workflow, the five assets |
 | [examples/vanilla/README.md](examples/vanilla/README.md) | The fixture app: smoke commands, hook inventory, seed bundle, manual checklist |

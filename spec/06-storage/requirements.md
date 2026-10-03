@@ -210,3 +210,19 @@ requires-trace-from: []
 One command to start, credential generated when it is needed: the hub starts on loopback by default, and the network mode binds beyond loopback, generates the credential itself and prints exactly what to copy — no flag has to be guessed
 
 *Acceptance criteria:* Starting without flags works and needs no credential; the network mode prints one line a client can use as it stands
+
+## FR-6.14 Runnable as a container from an image this repository builds: the repository carries a D…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+Runnable as a container from an image this repository builds: the repository carries a Dockerfile and a compose file, and the release publishes the image; the container binds beyond loopback (or it would be unreachable), generates its credential on the first start, keeps it in the data volume so a restart does not invalidate clients, and prints what to copy — one volume, one command, no install step at container start
+
+*Acceptance criteria:* `docker compose up -d` starts a hub that answers `GET {base}/config` with a generated credential and a network binding, without a credential being handed in; the image is built and run by the pipeline on every change

@@ -9,7 +9,7 @@
 > `N` = concrete product need (admin debug mode in an ALM system).
 >
 > **This file is the source of truth.** The machine-checkable projection lives in
-> [`spec/`](../spec/README.md) — 136 requirements as a [reqmd](https://reqmd.dev) tree,
+> [`spec/`](../spec/README.md) — 137 requirements as a [reqmd](https://reqmd.dev) tree,
 > regenerated with `npm run spec` and validated in CI with `reqmd check`. Edit the table
 > below, never the generated spec.
 
@@ -103,6 +103,7 @@
 | FR-6.11 | **No address to type in the normal case**: the extension offers the reachable hubs as a readable choice and resolves the addresses behind it; a custom address is an explicit override rather than the default path | P1 | M5 | N | A hub that is running can be selected on the options page without typing an address; the free-text field exists only behind the override |
 | FR-6.12 | **The UI states the live connectivity, not a promise**: the extension shows the result of a real check — reachable or not, loopback-only or open to the network, and which credential the hub asks for — and refreshes it | P0 | M5 | N | With the hub stopped the status says "not reachable"; with the hub bound to the network the status says so; both come from a request, not from the saved settings |
 | FR-6.13 | **One command to start, credential generated when it is needed**: the hub starts on loopback by default, and the network mode binds beyond loopback, generates the credential itself and prints exactly what to copy — no flag has to be guessed | P1 | M5 | N | Starting without flags works and needs no credential; the network mode prints one line a client can use as it stands |
+| FR-6.14 | **Runnable as a container from an image this repository builds**: the repository carries a `Dockerfile` and a compose file, and the release publishes the image; the container binds beyond loopback (or it would be unreachable), generates its credential on the first start, keeps it in the data volume so a restart does not invalidate clients, and prints what to copy — one volume, one command, no install step at container start | P1 | M5 | N | `docker compose up -d` starts a hub that answers `GET {base}/config` with a generated credential and a network binding, without a credential being handed in; the image is built and run by the pipeline on every change |
 
 ## FR-7 Export
 
