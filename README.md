@@ -19,24 +19,28 @@ no "the second badge in the header".
 
 ![The review layer on the vanilla fixture: five notes from a review round, the bar with its counters, the marker on the annotated element and the note list](docs/images/fixture-review.png)
 
-**Status:** `0.4.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
+**Status:** `0.5.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
 `main`: the core model, anchoring (now including **transient container reveal**), capture, store and
 the four adapters (with a conformance suite); canonical, diffable bundles with
 `merge`/`upsert`/`replace-session` and migrations; Markdown/JSON export; the collaboration protocol;
 the review layer with i18n; the public API and the `<bluepencil-notes>` element; the CLI, the MCP
-server (read-only by default) and the reference sidecar, which now takes **per-device signed tokens**
-(shared secret or token, per-environment and revocable); a **Chromium MV3 extension** that mounts the
+server (read-only by default) and the **hub** — one command, static site and notes API on one port,
+**MCP over HTTP** so an agent reaches the same notes the browser writes, per-device signed tokens
+(shared secret or token, per-environment and revocable), a `GET {base}/config` that describes the
+running process without a credential, and a container image (`docker compose up -d`) that generates
+its own credential; a **Chromium MV3 extension** that mounts the
 layer in pages you do not build yourself, with its settings reaching the layer and its rounds kept in
-the extension's own storage; the vanilla fixture app with its seed bundle, 675 unit tests and the
+the extension's own storage; the vanilla fixture app with its seed bundle, 697 unit tests and the
 browser legs of the embed smoke, the E2E suite and the extension smoke.
 
 Honest gaps: the E2E suite is hand-rolled over the CDP pipe rather than Playwright (NFR-4 says no
 test framework), token refresh is manual (an expired token is replaced by hand, and revocation is
-read at sidecar start), no import/merge surface in the UI, no bulk delete or retention control, i18n
+read at hub start), no import/merge surface in the UI, no bulk delete or retention control, i18n
 only `en`/`de`, and no npm publish — install from the tag
-(`npm i github:Popoboxxo/bluepencil#v0.4.0`; the `prepare` script builds `dist/` during install) or
-use the release artefacts: loader, layer, package tarball, the MV3 browser extension and one
-`SHA256SUMS` over all of them. How a release is cut: [docs/RELEASING.md](docs/RELEASING.md).
+(`npm i github:Popoboxxo/bluepencil#v0.5.0`; the `prepare` script builds `dist/` during install) or
+use the release artefacts: loader, layer, package tarball, the MV3 browser extension, one
+`SHA256SUMS` over all of them, and the hub image on `ghcr.io/popoboxxo/bluepencil`
+([docs/DOCKER.md](docs/DOCKER.md)). How a release is cut: [docs/RELEASING.md](docs/RELEASING.md).
 Milestones and their state are tracked in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), the history in
 [CHANGELOG.md](CHANGELOG.md). This repository is the home of the library; the interaction model
 itself is already proven in a production-used prototype (see
@@ -73,7 +77,7 @@ node scripts/serve-example.mjs
 | `dist/attach.js` (classic) and `dist/attach.esm.js` (bundler) | the one-tag attach loader | `window.bluepencilAttach` |
 | `dist/cli.js` | CLI in CI, scripts and offline exchange | `bluepencil …` (or `node dist/cli.js …`) |
 | `dist/mcp.js` | MCP server over stdio, read-only by default | `node dist/mcp.js --store …` |
-| `dist/server.js` | the reference sidecar: static site *and* notes API on one port | `node dist/server.js --store …` |
+| `dist/server.js` | the reference hub: static site *and* notes API on one port | `node dist/server.js --store …` |
 
 `dist/bluepencil.js` is the code-split ES module build — the `chunk-*.js` files next to it are its
 internals, not entry points. `dist/bluepencil.core.js` is the NFR-3 size measurement (the built-in
@@ -127,7 +131,7 @@ one is what makes a round local to one browser or shared with a server.
 | **One tag, any host** | `dist/attach.js` plus `data-*` attributes; it defines `<bluepencil-notes>` and mounts it | static page, CMS, Home Assistant resource — nothing to build, nothing to call |
 | **The element alone** | `dist/bluepencil.element.min.js` and a `<bluepencil-notes …>` tag you place yourself | you want to control when and where it mounts, and to read its events |
 | **Bookmarklet** | a bookmark pointing at the IIFE build | the page is not yours and you cannot deploy it — see the CSP notes in [INTEGRATION §4](docs/INTEGRATION.md#4-bookmarklet-no-deploy) |
-| **Self-hosted sidecar** | `node dist/server.js --store notes.json --root <dir>` | you want persistence and one shared store without writing a backend |
+| **Self-hosted hub** | `node dist/server.js --store notes.json --root <dir>` | you want persistence and one shared store without writing a backend |
 | **Chromium extension** | load `extension/dist` unpacked — see the next section | any page, without editing it |
 | **Headless** | the `bluepencil` CLI, `node dist/mcp.js`, `bluepencil/data` | CI, scripts and agents, against the same data and validators as the UI |
 
@@ -202,25 +206,25 @@ value is replaced by the documented default rather than stored.
 | App name | free text | what the layer calls the app; empty falls back to the page's own title |
 | Language | `auto`, `en`, `de` | `auto` follows the browser |
 | Author | "ask me once, then remember", "take it from the page" | how the note's author is established. Neither is verified — the store has no authentication of its own |
-| Where notes are kept | in the extension (shared across all sites), in the page (per site), in this tab only (lost on reload), on a sidecar (shared with an agent) | which adapter the layer uses |
-| Sidecar URL | a URL | read only when the store is *on a sidecar* |
+| Where notes are kept | in the extension (shared across all sites), in the page (per site), in this tab only (lost on reload), on a hub (shared with an agent) | which adapter the layer uses |
+| Hub URL | a URL | read only when the store is *on a hub* |
 
-The two credential fields appear only for a sidecar, and the page describes what you selected as you
+The two credential fields appear only for a hub, and the page describes what you selected as you
 select it — including, for a signed token, whether it has already expired.
 
 ### Which connections you can point it at
 
-Four stores, and for the sidecar three credential modes. Those modes are the point of the page: they
+Four stores, and for the hub three credential modes. Those modes are the point of the page: they
 are *different headers*, so picking the wrong one produces a `401` that reads like a dead server.
 
-| Authentication | Header sent | The sidecar needs | Trade-off |
+| Authentication | Header sent | The hub needs | Trade-off |
 |---|---|---|---|
 | **None** | – | nothing at all | right **only on loopback**; from the moment `--host` leaves it, the credential is the only thing between the network and your notes |
 | **Shared secret** | `x-bluepencil-auth: <secret>` | `--auth-secret` / `BLUEPENCIL_AUTH_SECRET` | one string every client shares: no expiry, and withdrawing it means rotating it everywhere at once |
 | **Signed token** | `Authorization: Bearer <token>` | `--token-key` / `BLUEPENCIL_TOKEN_KEY` | per device, expiring, revocable on its own — the right choice as soon as more than one device is involved |
 
 ```sh
-# the sidecar, reachable from another device
+# the hub, reachable from another device
 export BLUEPENCIL_TOKEN_KEY=…                    # the same value on both sides
 node dist/server.js --store notes.json --host 0.0.0.0 --revoked-tokens revoked.json
 
@@ -233,12 +237,12 @@ and the **id** that belongs in `--revoked-tokens`), so `export TOKEN=$(bluepenci
 laptop)` works. Paste the token into the options page and keep the device name: it is recorded in the
 token, and it is what keeps a revocation list readable by a human. The page then reads the expiry out
 of the token and says *"Expires in about 6 h 12 min"*, that the token has expired, or plainly that the
-expiry could not be read — a warning, not a decision, because only the sidecar decides whether a token
+expiry could not be read — a warning, not a decision, because only the hub decides whether a token
 is good. The refusals come back as themselves: `401 unauthorized`, `401 token_expired` (mint a new
 one), `401 token_revoked` (**do not** — the device was deliberately cut off), `403 insufficient_scope`
 (the token is valid but read-only).
 
-The full credential story is in [docs/EXTENSION.md](docs/EXTENSION.md), and the sidecar side — both
+The full credential story is in [docs/EXTENSION.md](docs/EXTENSION.md), and the hub side — both
 phases, the revocation file and why the environment variable beats the flag — in
 [INTEGRATION §5](docs/INTEGRATION.md#authentication--and-when-it-is-needed).
 
@@ -272,6 +276,7 @@ survive a reload.
 | [docs/EMBED.md](docs/EMBED.md) | One-tag attach: attribute reference, loader/update API, the store's endpoint table, the gate recipe |
 | [docs/INTERNAL-API.md](docs/INTERNAL-API.md) | Frozen module boundaries and the public API sketch for M1 (`0.1.0`) |
 | [docs/EXTENSION.md](docs/EXTENSION.md) | The Chromium MV3 extension: build, install, and how it gets past a page's CSP |
+| [docs/DOCKER.md](docs/DOCKER.md) | Running the hub as a container: compose, environment variables, the generated credential, honest limits |
 | [docs/HERMES.md](docs/HERMES.md) | Registering the MCP server in a host, and the environment binding it runs under |
 | [docs/RELEASING.md](docs/RELEASING.md) | How a release is cut: preflight, the tag-triggered workflow, the five assets |
 | [examples/vanilla/README.md](examples/vanilla/README.md) | The fixture app: smoke commands, hook inventory, seed bundle, manual checklist |
@@ -323,9 +328,9 @@ so CI, scripts and agents use exactly the same data and validators as the UI.
 * **No credentials of its own.** The library stores and transmits none — no account, no token, no
   session. The only requests that leave the page are the ones the host configured through an
   adapter (FR-9.1, NFR-7), and note text is rendered as text, never as HTML (FR-9.3). A credential a
-  *sidecar* needs arrives the same way any other host setting does: through the adapter's headers or
+  *hub* needs arrives the same way any other host setting does: through the adapter's headers or
   the element's `token`/`token-header`/`token-scheme` attributes, or through the extension's options
-  page. The sidecar is where that credential is checked — one shared secret (`--auth-secret`) or
+  page. The hub is where that credential is checked — one shared secret (`--auth-secret`) or
   signed, expiring, revocable per-device tokens (`--token-key`, minted with `bluepencil token`);
   [docs/INTEGRATION.md](docs/INTEGRATION.md) §5 has both.
 * **Notes may contain internal wording.** A note is a review artefact, not a data store; treat it as

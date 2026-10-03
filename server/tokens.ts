@@ -12,15 +12,15 @@
  *   - **no scope and no expiry.** A client that was meant to read cannot be downgraded, and a token
  *     that was issued for a week is still valid next year.
  *
- * A signed token fixes all three: the sidecar signs a claim set with a signing key and hands it to a
- * device; the device presents it instead of the secret; the sidecar verifies the signature, the
+ * A signed token fixes all three: the hub signs a claim set with a signing key and hands it to a
+ * device; the device presents it instead of the secret; the hub verifies the signature, the
  * expiry and the scope. Revoking one device means recording its `jti`. A token cannot be forged
  * without the key, and the client never sees the key at all.
  *
  * ## What this is deliberately not
  *
  * A general JWT library, and not a full OAuth flow. There is no issuer discovery, no refresh, no
- * scopes beyond a read/write bit, and no third-party verification — this is a sidecar and the
+ * scopes beyond a read/write bit, and no third-party verification — this is a hub and the
  * clients are its own extension and CLI. The format is JWT-shaped (three dot-separated base64url
  * segments) because that is what the ecosystem expects to see on the wire, and because it makes
  * `Authorization: Bearer …` interoperable with anything that already speaks it.
@@ -50,7 +50,7 @@ export interface TokenIssuerOptions {
   /**
    * HMAC key.
    *
-   * A shared secret is not the same thing: the key never leaves the sidecar, while the secret is
+   * A shared secret is not the same thing: the key never leaves the hub, while the secret is
    * handed to every client. That is the whole difference — a key that stays here cannot be replayed
    * from a device, and rotating it does not require touching any client.
    */

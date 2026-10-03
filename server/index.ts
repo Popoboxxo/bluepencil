@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * bluepencil sidecar — process glue (FR-17 §3, the M2 `server/` deliverable).
+ * bluepencil hub — process glue (FR-17 §3, the M2 `server/` deliverable).
  *
- * The sidecar is the reference implementation of the HTTP contract the built-in `http` adapter
+ * The hub is the reference implementation of the HTTP contract the built-in `http` adapter
  * speaks (ARCHITECTURE §5, docs/INTEGRATION.md §5). One dependency-free process serves
  *   * the notes API under `--base` (default `/api/v1/bluepencil`, exactly the path the built-in
  *     `adapter: "http"` default expects) and
@@ -32,6 +32,7 @@ import {
   type ServerResponse as NodeResponse,
 } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { hostname as osHostname } from "node:os";
 import { pathToFileURL } from "node:url";
 import { isRecord } from "../src/core/adapter";
 import { toMarkdown } from "../src/core/export/markdown";
@@ -50,12 +51,13 @@ import {
   DEFAULT_BASE_PATH,
   JSON_CONTENT_TYPE,
   SERVER_VERSION,
-  SIDECAR_APP_NAME,
-  SIDECAR_EXPORTED_BY,
+  HUB_APP_NAME,
+  HUB_EXPORTED_BY,
   corsHeaders,
   errorBody,
   handleRequest,
   isApiPath,
+  isLoopbackAddress,
   normalizeBase,
   requestPath,
   type HandlerContext,
@@ -65,6 +67,7 @@ import {
 } from "./handler";
 import { asHandlerVerifier, createTokenIssuer } from "./tokens";
 import { selectJournal, type Journal, type JournalRecord, type JournalStatus } from "./journal";
+import { handleMcpRoute } from "./mcp";
 
 /** Bind/port defaults: loopback only, and the port the contract documents. */
 export const DEFAULT_PORT = 8787;
@@ -82,7 +85,7 @@ export class StoreFileError extends Error {
 }
 
 export interface ServerOptions {
-  /** Canonical bundle JSON the sidecar reads at startup and writes on every mutation. */
+  /** Canonical bundle JSON the hub reads at startup and writes on every mutation. */
   storePath: string;
   port?: number;
   host?: string;
@@ -102,7 +105,7 @@ export interface ServerOptions {
   /**
    * HMAC key for signed per-device tokens (`--token-key`, `BLUEPENCIL_TOKEN_KEY`) (#36, phase 2).
    *
-   * Never given to a client. The sidecar signs a token and hands it out; the client presents it and
+   * Never given to a client. The hub signs a token and hands it out; the client presents it and
    * cannot re-sign it, which is what makes a token revocable in a way a shared secret is not. Because
    * it is sensitive, the environment variable is the better of the two ways to set it — a value on a
    * command line is visible in the process list to every other user on the machine.
@@ -117,6 +120,11 @@ export interface ServerOptions {
   allowEnvMismatch?: boolean;
   /** Optional Markdown mirror of the note set (`--mirror`). */
   mirror?: string;
+  /**
+   * Name the hub reports over `GET {base}/config` (`--name`), so a client can offer a readable entry
+   * — "Unraid" instead of `c9da11460bfc`. Defaults to the machine's hostname (FR-6.10).
+   */
+  name?: string;
   /** Allowed CORS origin (`--cors <origin|*>`); unset means no CORS header at all. */
   cors?: string;
   quiet?: boolean;
@@ -188,8 +196,8 @@ function resolveOptions(options: ServerOptions): ResolvedOptions {
     mirror: options.mirror,
     cors: options.cors,
     quiet: options.quiet ?? false,
-    appName: options.appName ?? SIDECAR_APP_NAME,
-    exportedBy: options.exportedBy ?? SIDECAR_EXPORTED_BY,
+    appName: options.appName ?? HUB_APP_NAME,
+    exportedBy: options.exportedBy ?? HUB_EXPORTED_BY,
     journal: options.journal ?? "auto",
     journalDir: options.journalDir,
     journalRepo: options.journalRepo,
@@ -299,14 +307,14 @@ export function createFileStore(options: {
   now?: () => string;
 }): FileNoteStore {
   const state: NoteStoreState = { notes: loadNotes(options.storePath) };
-  const appName = options.appName ?? SIDECAR_APP_NAME;
+  const appName = options.appName ?? HUB_APP_NAME;
 
   const bundleText = (current: NoteStoreState): string =>
     bundleToJson(
       createBundle(current.notes, {
         environment: options.environment,
         app: { name: appName },
-        exportedBy: options.exportedBy ?? SIDECAR_EXPORTED_BY,
+        exportedBy: options.exportedBy ?? HUB_EXPORTED_BY,
         ...(options.now !== undefined ? { now: options.now() } : {}),
       }),
       { pretty: true },
@@ -574,6 +582,7 @@ async function respond(
   options: ResolvedOptions,
   context: HandlerContext,
   journal: Journal,
+  store: FileNoteStore,
 ): Promise<void> {
   const url = request.url ?? "/";
   const method = (request.method ?? "GET").toUpperCase();
@@ -604,6 +613,40 @@ async function respond(
     return;
   }
 
+  // FR-16.9: the store file is the one truth both doors write to, so the in-memory set is refreshed
+  // before each request — a note an agent wrote over MCP (or a human wrote in an editor) is visible
+  // to the next browser request, and this hub's own writes are based on what is actually on disk.
+  try {
+    store.state.notes = loadNotes(options.storePath);
+  } catch (error) {
+    // A file that became unreadable mid-run keeps the last good set: refusing every request would
+    // turn one bad edit into an outage, and the next readable state wins.
+    if (!options.quiet) {
+      process.stderr.write(
+        `bluepencil server: keeping the last good note set — ${oneLine(errorText(error))}\n`,
+      );
+    }
+  }
+
+  // The MCP door (FR-16.8) is asynchronous, so it is answered here instead of inside the synchronous
+  // handler. It shares the store file, the atomic write path and the authentication gate.
+  const mcpResponse = await handleMcpRoute({ method, url, headers: request.headers, body }, context, {
+    read: async () => readTextIfExists(options.storePath),
+    write: async (text) => {
+      writeAtomic(options.storePath, text);
+      if (options.mirror !== undefined) {
+        // The mirror is a second rendering of the same set, so it is refreshed from what was just
+        // written — otherwise `--mirror` would silently drift behind an MCP write.
+        store.state.notes = loadNotes(options.storePath);
+        writeAtomic(options.mirror, store.mirrorText() ?? "");
+      }
+    },
+  });
+  if (mcpResponse !== null) {
+    write(response, mcpResponse);
+    return;
+  }
+
   write(
     response,
     handleRequest(
@@ -624,7 +667,7 @@ export interface RunningServer {
 }
 
 /**
- * Starts the sidecar. The store file is read and validated *before* the socket is bound, so a
+ * Starts the hub. The store file is read and validated *before* the socket is bound, so a
  * corrupt store rejects here instead of serving an empty set (F9).
  */
 export async function startServer(options: ServerOptions): Promise<RunningServer> {
@@ -672,6 +715,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     readOnly: resolved.readOnly,
     allowEnvMismatch: resolved.allowEnvMismatch,
     version: SERVER_VERSION,
+    hubName: options.name ?? osHostname(),
     appName: resolved.appName,
     exportedBy: resolved.exportedBy,
     // These two were parsed, validated and then never passed on, so `--auth-secret` had no effect on
@@ -691,7 +735,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
   };
 
   const server = createServer((request, response) => {
-    respond(request, response, resolved, context, journal).catch((error: unknown) => {
+    respond(request, response, resolved, context, journal, store).catch((error: unknown) => {
       if (response.headersSent) {
         response.end();
         return;
@@ -714,10 +758,18 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
 
   const address = server.address();
   const port = address !== null && typeof address === "object" ? address.port : resolved.port;
+  // FR-6.10: the *live* binding, straight from the socket — this is what a client reads from
+  // `{base}/config`. Deliberately not `--host`: `--host localhost` binds `::1`, and a status display
+  // that repeated the flag would call a network-reachable hub "this machine only".
+  const boundHost = address !== null && typeof address === "object" ? address.address : resolved.host;
+  context.bind = { host: boundHost, port };
   if (!resolved.quiet) {
     process.stderr.write(
-      `bluepencil server: http://${resolved.host}:${port}${resolved.base || "/"} — ${store.state.notes.length} note(s), ` +
-        `environment ${resolved.environment}, ${resolved.readOnly ? "read-only" : "read-write"}, store ${resolved.storePath}\n`,
+      `bluepencil server: "${context.hubName}" on http://${resolved.host}:${port}${resolved.base || "/"} — ` +
+        `${store.state.notes.length} note(s), environment ${resolved.environment}, ` +
+        `${resolved.readOnly ? "read-only" : "read-write"}, ` +
+        `${isLoopbackAddress(boundHost) ? "reachable on this machine only" : `reachable from the network (bound ${boundHost})`}, ` +
+        `store ${resolved.storePath}\n`,
     );
   }
 
@@ -776,6 +828,12 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
   const mirror = get("--mirror");
   const host = get("--host");
   const base = get("--base");
+  // The name a client shows for this hub. An empty value is a configuration error rather than
+  // "use the hostname": `--name ""` reads as a typo, and a blank entry in a picker is worse than none.
+  const name = get("--name");
+  if (name !== undefined && name.trim().length === 0) {
+    return "--name must not be empty — omit it to use the machine's hostname";
+  }
   const journalRaw = get("--journal") ?? process.env.BLUEPENCIL_JOURNAL;
   if (journalRaw !== undefined && !["auto", "git", "file", "none"].includes(journalRaw)) {
     return `--journal must be one of auto, git, file, none (got ${JSON.stringify(journalRaw)})`;
@@ -803,7 +861,7 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
 
   // Phase 2 (#36): a signing key for per-device tokens. Separate from the shared secret on purpose —
   // it is a different credential with a different job, and one is not a substitute for the other:
-  // the key never leaves the sidecar, the secret is handed to every client. Setting both is
+  // the key never leaves the hub, the secret is handed to every client. Setting both is
   // legitimate, and the handler then accepts either.
   const tokenKeyRaw = get("--token-key") ?? process.env.BLUEPENCIL_TOKEN_KEY;
   if (tokenKeyRaw !== undefined && tokenKeyRaw.length === 0) {
@@ -821,7 +879,7 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
   }
   // Where revoked token ids are kept. It has to be a file: a revocation list that lives in memory
   // disappears on restart, and a device that was deliberately cut off would be let back in by
-  // restarting the sidecar. That would make revocation a speed bump.
+  // restarting the hub. That would make revocation a speed bump.
   const revokedPath = get("--revoked-tokens") ?? process.env.BLUEPENCIL_REVOKED_TOKENS;
   if (revokedPath !== undefined && revokedPath.length === 0) {
     return "--revoked-tokens must not be empty — omit it entirely to run with an empty list";
@@ -846,6 +904,7 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
     storePath,
     port,
     ...(host !== undefined ? { host } : {}),
+    ...(name !== undefined ? { name } : {}),
     ...(base !== undefined ? { base } : {}),
     ...(root !== undefined ? { root } : {}),
     environment,
@@ -870,10 +929,10 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
   };
 }
 
-const HELP = `bluepencil sidecar ${SERVER_VERSION} — static site + notes API on one port.
+const HELP = `bluepencil hub ${SERVER_VERSION} — static site + notes API on one port.
 
 Usage:
-  node dist/server.js --store notes.json [--port 8787] [--host 127.0.0.1]
+  node dist/server.js --store notes.json [--port 8787] [--host 127.0.0.1] [--name "<text>"]
     [--base /api/v1/bluepencil] [--root <static dir>] [--environment dev|staging|live]
     [--read-only] [--auth-secret <value>] [--allow-env-mismatch] [--mirror notes.md] [--cors <origin|*>] [--quiet]
     [--journal auto|git|file|none] [--journal-dir <dir>] [--journal-repo <dir>]
@@ -887,12 +946,17 @@ Authentication:
   With --auth-secret (or BLUEPENCIL_AUTH_SECRET) every request under the base must present the
   secret in the x-bluepencil-auth header; anything else is answered 401 {"error":{"code":
   "unauthorized"}}. Without the flag there is no authentication at all — which is the right default
-  for a sidecar bound to loopback, and the wrong one as soon as it is not. Prefer the environment
+  for a hub bound to loopback, and the wrong one as soon as it is not. Prefer the environment
   variable: a secret on a command line is visible in the process list to every other user on the
   machine. An empty value is rejected rather than treated as "off".
 
 Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in http adapter):
+  GET    {base}/config              name, version, base, which credential, and the live binding —
+                                    needs no credential itself (FR-6.10)
   GET    {base}/health              { ok, status, version }
+  POST   {base}/mcp                 MCP over HTTP (tools/list, tools/call, resources, prompts) —
+                                    POST only, no sessions, same credential and same store as the
+                                    notes API (FR-16.8)
   GET    {base}/notes               filters: route, intent, type, session, source, environment,
                                     includeDone, since, repeated status  → { notes }
   POST   {base}/notes               NoteDraft JSON                     → { note }
@@ -906,13 +970,13 @@ Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in h
 
 Rules: bulk-delete requires "confirm": true; an unknown id is 404; a malformed body is 400; a body
 that is not application/json is 415; a known path with the wrong method is 405; every error is
-{"error":{"code","message"}}. --read-only refuses every write (403). The sidecar is bound to ONE
+{"error":{"code","message"}}. --read-only refuses every write (403). The hub is bound to ONE
 environment: a write that names another one is refused (400) unless --allow-env-mismatch promotes
 it (FR-14.8). The store file is canonical bundle JSON, written atomically; a corrupt store file
 refuses the start (exit 2) instead of being served as an empty set. --root serves a static
 directory with an index.html fallback on the same origin. --cors is off by default.
 
-Journal (FR-18): the sidecar keeps a history of every accepted mutation. --journal auto (default)
+Journal (FR-18): the hub keeps a history of every accepted mutation. --journal auto (default)
 commits through the surrounding git work tree when there is one (staged paths, empty diffs skipped,
 batched over --journal-coalesce ms, default 2000) and otherwise appends to a hash-chained
 journal.jsonl next to the store; --journal none switches the history off. A journal failure never

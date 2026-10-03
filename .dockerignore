@@ -1,0 +1,16 @@
+# What must not travel into the image.
+#
+# `node_modules` and `dist` are rebuilt inside the image from the lockfile; the release output, the
+# test scratch dir and the review data have no business in a published artefact either.
+
+.git
+.github
+node_modules
+dist
+extension/dist
+release-assets
+.tmp
+reviews
+spec
+*.log
+*.tgz

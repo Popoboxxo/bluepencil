@@ -83,7 +83,7 @@ describe("elementAttributesFor", () => {
     expect(signed["token-scheme"]).toBe("Bearer");
   });
 
-  it("writes no credential at all when the sidecar has none", () => {
+  it("writes no credential at all when the hub has none", () => {
     const attributes = elementAttributesFor(
       { ...base, store: "http", endpoint: "http://x.test", auth: "none", token: "" },
       "en",

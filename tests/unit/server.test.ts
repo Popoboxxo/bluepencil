@@ -1,9 +1,9 @@
 /**
  * @vitest-environment node — drives the handler over real sockets and real files, which jsdom cannot.
  *
- * Sidecar server tests (FR-17 §3 — the frozen embed/attach contract).
+ * Hub server tests (FR-17 §3 — the frozen embed/attach contract).
  *
- * `server/handler.ts` is the pure half of the sidecar, so the whole documented contract is tested
+ * `server/handler.ts` is the pure half of the hub, so the whole documented contract is tested
  * here without a socket: health, list filters (route/session/includeDone/status), create with an
  * invalid payload, patch, message append, bulk-delete with and without `confirm`, sessions, the
  * canonical bundle, the documented status codes (400/403/404/405/413/415/500) and the error shape
@@ -26,7 +26,7 @@ import { validateBundle } from "../../src/data/schema";
 import {
   DEFAULT_BASE_PATH,
   SERVER_VERSION,
-  SIDECAR_APP_NAME,
+  HUB_APP_NAME,
   handleRequest,
   normalizeBase,
   type HandlerContext,
@@ -160,7 +160,7 @@ function idsOf(response: ServerResponse): string[] {
   return Array.isArray(notes) ? notes.map((entry: Json) => entry.id as string) : [];
 }
 
-describe("sidecar handler — the documented endpoints", () => {
+describe("hub handler — the documented endpoints", () => {
   it("answers GET {base}/health with ok, status and version", () => {
     const harness = createHarness();
     const response = harness.call(request("GET", "/health"));
@@ -634,7 +634,7 @@ describe("sidecar handler — the documented endpoints", () => {
   });
 
   describe("environment isolation (NFR-18)", () => {
-    it("refuses a live note on a dev sidecar with 400", () => {
+    it("refuses a live note on a dev hub with 400", () => {
       const harness = createHarness({ environment: "dev" });
       const response = harness.call(request("POST", "/notes", { body: draft({ environment: "live" }) }));
       expect(response.status).toBe(400);
@@ -726,7 +726,7 @@ describe("sidecar handler — the documented endpoints", () => {
   });
 });
 
-describe("sidecar store file", () => {
+describe("hub store file", () => {
   let dir = "";
 
   beforeEach(() => {
@@ -742,7 +742,7 @@ describe("sidecar store file", () => {
       store: fileStore.state,
       base: BASE,
       environment: "dev",
-      appName: SIDECAR_APP_NAME,
+      appName: HUB_APP_NAME,
       now: fixedClock(),
       persist: (state) => fileStore.persist(state),
     };
@@ -795,9 +795,9 @@ describe("sidecar store file", () => {
 
     const mirror = readFileSync(mirrorPath, "utf8");
     expect(mirror).toBe(
-      toMarkdown(fileStore.state.notes, { includeDone: true, title: `${SIDECAR_APP_NAME} review notes` }),
+      toMarkdown(fileStore.state.notes, { includeDone: true, title: `${HUB_APP_NAME} review notes` }),
     );
-    expect(mirror).toContain(`# ${SIDECAR_APP_NAME} review notes`);
+    expect(mirror).toContain(`# ${HUB_APP_NAME} review notes`);
     expect(mirror).toContain("make the total bigger");
     expect(mirror).toContain("hook `checkout-submit`");
     expect(readdirSync(dir).sort()).toEqual(["notes.json", "notes.md"]);
@@ -851,7 +851,7 @@ describe("sidecar store file", () => {
   });
 });
 
-describe("sidecar CLI", () => {
+describe("hub CLI", () => {
   it("parses the documented flags with their defaults", () => {
     const parsed = parseServerArgs(["--store", "notes.json"]);
     expect(parsed).toEqual({
@@ -917,7 +917,7 @@ describe("sidecar CLI", () => {
   });
 });
 
-describe("sidecar over HTTP (node:http glue)", () => {
+describe("hub over HTTP (node:http glue)", () => {
   let dir = "";
   let running: Awaited<ReturnType<typeof startServer>> | null = null;
 
@@ -1037,7 +1037,7 @@ describe("sidecar over HTTP (node:http glue)", () => {
   });
 });
 
-describe("sidecar handler — reading one note (GET {base}/notes/{id})", () => {
+describe("hub handler — reading one note (GET {base}/notes/{id})", () => {
   it("answers the note canonically, without needing the whole set", () => {
     const harness = createHarness({ notes: seedNotes() });
     const response = harness.call(request("GET", "/notes/n3"));
@@ -1083,7 +1083,7 @@ describe("sidecar handler — reading one note (GET {base}/notes/{id})", () => {
   });
 });
 
-describe("sidecar handler — a create body is not a guessing game", () => {
+describe("hub handler — a create body is not a guessing game", () => {
   it("refuses an unknown field instead of storing nothing and answering 200", () => {
     const harness = createHarness();
     const response = harness.call(
@@ -1132,7 +1132,7 @@ describe("sidecar handler — a create body is not a guessing game", () => {
   });
 });
 
-describe("sidecar handler — the journal's 'who' (FR-18)", () => {
+describe("hub handler — the journal's 'who' (FR-18)", () => {
   it("records the X-Bluepencil-Actor header for a create", () => {
     const harness = createHarness();
     harness.call(request("POST", "/notes", { body: draft(), headers: { "x-bluepencil-actor": "dduchrow" } }));

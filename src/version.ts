@@ -2,7 +2,7 @@
  * The version every bluepencil artifact reports.
  *
  * One source: `package.json`. esbuild (`scripts/build.mjs`) replaces `__BLUEPENCIL_VERSION__` with it
- * while bundling, so library, element build, loader, CLI, MCP server and sidecar all report the same
+ * while bundling, so library, element build, loader, CLI, MCP server and hub all report the same
  * string instead of each keeping its own literal (they did).
  *
  * `typeof` keeps this module working when the sources are used directly — unit tests, `tsx`, a REPL —

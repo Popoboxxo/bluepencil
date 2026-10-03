@@ -15,7 +15,7 @@ examples/attach/
 
 ## Two ways to run it
 
-### 1. Bundled sidecar — page and API on one origin
+### 1. Bundled hub — page and API on one origin
 
 ```bash
 npm run build     # writes dist/attach.js, dist/bluepencil.element.min.js, dist/server.js
@@ -31,7 +31,7 @@ node dist/server.js \
 
 Both the page and `/api/v1/bluepencil` are then served from the same origin, so nothing has to be
 proxied. The page keeps repository-relative paths (`../../dist/attach.js`) on purpose: that is what
-makes it work unchanged under `scripts/serve-example.mjs` (port 9283) **and** under the sidecar.
+makes it work unchanged under `scripts/serve-example.mjs` (port 9283) **and** under the hub.
 
 `--root .` publishes the whole checkout, which is fine for a local fixture. For a deployment, copy
 just what the site needs — `examples/attach/`, `dist/` — into one directory and point `--root` at
@@ -46,7 +46,7 @@ it — same origin, or CORS headers on the API.
 ## The self-test: `?selftest=1`
 
 ```bash
-# against the sidecar from mode 1
+# against the hub from mode 1
 open http://127.0.0.1:8787/examples/attach/?selftest=1
 ```
 
@@ -85,7 +85,7 @@ Without `?selftest=1` the page is just the dashboard: no probe, no output block.
 
 ## Automated: `npm run smoke:embed`
 
-`scripts/embed-smoke.mjs` serves this page with the sidecar (`--root`), opens it in a real browser
+`scripts/embed-smoke.mjs` serves this page with the hub (`--root`), opens it in a real browser
 (Chrome over the CDP pipe, no npm dependency), waits for the probe and then asserts **outside** the
 page that the note it created is in the API and in the store file on disk. It also drives the
 presentation deck and a live version swap of the shipped `attach.js`.
@@ -118,7 +118,7 @@ BP_REQUIRE_BROWSER=1 npm run smoke:embed      # CI: no browser is a failure, not
 | Attribute | Effect in this page |
 |---|---|
 | `data-endpoint` | implies `adapter="http"`; the API is addressed explicitly instead of being guessed from the origin |
-| `data-environment` | notes are bound to `dev`; the sidecar rejects writes from another environment |
+| `data-environment` | notes are bound to `dev`; the hub rejects writes from another environment |
 | `data-language` | German UI |
 | `data-session` | review round `attach-fixture` — the self-test and the smoke read it back by that filter |
 | `data-route` | stores `location.pathname` as the anchor route |
@@ -134,5 +134,5 @@ of JSON, and the page looks empty. The self-test reports it as
 `note-visible-over-http — GET … → HTTP 200` with a payload that has no `notes` array, and
 `attachable` failures show up as `bp-attach-error` in `hostApp.events.errors`.
 
-Fix it by serving page and API from one origin — the sidecar with `--root` (mode 1) does that — or
+Fix it by serving page and API from one origin — the hub with `--root` (mode 1) does that — or
 by proxying `/api/v1/bluepencil` to the store backend. See EMBED.md §7 for the symptom table.

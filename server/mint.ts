@@ -1,12 +1,12 @@
 /**
- * The token minting a client needs before it can talk to a token-configured sidecar (#36, phase 2).
+ * The token minting a client needs before it can talk to a token-configured hub (#36, phase 2).
  *
  * ## Why this exists
  *
- * Phase 2 added the sidecar half — a signing key, signed tokens, a revocation list. That is half a
+ * Phase 2 added the hub half — a signing key, signed tokens, a revocation list. That is half a
  * feature: without a way to *obtain* a token, the only clients that can authenticate are ones that
  * already hold one. So this is the other half, and it is a local command rather than an HTTP
- * endpoint, for one reason: issuing a token over HTTP would mean the sidecar accepts unauthenticated
+ * endpoint, for one reason: issuing a token over HTTP would mean the hub accepts unauthenticated
  * requests that create credentials. The key is an operator secret, so the operator mints tokens.
  *
  * ## Why the device name is asked for
@@ -27,7 +27,7 @@ import { createTokenIssuer, type TokenIssuerOptions } from "./tokens";
 
 /** What `bluepencil token` needs to know. Kept separate from `parseServerArgs` on purpose. */
 export interface TokenRequest {
-  /** The signing key, exactly as the sidecar has it. */
+  /** The signing key, exactly as the hub has it. */
   key: string;
   /** A human-readable name for the device, recorded in the claims. */
   device: string;
@@ -75,7 +75,7 @@ export function parseScope(text: string | undefined): ("read" | "write")[] | str
 export function mintToken(request: TokenRequest, options: Omit<TokenIssuerOptions, "key"> = {}): TokenResult {
   if (request.key.length === 0) {
     throw new Error(
-      "a signing key is required — it is the same value the sidecar has under --token-key",
+      "a signing key is required — it is the same value the hub has under --token-key",
     );
   }
   if (request.device.trim().length === 0) {

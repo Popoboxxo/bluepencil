@@ -177,7 +177,7 @@ export interface Note {
  * Presentation timing of a note (FR-20.4).
  *
  * Deliberately *not* `debug` (FR-13.5): debug context is tool output, this is authored content that
- * has to survive export, MCP and the sidecar — which is why it lives on the note and not on the UI.
+ * has to survive export, MCP and the hub — which is why it lives on the note and not on the UI.
  */
 export interface NoteTiming {
   /** Cue position: seconds from the start of the talk. */

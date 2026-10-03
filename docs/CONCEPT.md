@@ -227,7 +227,7 @@ element-anchored intent. That gap is bluepencil.
 |---|---|---|---|
 | **Embedded** | bundled as a dependency of the app | host API or library default | dogfooding, admin debug mode in a product |
 | **Bookmarklet** | dragged into any page | in-memory / `localStorage`, export to file | third-party sites, no deploy rights |
-| **Self-hosted sidecar** | small server serves the page *and* the API | JSON on disk + Markdown export | presentations, static sites, team reviews |
+| **Self-hosted hub** | small server serves the page *and* the API | JSON on disk + Markdown export | presentations, static sites, team reviews |
 | **Hosted API** | library + your own endpoints | your database | products with existing auth and tenancy |
 | **Agent-coupled** | as above + MCP tool group | as above | AI agents read/close notes as part of a workflow |
 | **Runtime toggle** (cross-cutting) | dependency of the product, switched on/off at runtime by the host | host-defined | the same mechanism in different products, without a reload |
@@ -285,7 +285,7 @@ Rules that keep this honest:
 |---|---|---|
 | **M0 — Concept** (this repo) | concept, requirements, architecture | reviewed and merged |
 | **M1 — Core** | types, anchor resolution, state capture, in-memory + `localStorage` adapters, overlay UI (text/design modes), Markdown/JSON export, **runtime `enable()`/`disable()` with complete teardown** | annotate any page, reload, export — no server; 100 toggles leave no residue |
-| **M2 — Server sidecar & exchange** | reference server (API + static hosting), sessions, purge; **headless data library + CLI**, bundle export/import with merge/dry-run/conflict reporting, environment tagging, write API for dev tooling | a full review round on a real page; a bundle travels dev → live → dev without losing a note |
+| **M2 — Server hub & exchange** | reference server (API + static hosting), sessions, purge; **headless data library + CLI**, bundle export/import with merge/dry-run/conflict reporting, environment tagging, write API for dev tooling | a full review round on a real page; a bundle travels dev → live → dev without losing a note |
 | **M3 — Distribution** | ESM + IIFE + **custom-element** builds, bookmarklet generator, docs site/demo fixture app, host-variety examples (static, SPA, web-component host, Home Assistant card) | "drag to your bookmarks bar" works; the element loads in a host without a build step |
 | **M4 — Agent interface** | stable schema, MCP tool group, agent protocol (implement/feedback/decision) | an agent closes a review round end to end |
 | **M5 — Product integration** | host adapter for an ALM tool (admin debug mode, RBAC, audit) | notes created and purged inside a real product |

@@ -15,7 +15,7 @@
   // packaging smoke asserts stop existing.
   //
   // `src/cli/**` is the one place that reaches out: `bluepencil token` dispatches into
-  // `server/mint-cli.ts`, because minting a token belongs next to the sidecar that verifies it. The
+  // `server/mint-cli.ts`, because minting a token belongs next to the hub that verifies it. The
   // CLI is not a typed entry point (its `bin` has no `types` path in `exports`), so leaving it out of
   // the declaration emit keeps the published layout intact. `npm run typecheck` covers it in full:
   // the root tsconfig includes `src/` *and* `server/`.

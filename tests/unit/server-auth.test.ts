@@ -1,7 +1,7 @@
 /**
- * Sidecar authentication (#36, phase 1 — the shared secret).
+ * Hub authentication (#36, phase 1 — the shared secret).
  *
- * The property under test is deliberately narrow: a sidecar configured with a secret answers an
+ * The property under test is deliberately narrow: a hub configured with a secret answers an
  * unauthenticated or wrongly-authenticated request with 401 `unauthorized`, and answers the
  * *same* request with the right secret normally. Everything else — which routes exist, what a note
  * looks like — is `server.test.ts`'s job and is not repeated here.
@@ -11,7 +11,7 @@
  *   - the check runs *before* routing, so no route can forget it. A test walks a set of paths that
  *     have nothing to do with notes (health, an unknown path, a wrong method) and requires the same
  *     401 from all of them. If the check were inside a route, `/health` would still answer.
- *   - it is not confused with `--read-only`. A read-only sidecar refuses writes with 403; an
+ *   - it is not confused with `--read-only`. A read-only hub refuses writes with 403; an
  *     unauthenticated one refuses *reads* too, with 401. Getting those backwards is the easy mistake.
  */
 import { describe, expect, it, vi } from "vitest";
@@ -55,7 +55,7 @@ function harness(authSecret: string | undefined, extra: Partial<HandlerContext> 
 
 const VALID_NOTE = { type: "text", body: "a note", anchor: { selector: "#x", quote: "y" } };
 
-describe("sidecar authentication — a sidecar with a secret", () => {
+describe("hub authentication — a hub with a secret", () => {
   it("refuses a request with no credentials at all", () => {
     const { call } = harness(CREDENTIAL);
 
@@ -152,7 +152,7 @@ describe("sidecar authentication — a sidecar with a secret", () => {
     // `/nonsense` is deliberately absent from this list. `allowedMethods` returns null for an unknown
     // first segment, so it lands in the same "this is not the API" 404 as a path outside the base —
     // and that 404 runs first on purpose. Answering 401 to a path that is not the API at all would
-    // make a sidecar on a shared host 401 every unrelated request, and it would leak nothing: the base
+    // make a hub on a shared host 401 every unrelated request, and it would leak nothing: the base
     // path is public either way.
     const { call } = harness(CREDENTIAL);
 
@@ -169,7 +169,7 @@ describe("sidecar authentication — a sidecar with a secret", () => {
 
   it("does not claim paths outside the API at all", () => {
     // The flip side of the placement above: a request that could not be the API is answered as
-    // unknown, not as unauthenticated. On a shared host that is the difference between a sidecar and
+    // unknown, not as unauthenticated. On a shared host that is the difference between a hub and
     // something that gets in the way of everything else on the box.
     const { call } = harness(CREDENTIAL);
 
@@ -206,7 +206,7 @@ describe("sidecar authentication — a sidecar with a secret", () => {
   });
 });
 
-describe("sidecar authentication — a sidecar without a secret", () => {
+describe("hub authentication — a hub without a secret", () => {
   it("serves requests exactly as before", () => {
     // The backwards-compatibility guarantee: an unset secret means no authentication, so every
     // existing deployment and every test in `server.test.ts` keeps working untouched.
@@ -217,7 +217,7 @@ describe("sidecar authentication — a sidecar without a secret", () => {
   });
 
   it("ignores a header that arrives anyway", () => {
-    // Not an error: a client that is configured to send a secret should not break against a sidecar
+    // Not an error: a client that is configured to send a secret should not break against a hub
     // that does not ask for one. That is the case where a client and server are briefly out of step.
     const { call } = harness(undefined);
 
@@ -240,10 +240,10 @@ describe("sidecar authentication — a sidecar without a secret", () => {
   });
 });
 
-describe("sidecar authentication — read-only is a separate thing", () => {
+describe("hub authentication — read-only is a separate thing", () => {
   it("answers an unauthenticated request with 401, not the 403 that read-only uses", () => {
     // The confusion this pins down: both are "refused", and a client that only checks the status
-    // would treat them the same. A read-only sidecar is *permitted* to read; an unauthenticated one
+    // would treat them the same. A read-only hub is *permitted* to read; an unauthenticated one
     // is not, so the codes have to differ.
     const { call } = harness(CREDENTIAL, { readOnly: true });
 

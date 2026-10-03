@@ -43,7 +43,7 @@ export interface HttpAdapterOptions {
   /**
    * Evaluated on **every** request, so refreshed tokens are picked up (FR-9.1).
    *
-   * This is also how the extension authenticates against a sidecar (#36): it returns
+   * This is also how the extension authenticates against a hub (#36): it returns
    * `{ "x-bluepencil-auth": <secret> }`. Being a function rather than a value is what lets a
    * phase-2 signed token be refreshed without rebuilding the adapter.
    */

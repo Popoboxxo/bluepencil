@@ -3,7 +3,7 @@
  * network stack. Under jsdom the suite is not even collected: `server/index.ts` fails to load and
  * vitest reports "no tests" rather than a failure, which is a silent green.
  *
- * Authentication options reaching a *running* sidecar (#36, phase 2 — and the phase-1 gap).
+ * Authentication options reaching a *running* hub (#36, phase 2 — and the phase-1 gap).
  *
  * `server-auth.test.ts` and `server-token-auth.test.ts` call the handler directly, with a context
  * they build themselves. That is the right way to test the handler and the wrong way to test that
@@ -90,7 +90,7 @@ async function request(
   return { status: response.status, body: await response.text() };
 }
 
-describe("a running sidecar actually enforces --auth-secret", () => {
+describe("a running hub actually enforces --auth-secret", () => {
   it("refuses an unauthenticated request", async () => {
     const port = await serve({ authSecret: CREDENTIAL });
 
@@ -109,7 +109,7 @@ describe("a running sidecar actually enforces --auth-secret", () => {
     expect(response.status).toBe(200);
   });
 
-  it("still serves an unauthenticated sidecar, because that is the loopback default", async () => {
+  it("still serves an unauthenticated hub, because that is the loopback default", async () => {
     const port = await serve({});
 
     const response = await request(port, "/api/v1/bluepencil/notes");
@@ -118,7 +118,7 @@ describe("a running sidecar actually enforces --auth-secret", () => {
   });
 });
 
-describe("a running sidecar accepts signed tokens", () => {
+describe("a running hub accepts signed tokens", () => {
   function issueAt(iso: string): { token: string; jti: string } {
     const issuer = createTokenIssuer({
       key: SIGNING_KEY,
@@ -135,7 +135,7 @@ describe("a running sidecar accepts signed tokens", () => {
     expect((await request(port, "/api/v1/bluepencil/notes")).status).toBe(401);
   });
 
-  it("accepts a token this sidecar signed", async () => {
+  it("accepts a token this hub signed", async () => {
     const port = await serve({ tokenKey: SIGNING_KEY });
     // Issued against the real clock, not a fixed date. A fixed `iat` here would have passed on the day
     // it was written and started failing the next day, because the *server* decides expiry from its
@@ -237,7 +237,7 @@ describe("a running sidecar accepts signed tokens", () => {
 describe("the revocation list is read from disk at startup", () => {
   it("refuses a token whose id is in the file", async () => {
     // Restart-persistence is the reason this is a file at all. A list that lives in memory would be
-    // empty after a restart, and restarting the sidecar would quietly re-admit a cut-off device.
+    // empty after a restart, and restarting the hub would quietly re-admit a cut-off device.
     const dir = mkdtempSync(join(tmpdir(), "bp-revoked-"));
     dirs.push(dir);
     const storePath = join(dir, "notes.json");

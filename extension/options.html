@@ -9,7 +9,7 @@
     /* The page owns its colours. Relying on the browser's text colour worked for the text the page
        paints itself and broke everything the browser paints: the *open* <select> list and the
        warning box take their background from the markup and their text from the UA, so on a dark
-       screenshot (2026-10-01) the sidecar warning rendered white on light amber (1.05:1) and an
+       screenshot (2026-10-01) the hub warning rendered white on light amber (1.05:1) and an
        option row in the open dropdown was white on white — invisible. Both are measured now, per
        scheme, by `npm run smoke:ext`. */
     --bp-border: #d1d5db;
@@ -92,15 +92,15 @@
        smoke:webstore` fails if this block or the privacy link disappears. -->
   <section class="disclosure" aria-labelledby="disclosure-title">
     <h2 id="disclosure-title">What Bluepencil stores</h2>
-    <p>Everything stays in this browser profile unless you point Bluepencil at a sidecar URL of your own.</p>
+    <p>Everything stays in this browser profile unless you point Bluepencil at a hub URL of your own.</p>
     <ul>
       <li>The notes you create — the text you type, the element each note is anchored to, and the page
         it was taken on.</li>
-      <li>The settings on this page, and — only if you switch the notes store to a sidecar — the URL you
+      <li>The settings on this page, and — only if you switch the notes store to a hub — the URL you
         enter and the credential you paste.</li>
       <li>Nothing else: no account, no analytics, no ads, and no browsing history.</li>
     </ul>
-    <p>A note is sent only to the sidecar URL you enter yourself; with the default store nothing leaves
+    <p>A note is sent only to the hub URL you enter yourself; with the default store nothing leaves
       your machine. <a href="https://popoboxxo.github.io/bluepencil/privacy/">Privacy policy</a></p>
   </section>
 
@@ -151,24 +151,24 @@
           <option value="chromeStorage">in the extension (shared across all sites)</option>
           <option value="localStorage">in the page (per site)</option>
           <option value="memory">in this tab only (lost on reload)</option>
-          <option value="http">on a sidecar (shared with an agent)</option>
+          <option value="http">on a hub (shared with an agent)</option>
         </select>
       </label>
 
-      <div id="sidecar" hidden>
+      <div id="hub" hidden>
         <p class="warn">
-          A sidecar is reachable from the network once it binds beyond loopback. It is only as safe
+          A hub is reachable from the network once it binds beyond loopback. It is only as safe
           as its secret, so start it with <code>--auth-secret</code> — without that flag every caller
           on the network can read and write your notes.
         </p>
         <label>
-          <span>Sidecar URL</span>
+          <span>Hub URL</span>
           <input type="text" id="endpoint" placeholder="http://127.0.0.1:8787">
         </label>
         <label>
           <span>Authentication</span>
           <select id="auth">
-            <option value="none">None — the sidecar has no credential</option>
+            <option value="none">None — the hub has no credential</option>
             <option value="secret">Shared secret (--auth-secret)</option>
             <option value="token">Signed token (--token-key)</option>
           </select>
@@ -189,7 +189,7 @@
           <span>Device name</span>
           <input type="text" id="deviceName" placeholder="work-laptop">
           <span class="hint">
-            Not sent anywhere — it records which machine the token was minted for, so the sidecar's
+            Not sent anywhere — it records which machine the token was minted for, so the hub's
             revocation list stays readable by a human. Keep the name you passed to
             <code>bluepencil token</code>.
           </span>

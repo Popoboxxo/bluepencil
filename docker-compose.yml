@@ -1,0 +1,30 @@
+# The hub in Docker — three lines and it runs (FR-6.14).
+#
+#   docker compose up -d
+#   docker compose logs hub | head -20      # the address and the credential
+#
+# The credential is generated on the first start and kept in the named volume, so a restart does not
+# invalidate the clients that already saved it. Set `BLUEPENCIL_AUTH_SECRET` to bring your own.
+
+services:
+  hub:
+    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:latest}
+    # Building from this checkout instead of pulling the published image:
+    # build: .
+    container_name: bluepencil-hub
+    restart: unless-stopped
+    ports:
+      - "${BLUEPENCIL_PORT:-8787}:8787"
+    volumes:
+      - bluepencil-notes:/data
+    environment:
+      # How the hub introduces itself in `GET {base}/config` — "Unraid" is easier to pick from a list
+      # than a container id.
+      BLUEPENCIL_NAME: "${BLUEPENCIL_NAME:-bluepencil-hub}"
+      # BLUEPENCIL_AUTH_SECRET            # leave unset: generated on the first start, kept in /data
+      # BLUEPENCIL_TOKEN_KEY              # or a key file path: signed, per-device revocable tokens
+    # Extra flags go straight to the hub: run read-only, use another base path, mirror to Markdown.
+    # command: ["--read-only"]
+
+volumes:
+  bluepencil-notes:

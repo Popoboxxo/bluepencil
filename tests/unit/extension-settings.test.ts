@@ -69,7 +69,7 @@ describe("normalizeSettings", () => {
 
   it("keeps the good fields when a sibling field is corrupt", () => {
     // The failure mode that matters: one bad value must not reset everything, or a user with a
-    // valid sidecar endpoint would silently lose it because their language was mistyped.
+    // valid hub endpoint would silently lose it because their language was mistyped.
     const result = normalizeSettings({
       environment: "nonsense",
       language: "nonsense",
@@ -137,7 +137,7 @@ describe("normalizeSettings", () => {
   });
 
   it("keeps a readable expiry and drops one that cannot be read", () => {
-    // The expiry is a warning shown to the user, never a decision — the sidecar decides. That is
+    // The expiry is a warning shown to the user, never a decision — the hub decides. That is
     // exactly why a wrong one is worse than none: an unparseable value would be rendered as
     // "expires in NaN h" or read as "never expires", and the user would find out by losing notes.
     for (const bad of [42, null, true, "not a date", "2026-13-45", {}]) {
@@ -169,7 +169,7 @@ describe("expiryOfToken", () => {
   });
 
   it("says nothing rather than guessing, for anything that is not a readable token", () => {
-    // Nothing here is an error: the extension stores the token and the sidecar decides. What the
+    // Nothing here is an error: the extension stores the token and the hub decides. What the
     // options page must not do is invent an expiry.
     const inputs = [
       "",

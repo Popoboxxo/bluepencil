@@ -121,7 +121,7 @@ describe("signed tokens — issuing", () => {
 describe("signed tokens — refusing a token that was not issued here", () => {
   it("refuses a token signed with a different key", () => {
     // The core of the whole idea. A stolen token cannot be re-signed by its holder, because the key
-    // never leaves the sidecar.
+    // never leaves the hub.
     const { issuer } = harness();
     const foreign = forge({ claims: { iat: "2026-09-29T12:00:00.000Z", exp: "2099-01-01T00:00:00.000Z", jti: "x", device: "attacker", scope: ["read", "write"] }, key: OTHER_KEY });
 
@@ -189,7 +189,7 @@ describe("signed tokens — expiry", () => {
   });
 
   it("expires on the wire, not only locally", () => {
-    // A client with a skewed clock must still be refused. Only the sidecar's clock decides, which
+    // A client with a skewed clock must still be refused. Only the hub's clock decides, which
     // is why the claims carry absolute timestamps rather than a remaining duration.
     const { issuer, clock } = harness();
     const issued = issuer.issue({ device: "d", scope: ["read"], ttlSeconds: 10 });

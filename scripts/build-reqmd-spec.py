@@ -193,6 +193,11 @@ VERIFY = {
     # at the handler boundary (server-token-auth); the extension's credential mode and its expiry
     # line are asserted in a real Chrome by the extension smoke.
     "FR-6.7": "Test", "FR-6.8": "Test", "FR-6.9": "Test",
+    "FR-6.10": "Test", "FR-6.11": "Demonstration", "FR-6.12": "Demonstration", "FR-6.13": "Test",
+    # The container leg is proven where a container can actually run: the CI job builds the image and
+    # then *starts* it, so this is a test, not a reading of the Dockerfile.
+    "FR-6.14": "Test",
+    "FR-16.8": "Test", "FR-16.9": "Test",
     "FR-7.1": "Test", "FR-7.2": "Test", "FR-7.3": "Test", "FR-7.4": "Demonstration",
     "FR-8.1": "Test", "FR-8.2": "Test", "FR-8.3": "Test", "FR-8.4": "Test", "FR-8.5": "Inspection",
     "FR-9.1": "Inspection", "FR-9.2": "Test", "FR-9.3": "Test", "FR-9.4": "Test",

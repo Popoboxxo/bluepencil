@@ -3,7 +3,7 @@
  *
  * Minting a token (`bluepencil token`, #36 phase 2).
  *
- * The sidecar half of phase 2 is covered by `sidecar-tokens.test.ts` and `server-token-wiring.test.ts`.
+ * The hub half of phase 2 is covered by `hub-tokens.test.ts` and `server-token-wiring.test.ts`.
  * This covers the half in between: the command a human runs to get a token in the first place.
  *
  * The two properties that matter most here are the ones a user would hit immediately and a security
@@ -51,7 +51,7 @@ describe("scope words", () => {
 
   it("never issues a token that can do nothing", () => {
     // There is no scope that means "no access", and there should not be one: an empty token would
-    // fail every request with a 403 and read as a broken sidecar.
+    // fail every request with a 403 and read as a broken hub.
     for (const input of ["read", "write", "read write"]) {
       const result = parseScope(input);
       if (Array.isArray(result)) expect(result.length).toBeGreaterThan(0);
@@ -213,7 +213,7 @@ describe("the command", () => {
     expect(stdout(captured).split(".")).toHaveLength(3);
   });
 
-  it("mints a token the token-configured sidecar would accept", async () => {
+  it("mints a token the token-configured hub would accept", async () => {
     // End to end, with no server: the command's output goes through the real verifier, which is the
     // only assertion that ties the two halves of phase 2 together.
     process.env.BLUEPENCIL_TOKEN_KEY = KEY;
@@ -228,7 +228,7 @@ describe("the command", () => {
     expect(verdict.ok).toBe(true);
   });
 
-  it("mints a read-only token when asked, and a sidecar refuses its writes", async () => {
+  it("mints a read-only token when asked, and a hub refuses its writes", async () => {
     process.env.BLUEPENCIL_TOKEN_KEY = KEY;
     const captured = capture();
     await runTokenCommand(["--device", "viewer", "--scope", "read"]);

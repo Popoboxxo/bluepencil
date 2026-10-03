@@ -99,7 +99,7 @@ An MCP tool group exposes list/create/update/export/bulk-delete to agents
 
 *Acceptance criteria:* Tools callable from an agent runtime; documented in ARCHITECTURE
 
-## FR-6.7 Sidecar authentication, required as soon as it leaves loopback: a configured credential…
+## FR-6.7 Hub authentication, required as soon as it leaves loopback: a configured credential must…
 
 ```attr
 prio: P0
@@ -111,11 +111,11 @@ version: 1
 requires-trace-from: []
 ```
 
-Sidecar authentication, required as soon as it leaves loopback: a configured credential must be presented on every request under the base, and a missing or wrong one is answered 401 unauthorized before routing
+Hub authentication, required as soon as it leaves loopback: a configured credential must be presented on every request under the base, and a missing or wrong one is answered 401 unauthorized before routing
 
-*Acceptance criteria:* A sidecar started with `--auth-secret` refuses an unauthenticated request and answers one carrying the secret; a sidecar with no credential configured behaves exactly as before
+*Acceptance criteria:* A hub started with `--auth-secret` refuses an unauthenticated request and answers one carrying the secret; a hub with no credential configured behaves exactly as before
 
-## FR-6.8 Signed, per-device tokens: the sidecar signs expiring tokens carrying a jti and a read/w…
+## FR-6.8 Signed, per-device tokens: the hub signs expiring tokens carrying a jti and a read/write…
 
 ```attr
 prio: P1
@@ -127,9 +127,9 @@ version: 1
 requires-trace-from: []
 ```
 
-Signed, per-device tokens: the sidecar signs expiring tokens carrying a jti and a read/write scope, verifies Authorization: Bearer before routing, and keeps token_expired, token_revoked and insufficient_scope apart from a plain unauthorized
+Signed, per-device tokens: the hub signs expiring tokens carrying a jti and a read/write scope, verifies Authorization: Bearer before routing, and keeps token_expired, token_revoked and insufficient_scope apart from a plain unauthorized
 
-*Acceptance criteria:* A token minted locally is accepted by the running sidecar; an expired one answers `token_expired`, a revoked one `token_revoked` (401), a read-only token attempting a write `insufficient_scope` (403); `write` implies `read`; a revoked id is refused from startup
+*Acceptance criteria:* A token minted locally is accepted by the running hub; an expired one answers `token_expired`, a revoked one `token_revoked` (401), a read-only token attempting a write `insufficient_scope` (403); `write` implies `read`; a revoked id is refused from startup
 
 ## FR-6.9 The extension carries either credential (none, shared secret, signed token), sends it un…
 
@@ -145,4 +145,84 @@ requires-trace-from: []
 
 The extension carries either credential (none, shared secret, signed token), sends it under the header that credential uses, and reports a signed token's expiry to the user without treating it as a decision
 
-*Acceptance criteria:* Each mode produces its own header on the wire; the options page shows expires-in, expired or unreadable, and only the sidecar decides whether a token is valid
+*Acceptance criteria:* Each mode produces its own header on the wire; the options page shows expires-in, expired or unreadable, and only the hub decides whether a token is valid
+
+## FR-6.10 The hub describes itself before any credential: an unauthenticated GET {base}/config rep…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+The hub describes itself before any credential: an unauthenticated GET {base}/config reports the version, the base path, the credential the hub requires and the binding it actually has (loopback-only or reachable from the network) — the live state of the running process, not the configured intent
+
+*Acceptance criteria:* A hub on loopback and one bound to the network answer with different, correct bind states at the same moment; the answer needs no credential and contains no note
+
+## FR-6.11 No address to type in the normal case: the extension offers the reachable hubs as a read…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5"
+status: approved
+verify: Demonstration
+version: 1
+requires-trace-from: []
+```
+
+No address to type in the normal case: the extension offers the reachable hubs as a readable choice and resolves the addresses behind it; a custom address is an explicit override rather than the default path
+
+*Acceptance criteria:* A hub that is running can be selected on the options page without typing an address; the free-text field exists only behind the override
+
+## FR-6.12 The UI states the live connectivity, not a promise: the extension shows the result of a…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5"
+status: approved
+verify: Demonstration
+version: 1
+requires-trace-from: []
+```
+
+The UI states the live connectivity, not a promise: the extension shows the result of a real check — reachable or not, loopback-only or open to the network, and which credential the hub asks for — and refreshes it
+
+*Acceptance criteria:* With the hub stopped the status says "not reachable"; with the hub bound to the network the status says so; both come from a request, not from the saved settings
+
+## FR-6.13 One command to start, credential generated when it is needed: the hub starts on loopback…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+One command to start, credential generated when it is needed: the hub starts on loopback by default, and the network mode binds beyond loopback, generates the credential itself and prints exactly what to copy — no flag has to be guessed
+
+*Acceptance criteria:* Starting without flags works and needs no credential; the network mode prints one line a client can use as it stands
+
+## FR-6.14 Runnable as a container from an image this repository builds: the repository carries a D…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+Runnable as a container from an image this repository builds: the repository carries a Dockerfile and a compose file, and the release publishes the image; the container binds beyond loopback (or it would be unreachable), generates its credential on the first start, keeps it in the data volume so a restart does not invalidate clients, and prints what to copy — one volume, one command, no install step at container start
+
+*Acceptance criteria:* `docker compose up -d` starts a hub that answers `GET {base}/config` with a generated credential and a network binding, without a credential being handed in; the image is built and run by the pipeline on every change
