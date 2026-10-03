@@ -218,7 +218,7 @@ const jobs = [
     },
   },
   {
-    // FR-17 §3: the sidecar store — one command, dependency-free, serves API + static files.
+    // FR-17 §3: the hub store — one command, dependency-free, serves API + static files.
     name: "server",
     entry: join(root, "server/index.ts"),
     options: {
@@ -254,7 +254,7 @@ async function main() {
   await cleanDist();
   await mkdir(join(root, "dist"), { recursive: true });
 
-  // A job may declare an `entry` to be skipped while its source does not exist yet (the sidecar
+  // A job may declare an `entry` to be skipped while its source does not exist yet (the hub
   // lives in server/ and is optional for a browser-only checkout) — never skip silently.
   const runnable = jobs.filter((job) => {
     if (!job.entry || existsSync(job.entry)) {

@@ -30,7 +30,7 @@ export type AttributeSource = Pick<
  * - **`app`** only when a name was given — the element's own default then applies.
  * - **`language`**: the extension offers `auto`, the element does not. `auto` is resolved here, from
  *   the browser, because this code runs where the browser is and the element's default is `en`.
- * - **`store` becomes `adapter`**, except for the sidecar: there `endpoint` alone selects the HTTP
+ * - **`store` becomes `adapter`**, except for the hub: there `endpoint` alone selects the HTTP
  *   adapter (the documented rule is that its presence implies `http`). Writing `adapter="http"`
  *   *without* a URL would pick an adapter that has no endpoint to talk to.
  * - **`identity`** is `prompt` or `anonymous`, the two values the element accepts. The options page

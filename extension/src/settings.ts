@@ -6,14 +6,14 @@
  * already understands from its attributes stays there, so the bookmarklet, the embed loader and
  * the extension all configure the same layer the same way.
  *
- * The defaults are deliberately local-first: no server, no credentials, no network. A sidecar is
+ * The defaults are deliberately local-first: no server, no credentials, no network. A hub is
  * opt-in via the `http` store, which is where #36's authentication applies.
  */
 
 export interface ExtensionSettings {
   /**
    * `dev` | `staging` | `live` — the element's own environment switch, and the vocabulary the data
-   * model and the sidecar both use (`ENVIRONMENTS` in `src/core/model.ts`). The page used to offer
+   * model and the hub both use (`ENVIRONMENTS` in `src/core/model.ts`). The page used to offer
    * `prod`, which the element rejects with `environment must be dev, staging or live` (#53).
    */
   environment: "dev" | "staging" | "live";
@@ -37,29 +37,29 @@ export interface ExtensionSettings {
    * no counterpart in the element's contract at all (#53), and a page cannot hand an identity to a
    * layer that runs in its own world without the host wiring one.
    *
-   * The sidecar cannot verify either — it has no authentication of its own — so the page says so
+   * The hub cannot verify either — it has no authentication of its own — so the page says so
    * rather than pretending.
    */
   identity: "prompt" | "anonymous";
-  /** Sidecar base URL; only used when `store` is `http`. Empty means local mode. */
+  /** Hub base URL; only used when `store` is `http`. Empty means local mode. */
   endpoint: string;
   /**
-   * Which credential this sidecar expects. Not a free-form header name, because getting it wrong
+   * Which credential this hub expects. Not a free-form header name, because getting it wrong
    * fails in a way that looks like a network fault: a request carrying the right secret under the
-   * wrong header is a 401, and the obvious guess is "the sidecar is down".
+   * wrong header is a 401, and the obvious guess is "the hub is down".
    *
    * `secret` is phase 1's `--auth-secret`; `token` is phase 2's signed token, which is short-lived,
    * revocable per device, and has to be replaced before it expires.
    */
   auth: "none" | "secret" | "token";
-  /** Credential for the sidecar; only used when `store` is `http`. See #36. */
+  /** Credential for the hub; only used when `store` is `http`. See #36. */
   token: string;
   /**
    * When the stored token expires, as an ISO timestamp, or empty if unknown.
    *
    * Recorded so the options page can say "expires in 6 hours" instead of leaving someone to find out
    * by watching their notes stop saving. Read from the token itself when it is stored; never used for
-   * a decision — the sidecar decides expiry, this is only for telling the user what is coming.
+   * a decision — the hub decides expiry, this is only for telling the user what is coming.
    */
   tokenExpiresAt: string;
   /** A name for the device, so a revocation list stays readable by a human. */
@@ -130,11 +130,11 @@ export function normalizeSettings(value: unknown): ExtensionSettings {
  * Reads the expiry out of a token, without verifying it.
  *
  * The payload is not trustworthy and this function does not pretend otherwise — it is a
- * `chrome.storage` reader, not a verifier, and the sidecar is the only party that gets to decide
+ * `chrome.storage` reader, not a verifier, and the hub is the only party that gets to decide
  * whether a token is valid. What it does is avoid one specific, avoidable failure: a user who
  * pastes a token and never learns when it dies, then finds out by losing notes.
  *
- * A token that cannot be read here is not an error. The extension stores it and the sidecar decides;
+ * A token that cannot be read here is not an error. The extension stores it and the hub decides;
  * the options page simply says the expiry is unknown.
  */
 export function expiryOfToken(token: string): string {

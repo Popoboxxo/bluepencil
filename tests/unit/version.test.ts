@@ -2,7 +2,7 @@
  * Unit tests of the version contract (FR-19).
  *
  * The point is not "a string exists" — it is that every artifact reports the *same* one. Before this,
- * the library, the MCP server and the sidecar each carried their own literal, and the element build
+ * the library, the MCP server and the hub each carried their own literal, and the element build
  * reported nothing at all, so a host could not tell which bluepencil it was running.
  */
 
@@ -38,7 +38,7 @@ describe("version — one source for every artifact", () => {
     expect(VERSION).toBe("dev");
   });
 
-  it("uses the same string in the sidecar and in the element build", () => {
+  it("uses the same string in the hub and in the element build", () => {
     expect(SERVER_VERSION).toBe(VERSION);
     expect(BluepencilNotesElement.version).toBe(VERSION);
   });

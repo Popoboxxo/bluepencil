@@ -1,6 +1,6 @@
 # Privacy policy
 
-**Bluepencil** — the browser extension, the embeddable library, and the optional sidecar server.
+**Bluepencil** — the browser extension, the embeddable library, and the optional hub server.
 Last updated: 2026-10-02.
 
 Bluepencil is a review tool. It lets a person point at an element on a web page and leave a note about
@@ -12,7 +12,7 @@ it. It applies to the Chrome extension and to the library when it is embedded in
 
 Bluepencil keeps your notes, and nothing else, in your own browser profile. There is no account, no
 server operated by the developer, no analytics and no advertising. Nothing leaves your machine unless
-you yourself configure a sidecar URL and point Bluepencil at it.
+you yourself configure a hub URL and point Bluepencil at it.
 
 ## What we collect
 
@@ -29,9 +29,9 @@ data from us.
 - the author name, if you are using the author mode that asks for one.
 
 **Your settings.** Interface language, the environment badge, which storage mode you chose, and — only
-if you enable the sidecar mode — the sidecar URL and the credential you entered.
+if you enable the hub mode — the hub URL and the credential you entered.
 
-**Your credential, only if you supply one.** If you configure the sidecar mode, the shared secret or
+**Your credential, only if you supply one.** If you configure the hub mode, the shared secret or
 signed token you paste is kept in the browser's extension storage on your machine.
 
 Bluepencil does **not** collect your browsing history, the pages you visit, your clicks or keystrokes,
@@ -52,22 +52,22 @@ Bluepencil does not run analytics or telemetry. It does not measure how you use 
 Nothing, by default. In the default storage mode the notes never leave your browser profile and no
 network request is made at all.
 
-If you choose the sidecar mode and enter a URL, the notes you create are sent to **that URL** — a
+If you choose the hub mode and enter a URL, the notes you create are sent to **that URL** — a
 server you host and control, or one you were given access to. That transmission happens only for the
 URL you typed, and the note content is the only thing sent. The developer operates no server and
 receives nothing. No data is sold, transferred or disclosed to advertisers, data brokers or any other
 third party.
 
-You can point Bluepencil at a local sidecar (the default, `http://127.0.0.1:8787`), in which case
+You can point Bluepencil at a local hub (the default, `http://127.0.0.1:8787`), in which case
 nothing leaves your computer at all, or at a remote one, in which case the note data travels to that
-host. Traffic to a remote host should use HTTPS; a sidecar on the same computer is not affected by
+host. Traffic to a remote host should use HTTPS; a hub on the same computer is not affected by
 that requirement.
 
 ## Where the data lives, and for how long
 
 Notes and settings are kept in your browser's own storage for the extension, in your browser profile.
 They stay there until you delete them: uninstalling the extension removes them, and the notes panel
-lets you remove individual notes. If you use the sidecar mode, the notes also live in the sidecar's
+lets you remove individual notes. If you use the hub mode, the notes also live in the hub's
 own store, on a machine you control, for as long as you keep them there.
 
 ## Your choices
@@ -75,15 +75,15 @@ own store, on a machine you control, for as long as you keep them there.
 - Do not invoke Bluepencil on a page: nothing is captured on a page you have not switched it on for.
 - Choose the "in this tab only" storage mode: notes are discarded when the tab is reloaded.
 - Choose "leave the notes anonymous": no author name is stored.
-- Leave the sidecar mode switched off: nothing is transmitted anywhere.
+- Leave the hub mode switched off: nothing is transmitted anywhere.
 - Uninstall: the extension's storage is removed with it.
 
 ## Security
 
-Note data is kept inside the browser profile. When a sidecar is used, transmissions to a remote host
-are expected to run over HTTPS; a loopback sidecar needs no transport encryption because the data does
+Note data is kept inside the browser profile. When a hub is used, transmissions to a remote host
+are expected to run over HTTPS; a loopback hub needs no transport encryption because the data does
 not leave the machine. Credentials are stored in the extension's own storage, are never rendered into
-a page, and are sent only to the sidecar URL you configured. No authentication, payment or financial
+a page, and are sent only to the hub URL you configured. No authentication, payment or financial
 information is published or disclosed by this software.
 
 ## Children

@@ -1,7 +1,7 @@
 /**
- * Store journal (FR-18) — the sidecar's answer to "who changed which note, when, and can I undo it".
+ * Store journal (FR-18) — the hub's answer to "who changed which note, when, and can I undo it".
  *
- * The sidecar is the only place that can write files, so the history lives here and not in the
+ * The hub is the only place that can write files, so the history lives here and not in the
  * browser library. Three backends, chosen by the *infrastructure* the deployment happens to have:
  *
  *  - `git`   the store lives in a work tree: every coalesced batch of mutations becomes one commit,

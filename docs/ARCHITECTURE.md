@@ -41,7 +41,7 @@ bluepencil/
 │  ├─ react/               # optional wrapper (peer dependency)
 │  ├─ element/             # custom-element build (<bluepencil-notes>) for hosts w/o a bundler
 │  └─ index.ts             # public API: init(), mount(), enable(), disable(), destroy()
-├─ server/                 # reference self-hosted server (sidecar mode)
+├─ server/                 # reference self-hosted server (hub mode)
 ├─ bookmarklet/            # loader generator + usage docs
 ├─ examples/
 │  ├─ vanilla/             # plain HTML fixture app (all FR groups)
@@ -380,7 +380,7 @@ The reference prototype (vanilla JS + tiny stdlib server, ~700 lines) maps as fo
 | Exit/quote capture, selector derivation | `src/core/anchor.ts`, `src/core/capture.ts` |
 | Comment lifecycle incl. intent/status/thread | `src/core/model.ts`, `src/core/protocol.ts` |
 | Markdown mirror + JSON store | `src/core/export/*` |
-| Stdlib server with API + exports | `server/` (reference implementation, mode "sidecar") |
+| Stdlib server with API + exports | `server/` (reference implementation, mode "hub") |
 | Auto-commit of the note store | optional host feature, documented (not a library concern) |
 | Watchdog/keep-alive for the serving process | deployment concern, documented in the server README |
 

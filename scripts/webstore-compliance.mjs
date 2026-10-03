@@ -321,7 +321,7 @@ async function checkShippedCode() {
   );
 
   // The extension's own code must make no network request at all. The one egress in the package is the
-  // element's HTTP adapter — it sends notes to the sidecar URL the user configured, and only when they
+  // element's HTTP adapter — it sends notes to the hub URL the user configured, and only when they
   // picked that store. It is library code, not extension code, and it ships inside the element bundle.
   // Scanned on `extension/src` rather than on the build, because the built `bootstrap.js` inlines that
   // bundle and would otherwise report the library's single call site twice, as if the extension had
@@ -335,7 +335,7 @@ async function checkShippedCode() {
     .filter(({ code }) => /\bfetch\s*\(|XMLHttpRequest|WebSocket|navigator\.sendBeacon/.test(code))
     .map(({ name }) => name);
   check(
-    "the extension's own code never makes a network request (all egress is the user's sidecar)",
+    "the extension's own code never makes a network request (all egress is the user's hub)",
     networkApi.length === 0,
     `network API in: ${networkApi.join(", ")}`,
   );
@@ -476,13 +476,13 @@ function adviseOnOpenQuestions(permissions, hosts) {
       "stronger form. Judged sufficient: a note exists only after the user's own explicit annotate action.",
   );
 
-  // Judged, not a gap: the sidecar is a **user-specified** server. The user types the URL, the developer
+  // Judged, not a gap: the hub is a **user-specified** server. The user types the URL, the developer
   // operates no server, and no data reaches the developer. The User Data FAQ answers exactly this case
   // (§15, a client for an internet protocol with user-specified servers), and §16 additionally exempts
   // same-machine traffic, which is where the default `http://127.0.0.1:8787` lives. So the
   // secure-transmission requirement the finding was raised under does not bite.
   advise(
-    "plain-http sidecar endpoints are justified (decision: keep)",
+    "plain-http hub endpoints are justified (decision: keep)",
     "endpoint is user-specified and no developer server is involved (User Data FAQ §15); loopback is " +
       "additionally exempt (§16). A soft hint for a non-loopback http:// host stays cheap courtesy, " +
       "not a requirement — not implemented.",

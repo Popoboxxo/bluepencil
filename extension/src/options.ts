@@ -44,7 +44,7 @@ function byId<T extends HTMLElement>(id: string): T {
 
 const form = byId<HTMLFormElement>("form");
 const status = byId<HTMLElement>("status");
-const sidecar = byId<HTMLElement>("sidecar");
+const hub = byId<HTMLElement>("hub");
 const save = byId<HTMLButtonElement>("save");
 
 function say(message: string, kind: "ok" | "error" | "" = ""): void {
@@ -54,7 +54,7 @@ function say(message: string, kind: "ok" | "error" | "" = ""): void {
 }
 
 function showSidecar(store: string): void {
-  sidecar.hidden = store !== "http";
+  hub.hidden = store !== "http";
 }
 
 function fill(settings: ExtensionSettings): void {
@@ -90,10 +90,10 @@ async function save_(): Promise<void> {
   save.disabled = true;
   try {
     const settings = normalizeSettings(readForm());
-    // A sidecar store without a URL is a store that cannot be reached: the element would fall back to
+    // A hub store without a URL is a store that cannot be reached: the element would fall back to
     // its default `memory` and the notes would be gone on reload. Refusing to save says so instead.
     if (settings.store === "http" && settings.endpoint.trim().length === 0) {
-      say("A sidecar needs a URL — without one the notes would be kept in this tab only.", "error");
+      say("A hub needs a URL — without one the notes would be kept in this tab only.", "error");
       return;
     }
     // Save the normalized form, not the raw input: what is stored is exactly what the worker will
@@ -147,23 +147,23 @@ function describeCredential(settings: ExtensionSettings): void {
   if (settings.auth === "secret") {
     label.textContent = "Shared secret";
     hint.textContent =
-      "Sent as x-bluepencil-auth. Stored in this browser only. The sidecar needs --auth-secret with the same value.";
+      "Sent as x-bluepencil-auth. Stored in this browser only. The hub needs --auth-secret with the same value.";
     state.hidden = true;
     return;
   }
   if (settings.auth === "none") {
     label.textContent = "Credential";
     hint.textContent =
-      "None. Anyone who can reach the sidecar URL can read and write your notes, so it must stay on loopback.";
+      "None. Anyone who can reach the hub URL can read and write your notes, so it must stay on loopback.";
     state.hidden = true;
     return;
   }
   label.textContent = "Signed token";
   hint.textContent =
-    "Sent as Authorization: Bearer. Mint one with `bluepencil token --device <name>`; it expires, and the sidecar can revoke it on its own without touching your other devices.";
+    "Sent as Authorization: Bearer. Mint one with `bluepencil token --device <name>`; it expires, and the hub can revoke it on its own without touching your other devices.";
   if (settings.token.length === 0) {
     state.hidden = false;
-    state.textContent = "No token stored yet — notes will not reach the sidecar until you paste one.";
+    state.textContent = "No token stored yet — notes will not reach the hub until you paste one.";
     return;
   }
   if (settings.tokenExpiresAt === "") {
@@ -171,13 +171,13 @@ function describeCredential(settings: ExtensionSettings): void {
     // Not a warning about the token being bad: the extension cannot read an expiry out of a token it
     // does not understand, and pretending otherwise would be worse than saying so.
     state.textContent =
-      "The expiry of this token could not be read. It may already be expired — the sidecar decides, not the extension.";
+      "The expiry of this token could not be read. It may already be expired — the hub decides, not the extension.";
     return;
   }
   const remaining = Date.parse(settings.tokenExpiresAt) - Date.now();
   state.hidden = false;
   if (remaining <= 0) {
-    state.textContent = "This token has expired. Mint a new one — notes are not reaching the sidecar until you do.";
+    state.textContent = "This token has expired. Mint a new one — notes are not reaching the hub until you do.";
     return;
   }
   const hours = Math.floor(remaining / 3_600_000);

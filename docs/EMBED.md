@@ -12,7 +12,7 @@
 |---|---|---|
 | **Whole system, own backend** | You already have (or will build) an endpoint that implements the store contract (§4 below) | Implement the 7 endpoints, then add the loader snippet |
 | **Whole system, no backend** / **single-file deck** | A quick review round, no server wanted; or a self-contained presentation file | One `<script>` tag; notes persist in `localStorage` |
-| **Bundled sidecar** | Static sites, quick demos, teams that want persistence without writing a backend | One command: `node dist/server.js …` (see §4) |
+| **Bundled hub** | Static sites, quick demos, teams that want persistence without writing a backend | One command: `node dist/server.js …` (see §4) |
 
 Pick the row that matches your host. The rest of this document covers the
 details.
@@ -222,7 +222,7 @@ writes a machine-readable result block into the page:
 <pre id="bp-selftest" data-status="pass" data-count="8/8">selftest: PASS attach-ready …</pre>
 ```
 
-`npm run smoke:embed` serves that page with the sidecar and drives it in a real browser — including
+`npm run smoke:embed` serves that page with the hub and drives it in a real browser — including
 a live version swap of the shipped `attach.js` — so the contract is verified end to end and not
 only in unit tests. See [examples/attach/README.md](../examples/attach/README.md).
 
@@ -259,7 +259,7 @@ only in unit tests. See [examples/attach/README.md](../examples/attach/README.md
 
 Any backend — Django, Rails, Express, Go, Node — that implements these
 endpoints can serve as the notes store for an HTTP-attached
-bluepencil layer. The bundled sidecar (`dist/server.js`) implements
+bluepencil layer. The bundled hub (`dist/server.js`) implements
 them out of the box.
 
 ### Endpoint table
@@ -287,9 +287,9 @@ malformed JSON → `400`; wrong content type → `415`; wrong method →
 
 Full HTTP contract reference: [ARCHITECTURE.md §5](ARCHITECTURE.md#5-http-contract-reference-server).
 
-### What the sidecar adds
+### What the hub adds
 
-The bundled sidecar (`node dist/server.js`) implements the above
+The bundled hub (`node dist/server.js`) implements the above
 endpoints **plus**:
 
 * **Environment isolation (NFR-18):** writing a note in another
@@ -347,20 +347,20 @@ its store into the repository must pass `--journal none`, or it will write commi
 
 **Where the commit lands — read this before pointing `--journal git` at a real repository:** the
 commit goes onto **the branch that is checked out in that work tree**, whatever that branch happens
-to be. The sidecar only runs `git add` and `git commit`; it never runs `git switch`, never stashes and
+to be. The hub only runs `git add` and `git commit`; it never runs `git switch`, never stashes and
 never rebases. Pointed at a repository whose working tree sits on a feature branch, every note edit
 becomes a commit on that feature branch: inside its diff, inside its history, and absent from the
 branch whose review you were preparing. That is not something to fix by guessing branches — it is a
 deployment decision:
 
-* give the sidecar its **own work tree** — a dedicated clone, or `git worktree add` for the notes
+* give the hub its **own work tree** — a dedicated clone, or `git worktree add` for the notes
   branch — so the branch it commits to is fixed by construction instead of by whatever a human left
   checked out. Where the working tree is a coincidence rather than a decision, run `--journal file`
   and leave git out of it.
 * the commit is **path-limited**: `git add -- <store> <mirror>` and `git commit --only -- <store>
-  <mirror>`. Work that somebody else staged in that tree stays untouched. Before this, the sidecar
+  <mirror>`. Work that somebody else staged in that tree stays untouched. Before this, the hub
   committed the whole index, so a colleague's staged changes could ride along in a notes commit.
-* the coalescing window belongs to the sidecar, not to a user: two reviewers clicking inside the same
+* the coalescing window belongs to the hub, not to a user: two reviewers clicking inside the same
   window produce **one** commit, and the journal keeps both mutations behind it.
 
 **Whose name is on the commit:** without configuration the commits carry **the identity of the
@@ -392,7 +392,7 @@ log afterwards.
 | On the element | `<bluepencil-notes data-bp-version="0.1.0">` — written on connect, so devtools answers the question on the page itself |
 | On the loader API | `window.bluepencilAttach.version` — the manifest's version when there is a manifest, otherwise the version of the build that was actually loaded (it used to report `unknown`) |
 | On the mounting | `attach-version="…"` set by the loader, plus `event.detail.version` of `bp-attach-ready` / `bp-attach-updated` |
-| On the sidecar | `GET {base}/health` and `node dist/server.js --version` |
+| On the hub | `GET {base}/health` and `node dist/server.js --version` |
 | On CLI / MCP | `bluepencil --version`, the MCP `initialize` handshake |
 
 The library exports the same value as `VERSION`. A unit test keeps stray version literals out of the

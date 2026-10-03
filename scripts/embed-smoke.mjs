@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
- * Embed smoke test (FR-17) — drives the built artifacts end to end: the sidecar store
+ * Embed smoke test (FR-17) — drives the built artifacts end to end: the hub store
  * (`dist/server.js`), the custom element against a real HTTP API, and the attach loader with a
  * versioned manifest including a runtime version swap.
  *
  * Builds nothing itself (like `size-guard.mjs`): run `npm run build` first. Everything happens in
- * `.tmp/embed-smoke/`; the sidecar listens on a free loopback port and is stopped again.
+ * `.tmp/embed-smoke/`; the hub listens on a free loopback port and is stopped again.
  *
- *   Leg 1  the sidecar's HTTP contract (CRUD, filters, error codes, environment isolation,
+ *   Leg 1  the hub's HTTP contract (CRUD, filters, error codes, environment isolation,
  *          bulk-delete confirm, markdown mirror, canonical store file, corrupt store refuses)
- *   Leg 2  `<bluepencil-notes endpoint="…">` in a jsdom document against that running sidecar
+ *   Leg 2  `<bluepencil-notes endpoint="…">` in a jsdom document against that running hub
  *   Leg 3  the attach loader: manifest → integrity check → mount → runtime version swap
  *   Leg 4  a real browser (Chrome over the CDP pipe, no dependency) against the *fixture website*:
- *          examples/attach served by the sidecar with `--root`, its own `?selftest=1` probe, the
+ *          examples/attach served by the hub with `--root`, its own `?selftest=1` probe, the
  *          single-file presentation deck, and a live version swap of the shipped `attach.js`
  *
  * Leg 4 needs a Chrome/Chromium; without one those cases print `SKIP` (legs 1–3 are unaffected).
@@ -66,7 +66,7 @@ async function freePort() {
 }
 
 function blankStore(path) {
-  // A valid, empty bundle — the sidecar validates its store strictly (a corrupt one must refuse
+  // A valid, empty bundle — the hub validates its store strictly (a corrupt one must refuse
   // to start), so "empty" has to be a real document, not a stub.
   const empty = {
     kind: "bluepencil.bundle",
@@ -88,7 +88,7 @@ function blankStore(path) {
 
 /**
  * Mirrors just enough of the repository layout into the served site directory, so the examples keep
- * their own relative paths (`../../dist/attach.js`) while the sidecar serves page, artifacts and API
+ * their own relative paths (`../../dist/attach.js`) while the hub serves page, artifacts and API
  * from one origin — the deployment the contract describes (EMBED.md §4).
  */
 function prepareSite(site) {
@@ -131,7 +131,7 @@ const UPDATE_PROBE_HTML = `<!doctype html>
 </html>
 `;
 
-/** Starts the sidecar and waits for its health endpoint; rejects on a non-zero early exit. */
+/** Starts the hub and waits for its health endpoint; rejects on a non-zero early exit. */
 async function startSidecar(options) {
   const port = options.port ?? (await freePort());
   const args = [
@@ -146,7 +146,7 @@ async function startSidecar(options) {
   if (options.readOnly) args.push("--read-only");
   if (options.allowEnvMismatch) args.push("--allow-env-mismatch");
   // The smoke runs inside the repository's work tree, where `auto` would commit into the project —
-  // so the shared sidecar keeps its history off unless a case asks for a journal explicitly.
+  // so the shared hub keeps its history off unless a case asks for a journal explicitly.
   args.push("--journal", options.journal ?? "none");
   for (const extra of options.extra ?? []) args.push(extra);
 
@@ -159,7 +159,7 @@ async function startSidecar(options) {
   const deadline = Date.now() + 8000;
   for (;;) {
     if (child.exitCode !== null) {
-      throw new Error(`sidecar exited with ${child.exitCode}: ${(stderr || stdout).trim().slice(0, 200)}`);
+      throw new Error(`hub exited with ${child.exitCode}: ${(stderr || stdout).trim().slice(0, 200)}`);
     }
     try {
       const response = await fetch(`http://127.0.0.1:${port}${BASE_PATH}/health`);
@@ -169,7 +169,7 @@ async function startSidecar(options) {
     }
     if (Date.now() > deadline) {
       child.kill("SIGKILL");
-      throw new Error(`sidecar did not become healthy: ${(stderr || stdout).trim().slice(0, 200)}`);
+      throw new Error(`hub did not become healthy: ${(stderr || stdout).trim().slice(0, 200)}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -232,7 +232,7 @@ function draft(id, overrides = {}) {
 
 function cases() {
   return {
-    "sidecar: health, create, list, filter, patch, thread": async (ctx) => {
+    "hub: health, create, list, filter, patch, thread": async (ctx) => {
       const health = await json(await request(ctx, "GET", "/health"));
       assert(health.status === 200 && health.body?.ok === true, `health: ${health.status} ${health.text.slice(0, 80)}`);
 
@@ -268,7 +268,7 @@ function cases() {
       assert(sessions.body.sessions.some((entry) => entry.ref === "case-1"), "sessions: case-1 missing");
     },
 
-    "sidecar: error contract (422/400/404/405/415)": async (ctx) => {
+    "hub: error contract (422/400/404/405/415)": async (ctx) => {
       const invalid = await json(await request(ctx, "POST", "/notes", { type: "text", body: "" }));
       assert(invalid.status === 400, `invalid note: expected 400, got ${invalid.status}`);
       assert(typeof invalid.body?.error?.message === "string", "invalid note: no error envelope");
@@ -290,7 +290,7 @@ function cases() {
       assert(missing.status === 404, `unknown path: expected 404, got ${missing.status}`);
     },
 
-    "sidecar: environment isolation and bulk delete": async (ctx) => {
+    "hub: environment isolation and bulk delete": async (ctx) => {
       const foreign = await json(await request(ctx, "POST", "/notes", draft("n-live", { environment: "live" })));
       assert(foreign.status === 400, `live note into a dev store: expected 400, got ${foreign.status}`);
 
@@ -311,7 +311,7 @@ function cases() {
       assert(gone.body?.notes?.length === 0, "bulk-delete: the note is still there");
     },
 
-    "sidecar: canonical store file and markdown mirror": async (ctx) => {
+    "hub: canonical store file and markdown mirror": async (ctx) => {
       const store = JSON.parse(readFileSync(ctx.store, "utf8"));
       assert(store.kind === "bluepencil.bundle", `store: kind is ${store.kind}`);
       assert(Array.isArray(store.notes) && store.notes.length >= 1, "store: no notes persisted");
@@ -323,7 +323,7 @@ function cases() {
       assert(markdown.includes("case-1"), "mirror: the session is missing");
     },
 
-    "sidecar: a corrupt store refuses to start": async () => {
+    "hub: a corrupt store refuses to start": async () => {
       const dir = join(WORKSPACE, "corrupt");
       rmSync(dir, { recursive: true, force: true });
       mkdirSync(dir, { recursive: true });
@@ -348,7 +348,7 @@ function cases() {
       assert(/not valid|unreadable|corrupt|JSON/i.test(result.stderr), `corrupt store: unclear message ${JSON.stringify(result.stderr.slice(0, 160))}`);
     },
 
-    "sidecar: the journal records the history (file backend)": async (ctx) => {
+    "hub: the journal records the history (file backend)": async (ctx) => {
       const dir = join(WORKSPACE, "journal-file");
       mkdirSync(dir, { recursive: true });
       const store = join(dir, "store.json");
@@ -387,7 +387,7 @@ function cases() {
       }
     },
 
-    "sidecar: the journal commits inside a git work tree": async (ctx) => {
+    "hub: the journal commits inside a git work tree": async (ctx) => {
       const repo = join(WORKSPACE, "journal-git");
       mkdirSync(repo, { recursive: true });
       const git = (args) => {
@@ -425,7 +425,7 @@ function cases() {
       }
     },
 
-    "element: endpoint attribute talks to the running sidecar": async (ctx) => {
+    "element: endpoint attribute talks to the running hub": async (ctx) => {
       const dom = new JSDOM(`<!doctype html><html><body><h1>host app</h1></body></html>`, {
         url: `${ctx.origin}/host`,
         pretendToBeVisual: true,
@@ -474,7 +474,7 @@ function cases() {
     },
 
     "attach: manifest, integrity check and runtime version swap": async (ctx) => {
-      // A versioned hosting layout served by the same sidecar: /bluepencil/<version>/… + latest.json
+      // A versioned hosting layout served by the same hub: /bluepencil/<version>/… + latest.json
       const bpDir = join(ctx.site, "bluepencil");
       const v1 = join(bpDir, "0.9.0");
       const v2 = join(bpDir, "0.9.1");
@@ -608,7 +608,7 @@ function cases() {
     // ---------------------------------------------------------------- real browser -------------
 
     /**
-     * The fixture host app (examples/attach) served by the sidecar through `--root`: one origin for
+     * The fixture host app (examples/attach) served by the hub through `--root`: one origin for
      * the page, the artifacts and the API. The page's own probe (`?selftest=1`) asserts the host-side
      * contract; this case asserts the probe passed *and* that the note it wrote is in the API and on
      * disk, so nothing about the round trip stays inside the page.
@@ -635,7 +635,7 @@ function cases() {
       const persisted = JSON.parse(readFileSync(ctx.store, "utf8"));
       assert(
         persisted.notes.some((note) => note.sessionRef === "attach-fixture"),
-        "the note never reached the store file the sidecar owns",
+        "the note never reached the store file the hub owns",
       );
       return `${probe.count} host probe check(s), ${listed.body.notes.length} note(s) in the API`;
     },
@@ -928,7 +928,7 @@ async function main() {
     }
     const stopped = await server.stop();
     if (stopped.code !== 0 && stopped.code !== null) {
-      console.log(`FAIL sidecar shutdown: exit ${stopped.code} ${stopped.stderr.slice(0, 200)}`);
+      console.log(`FAIL hub shutdown: exit ${stopped.code} ${stopped.stderr.slice(0, 200)}`);
       failed += 1;
       total += 1;
     }

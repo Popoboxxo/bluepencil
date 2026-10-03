@@ -65,21 +65,21 @@ runs against a strict-CSP host on purpose: it is the case that used to break.
 The default store is `chromeStorage` (`chrome.storage.local`), which needs no server and no account.
 Notes stay in the browser profile.
 
-### Using a sidecar instead
+### Using a hub instead
 
-Switch the store to *on a sidecar* in the options page and give it a URL. The extension then hands the
-element a `data-endpoint` and the element talks to the sidecar directly, which is what makes notes
+Switch the store to *on a hub* in the options page and give it a URL. The extension then hands the
+element a `data-endpoint` and the element talks to the hub directly, which is what makes notes
 shared across devices and visible to the MCP server.
 
-**Binding matters more than the credential.** The default is loopback, and a loopback sidecar needs no
+**Binding matters more than the credential.** The default is loopback, and a loopback hub needs no
 authentication at all — the process is as protected as the file it writes to. The moment you pass
 `--host 0.0.0.0` to reach it from another device, the credential is the only thing standing between
 the network and your notes.
 
-The options page asks **which** credential the sidecar expects, because the two are different headers
+The options page asks **which** credential the hub expects, because the two are different headers
 and picking the wrong one produces a `401` that reads like a dead server:
 
-| Mode | Header | Sidecar needs | Good for |
+| Mode | Header | Hub needs | Good for |
 |---|---|---|---|
 | **None** | – | nothing | loopback only |
 | **Shared secret** | `x-bluepencil-auth` | `--auth-secret` / `BLUEPENCIL_AUTH_SECRET` | one string, every client |
@@ -92,8 +92,8 @@ a secret on a command line is visible in the process list to every other user on
 ### A signed token per device
 
 ```sh
-export BLUEPENCIL_TOKEN_KEY=…            # the same value the sidecar has
-node dist/server.js --store notes.json --host 0.0.0.0   # sidecar
+export BLUEPENCIL_TOKEN_KEY=…            # the same value the hub has
+node dist/server.js --store notes.json --host 0.0.0.0   # hub
 bluepencil token --device work-laptop    # prints the token on stdout, context on stderr
 ```
 
@@ -101,11 +101,11 @@ Paste the printed token into the options page, choose *Signed token*, and keep t
 recorded in the token so a revocation list stays readable by a human. The options page reads the
 token's expiry when you save it and then says *"Expires in about 6 h 12 min"*, *"This token has
 expired"*, or plainly that the expiry could not be read. That line is a warning, not a decision: only
-the sidecar decides whether a token is good.
+the hub decides whether a token is good.
 
 Mint with a narrower `--scope read` for a device that should only look, and `--ttl <seconds>` for a
 shorter life than the default day. To cut a device off, put the id that `bluepencil token` printed
-into the sidecar's `--revoked-tokens` file and restart it. The sidecar answers
+into the hub's `--revoked-tokens` file and restart it. The hub answers
 `401 token_revoked` — which means *do not mint a new one* — as opposed to `401 token_expired`, which
 means replace it, and `403 insufficient_scope` for a valid token that may not do what was asked.
 
@@ -127,7 +127,7 @@ tick is still resolving, so awaiting it there deadlocks into a timeout even thou
 
 Both credential phases of [#36](https://github.com/Popoboxxo/bluepencil/issues/36) are in this
 release. What is deliberately *not* here: there is no token refresh (an expired token is replaced by
-hand) and the revocation list is read when the sidecar starts, so revoking a device means restarting
+hand) and the revocation list is read when the hub starts, so revoking a device means restarting
 it. See *Known gaps* in [CHANGELOG.md](../CHANGELOG.md) for the current list.
 
 ## Permissions, and why these

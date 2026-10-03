@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * bluepencil sidecar — process glue (FR-17 §3, the M2 `server/` deliverable).
+ * bluepencil hub — process glue (FR-17 §3, the M2 `server/` deliverable).
  *
- * The sidecar is the reference implementation of the HTTP contract the built-in `http` adapter
+ * The hub is the reference implementation of the HTTP contract the built-in `http` adapter
  * speaks (ARCHITECTURE §5, docs/INTEGRATION.md §5). One dependency-free process serves
  *   * the notes API under `--base` (default `/api/v1/bluepencil`, exactly the path the built-in
  *     `adapter: "http"` default expects) and
@@ -51,8 +51,8 @@ import {
   DEFAULT_BASE_PATH,
   JSON_CONTENT_TYPE,
   SERVER_VERSION,
-  SIDECAR_APP_NAME,
-  SIDECAR_EXPORTED_BY,
+  HUB_APP_NAME,
+  HUB_EXPORTED_BY,
   corsHeaders,
   errorBody,
   handleRequest,
@@ -84,7 +84,7 @@ export class StoreFileError extends Error {
 }
 
 export interface ServerOptions {
-  /** Canonical bundle JSON the sidecar reads at startup and writes on every mutation. */
+  /** Canonical bundle JSON the hub reads at startup and writes on every mutation. */
   storePath: string;
   port?: number;
   host?: string;
@@ -104,7 +104,7 @@ export interface ServerOptions {
   /**
    * HMAC key for signed per-device tokens (`--token-key`, `BLUEPENCIL_TOKEN_KEY`) (#36, phase 2).
    *
-   * Never given to a client. The sidecar signs a token and hands it out; the client presents it and
+   * Never given to a client. The hub signs a token and hands it out; the client presents it and
    * cannot re-sign it, which is what makes a token revocable in a way a shared secret is not. Because
    * it is sensitive, the environment variable is the better of the two ways to set it — a value on a
    * command line is visible in the process list to every other user on the machine.
@@ -195,8 +195,8 @@ function resolveOptions(options: ServerOptions): ResolvedOptions {
     mirror: options.mirror,
     cors: options.cors,
     quiet: options.quiet ?? false,
-    appName: options.appName ?? SIDECAR_APP_NAME,
-    exportedBy: options.exportedBy ?? SIDECAR_EXPORTED_BY,
+    appName: options.appName ?? HUB_APP_NAME,
+    exportedBy: options.exportedBy ?? HUB_EXPORTED_BY,
     journal: options.journal ?? "auto",
     journalDir: options.journalDir,
     journalRepo: options.journalRepo,
@@ -306,14 +306,14 @@ export function createFileStore(options: {
   now?: () => string;
 }): FileNoteStore {
   const state: NoteStoreState = { notes: loadNotes(options.storePath) };
-  const appName = options.appName ?? SIDECAR_APP_NAME;
+  const appName = options.appName ?? HUB_APP_NAME;
 
   const bundleText = (current: NoteStoreState): string =>
     bundleToJson(
       createBundle(current.notes, {
         environment: options.environment,
         app: { name: appName },
-        exportedBy: options.exportedBy ?? SIDECAR_EXPORTED_BY,
+        exportedBy: options.exportedBy ?? HUB_EXPORTED_BY,
         ...(options.now !== undefined ? { now: options.now() } : {}),
       }),
       { pretty: true },
@@ -631,7 +631,7 @@ export interface RunningServer {
 }
 
 /**
- * Starts the sidecar. The store file is read and validated *before* the socket is bound, so a
+ * Starts the hub. The store file is read and validated *before* the socket is bound, so a
  * corrupt store rejects here instead of serving an empty set (F9).
  */
 export async function startServer(options: ServerOptions): Promise<RunningServer> {
@@ -825,7 +825,7 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
 
   // Phase 2 (#36): a signing key for per-device tokens. Separate from the shared secret on purpose —
   // it is a different credential with a different job, and one is not a substitute for the other:
-  // the key never leaves the sidecar, the secret is handed to every client. Setting both is
+  // the key never leaves the hub, the secret is handed to every client. Setting both is
   // legitimate, and the handler then accepts either.
   const tokenKeyRaw = get("--token-key") ?? process.env.BLUEPENCIL_TOKEN_KEY;
   if (tokenKeyRaw !== undefined && tokenKeyRaw.length === 0) {
@@ -843,7 +843,7 @@ export function parseServerArgs(argv: string[]): ServerOptions | string {
   }
   // Where revoked token ids are kept. It has to be a file: a revocation list that lives in memory
   // disappears on restart, and a device that was deliberately cut off would be let back in by
-  // restarting the sidecar. That would make revocation a speed bump.
+  // restarting the hub. That would make revocation a speed bump.
   const revokedPath = get("--revoked-tokens") ?? process.env.BLUEPENCIL_REVOKED_TOKENS;
   if (revokedPath !== undefined && revokedPath.length === 0) {
     return "--revoked-tokens must not be empty — omit it entirely to run with an empty list";
@@ -910,7 +910,7 @@ Authentication:
   With --auth-secret (or BLUEPENCIL_AUTH_SECRET) every request under the base must present the
   secret in the x-bluepencil-auth header; anything else is answered 401 {"error":{"code":
   "unauthorized"}}. Without the flag there is no authentication at all — which is the right default
-  for a sidecar bound to loopback, and the wrong one as soon as it is not. Prefer the environment
+  for a hub bound to loopback, and the wrong one as soon as it is not. Prefer the environment
   variable: a secret on a command line is visible in the process list to every other user on the
   machine. An empty value is rejected rather than treated as "off".
 
@@ -931,13 +931,13 @@ Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in h
 
 Rules: bulk-delete requires "confirm": true; an unknown id is 404; a malformed body is 400; a body
 that is not application/json is 415; a known path with the wrong method is 405; every error is
-{"error":{"code","message"}}. --read-only refuses every write (403). The sidecar is bound to ONE
+{"error":{"code","message"}}. --read-only refuses every write (403). The hub is bound to ONE
 environment: a write that names another one is refused (400) unless --allow-env-mismatch promotes
 it (FR-14.8). The store file is canonical bundle JSON, written atomically; a corrupt store file
 refuses the start (exit 2) instead of being served as an empty set. --root serves a static
 directory with an index.html fallback on the same origin. --cors is off by default.
 
-Journal (FR-18): the sidecar keeps a history of every accepted mutation. --journal auto (default)
+Journal (FR-18): the hub keeps a history of every accepted mutation. --journal auto (default)
 commits through the surrounding git work tree when there is one (staged paths, empty diffs skipped,
 batched over --journal-coalesce ms, default 2000) and otherwise appends to a hash-chained
 journal.jsonl next to the store; --journal none switches the history off. A journal failure never

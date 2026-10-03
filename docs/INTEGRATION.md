@@ -13,7 +13,7 @@
 | **Embedded** (library + your adapter) | ~10 lines | You own the app and have (or want) an endpoint |
 | **Embedded, local only** (`localStorage`) | ~5 lines | A quick review round, no backend wanted |
 | **Bookmarklet** | none (drag a link) | The page is not yours / you cannot deploy |
-| **Self-hosted sidecar** | one command | Static sites, presentations, team reviews |
+| **Self-hosted hub** | one command | Static sites, presentations, team reviews |
 
 ## 2. Embedded (HTTP adapter)
 
@@ -62,7 +62,7 @@ and falls back to a constructable `CSSStyleSheet` on `document.adoptedStyleSheet
 CSP does not govern. Under a strict `style-src` you will see the layer mount unstyled if that
 fallback is unavailable; everything else works.
 
-## 5. Self-hosted sidecar
+## 5. Self-hosted hub
 
 `server/` serves a static site **and** the API on one port, with the note store as a JSON file plus an
 optional generated Markdown mirror. It is built to `dist/server.js`:
@@ -78,7 +78,7 @@ Flags: `--store <json>` (required), `--port 8787`, `--host 127.0.0.1`, `--base /
 
 ### Authentication — and when it is needed
 
-A sidecar on loopback needs none: it is as protected as the file it writes to. The moment `--host`
+A hub on loopback needs none: it is as protected as the file it writes to. The moment `--host`
 leaves loopback, one of two credentials has to be configured, and **every request under the base**
 must then carry it:
 
@@ -103,7 +103,7 @@ bluepencil token --device work-laptop --scope read write --ttl 43200
 
 `bluepencil token` mints locally and prints the token on stdout (context on stderr), so
 `export TOKEN=$(bluepencil token --device laptop)` works. The id it prints is what a revocation file
-lists; the file is read once at startup, so revoking a device means restarting the sidecar.
+lists; the file is read once at startup, so revoking a device means restarting the hub.
 
 Clients authenticate the same way the extension does — over HTTP the adapter sets the header:
 

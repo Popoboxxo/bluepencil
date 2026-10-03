@@ -183,7 +183,7 @@ its wording or its appearance. The note is anchored to that element, so it survi
 elsewhere on the page. A set of notes exports as Markdown or JSON and can be handed to a developer or
 an AI agent to work off.</p>
 <p>Everything stays in your own browser profile: no account, no analytics, no ads, and no browsing
-history. Notes leave your machine only if you point bluepencil at a sidecar URL of your own.</p>
+history. Notes leave your machine only if you point bluepencil at a hub URL of your own.</p>
 <ul>
   <li><a href="./privacy/">Privacy policy</a> — what is stored, how it is used, what is never done with it</li>
   <li><a href="https://github.com/Popoboxxo/bluepencil">Source code</a> and issue tracker</li>

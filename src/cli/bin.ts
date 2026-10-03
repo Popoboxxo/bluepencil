@@ -644,7 +644,7 @@ async function main(argv: string[]): Promise<void> {
     }
 
     case "token": {
-      // Mints a signed device token for a token-configured sidecar (#36, phase 2). A local command
+      // Mints a signed device token for a token-configured hub (#36, phase 2). A local command
       // rather than an HTTP endpoint, so minting a credential never needs an unauthenticated request
       // against the thing it is protecting.
       const { runTokenCommand } = await import("../../server/mint-cli");

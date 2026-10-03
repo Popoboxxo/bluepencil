@@ -9,7 +9,7 @@
  * part that actually matters — that the two cannot be confused for one another. Almost every case
  * here is about a *false positive*: a request that must be refused, in a situation where a plausible
  * implementation would let it through. A token that verifies is easy; a token that must not is where
- * a sidecar leaks someone's notes.
+ * a hub leaks someone's notes.
  *
  * The handler is pure, so every case is a `handleRequest` call with a hand-built request. No socket
  * and no issuer are needed to prove refusal; the issuer is only wired in where a *valid* token has
@@ -31,7 +31,7 @@ import { createNote } from "../../src/core/model";
 
 const BASE = "/api/v1/bluepencil";
 const KEY = "signing-key-for-the-http-suite";
-// The shared secret these cases configure the sidecar with. A constant, not a literal at every call
+// The shared secret these cases configure the hub with. A constant, not a literal at every call
 // site: `secret: "…"` is exactly the shape the secret scan looks for, and a fixture that trips the
 // scanner teaches everyone to skim its output.
 const SHARED = "the-correct-secret";
@@ -219,7 +219,7 @@ describe("a signed token at the HTTP boundary — refused", () => {
   });
 
   it("does not fall through to the shared secret when a token is refused", () => {
-    // The dangerous composition. A sidecar configured with both a key and a secret, sent a token
+    // The dangerous composition. A hub configured with both a key and a secret, sent a token
     // that is not valid, would pass an implementation that says "token failed → try the secret" if
     // it retried on a second header — or worse, one that checks the secret first and never looks at
     // the token. Here the token is the credential presented, and a refusal stands.
@@ -269,12 +269,12 @@ describe("the two credentials are alternatives, not layers", () => {
     expect(response.status).toBe(401);
   });
 
-  it("ignores a bearer header on a sidecar that asked for no credential", () => {
+  it("ignores a bearer header on a hub that asked for no credential", () => {
     // The opposite failure to "silently ignoring a credential": a host page may send its own bearer
-    // header for its own API on the same origin, and a sidecar with no credential configured has no
+    // header for its own API on the same origin, and a hub with no credential configured has no
     // business judging one. Measured, not hypothetical: `examples/attach` sets `token`,
     // `token-header` and `token-scheme` on purpose, and refusing that request made the embed smoke's
-    // host probe report `401 … no token key configured` — a failure that reads like a dead sidecar.
+    // host probe report `401 … no token key configured` — a failure that reads like a dead hub.
     // What is *not* acceptable is a presented token being dropped while a credential is required;
     // the case below pins that side.
     const response = handleRequest(
@@ -286,7 +286,7 @@ describe("the two credentials are alternatives, not layers", () => {
   });
 
   it("does not accept a bearer header in place of a configured secret", () => {
-    // A phase-1 sidecar requires the secret, and a token is not a substitute for it: the token is
+    // A phase-1 hub requires the secret, and a token is not a substitute for it: the token is
     // not verified here (no key is configured), so accepting it would mean accepting anything.
     const response = handleRequest(
       get(`${BASE}/notes`, { authorization: "Bearer some-token" }),
@@ -297,8 +297,8 @@ describe("the two credentials are alternatives, not layers", () => {
     expect(message(response)).toMatch(/x-bluepencil-auth/);
   });
 
-  it("leaves an unauthenticated sidecar alone when no credential is presented", () => {
-    // The loopback default must not change: a sidecar with no auth configured still serves anyone
+  it("leaves an unauthenticated hub alone when no credential is presented", () => {
+    // The loopback default must not change: a hub with no auth configured still serves anyone
     // who asks, because that is the same trust boundary as the file it writes to.
     const response = handleRequest(get(`${BASE}/notes`), context());
 
@@ -306,7 +306,7 @@ describe("the two credentials are alternatives, not layers", () => {
   });
 
   it("does not let a token unlock paths outside the base", () => {
-    // A valid token is still answered 404 for a foreign path, not 401: the sidecar is not the thing
+    // A valid token is still answered 404 for a foreign path, not 401: the hub is not the thing
     // refusing, it simply is not the API.
     const issuer = issuerAt(() => new Date("2026-09-29T12:00:00.000Z"));
     const issued = issuer.issue({ device: "d", scope: ["read", "write"] });

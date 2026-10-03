@@ -99,7 +99,7 @@ An MCP tool group exposes list/create/update/export/bulk-delete to agents
 
 *Acceptance criteria:* Tools callable from an agent runtime; documented in ARCHITECTURE
 
-## FR-6.7 Sidecar authentication, required as soon as it leaves loopback: a configured credential…
+## FR-6.7 Hub authentication, required as soon as it leaves loopback: a configured credential must…
 
 ```attr
 prio: P0
@@ -111,11 +111,11 @@ version: 1
 requires-trace-from: []
 ```
 
-Sidecar authentication, required as soon as it leaves loopback: a configured credential must be presented on every request under the base, and a missing or wrong one is answered 401 unauthorized before routing
+Hub authentication, required as soon as it leaves loopback: a configured credential must be presented on every request under the base, and a missing or wrong one is answered 401 unauthorized before routing
 
-*Acceptance criteria:* A sidecar started with `--auth-secret` refuses an unauthenticated request and answers one carrying the secret; a sidecar with no credential configured behaves exactly as before
+*Acceptance criteria:* A hub started with `--auth-secret` refuses an unauthenticated request and answers one carrying the secret; a hub with no credential configured behaves exactly as before
 
-## FR-6.8 Signed, per-device tokens: the sidecar signs expiring tokens carrying a jti and a read/w…
+## FR-6.8 Signed, per-device tokens: the hub signs expiring tokens carrying a jti and a read/write…
 
 ```attr
 prio: P1
@@ -127,9 +127,9 @@ version: 1
 requires-trace-from: []
 ```
 
-Signed, per-device tokens: the sidecar signs expiring tokens carrying a jti and a read/write scope, verifies Authorization: Bearer before routing, and keeps token_expired, token_revoked and insufficient_scope apart from a plain unauthorized
+Signed, per-device tokens: the hub signs expiring tokens carrying a jti and a read/write scope, verifies Authorization: Bearer before routing, and keeps token_expired, token_revoked and insufficient_scope apart from a plain unauthorized
 
-*Acceptance criteria:* A token minted locally is accepted by the running sidecar; an expired one answers `token_expired`, a revoked one `token_revoked` (401), a read-only token attempting a write `insufficient_scope` (403); `write` implies `read`; a revoked id is refused from startup
+*Acceptance criteria:* A token minted locally is accepted by the running hub; an expired one answers `token_expired`, a revoked one `token_revoked` (401), a read-only token attempting a write `insufficient_scope` (403); `write` implies `read`; a revoked id is refused from startup
 
 ## FR-6.9 The extension carries either credential (none, shared secret, signed token), sends it un…
 
@@ -145,7 +145,7 @@ requires-trace-from: []
 
 The extension carries either credential (none, shared secret, signed token), sends it under the header that credential uses, and reports a signed token's expiry to the user without treating it as a decision
 
-*Acceptance criteria:* Each mode produces its own header on the wire; the options page shows expires-in, expired or unreadable, and only the sidecar decides whether a token is valid
+*Acceptance criteria:* Each mode produces its own header on the wire; the options page shows expires-in, expired or unreadable, and only the hub decides whether a token is valid
 
 ## FR-6.10 The hub describes itself before any credential: an unauthenticated GET {base}/config rep…
 

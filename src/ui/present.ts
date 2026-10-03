@@ -3,7 +3,7 @@
  *
  * A layer on top of the annotation layer, not a second data layer: it reads the *same* store, so a
  * speaker note is an ordinary note (FR-15.3 — one store, one schema) and an agent can write it with
- * `create_note` over MCP or the sidecar without learning anything about this module.
+ * `create_note` over MCP or the hub without learning anything about this module.
  *
  * Three states, and the third is not a variant of the second:
  *

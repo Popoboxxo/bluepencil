@@ -1,13 +1,13 @@
 /**
- * bluepencil sidecar — request handling (FR-17 §3, the M2 `server/` deliverable).
+ * bluepencil hub — request handling (FR-17 §3, the M2 `server/` deliverable).
  *
  * The host either implements the documented HTTP contract on its own backend or runs this
- * sidecar: one dependency-free process that serves the notes API (`dist/server.js`) and, with
+ * hub: one dependency-free process that serves the notes API (`dist/server.js`) and, with
  * `--root`, a static site on the same origin (ARCHITECTURE §5, docs/INTEGRATION.md §5). The
  * default base path is exactly what the built-in `adapter: "http"` default expects
- * (`<origin>/api/v1/bluepencil`), so the sidecar is drop-in for the element.
+ * (`<origin>/api/v1/bluepencil`), so the hub is drop-in for the element.
  *
- * This module is the *pure* half of the sidecar: `handleRequest(request, context)` maps one HTTP
+ * This module is the *pure* half of the hub: `handleRequest(request, context)` maps one HTTP
  * request onto `{ status, headers, body }` and imports nothing but `src/**` — no `node:http`, no
  * `node:fs`, no socket, no timer. The `node:http` glue, the static file serving, the CLI parsing
  * and the file store live in `server/index.ts`; persistence arrives as `context.persist`, which is
@@ -27,10 +27,10 @@
  *    415, a malformed body is 400, an unknown note id is 404;
  *  - `POST {base}/notes/bulk-delete` needs `confirm: true` (else 400) and either `ids` or `filter`;
  *  - `--read-only` refuses every write with 403;
- *  - environment isolation per note (NFR-18): the sidecar is bound to ONE environment. A write
+ *  - environment isolation per note (NFR-18): the hub is bound to ONE environment. A write
  *    that names (or targets) another environment is refused with 400, unless the host started the
- *    sidecar with `--allow-env-mismatch` — then the stamp is *promoted* to the bound environment
- *    (FR-14.8), so a running sidecar never accumulates notes of a second environment;
+ *    hub with `--allow-env-mismatch` — then the stamp is *promoted* to the bound environment
+ *    (FR-14.8), so a running hub never accumulates notes of a second environment;
  *  - every error answer is JSON of the stable shape `{ error: { code, message } }`;
  *  - status codes are fixed for errors only: the contract names no 201/204 for the eight
  *    endpoints, so every successful answer is 200 (plus 204 for a CORS preflight). `--cors` is off
@@ -78,16 +78,16 @@ export const SERVER_VERSION: string = VERSION;
 /** Default base path — the documented default of the built-in `http` adapter (contract §3). */
 export const DEFAULT_BASE_PATH = "/api/v1/bluepencil";
 
-/** What the sidecar records as the exporter of the bundles it writes. */
-export const SIDECAR_EXPORTED_BY = "server:bluepencil";
+/** What the hub records as the exporter of the bundles it writes. */
+export const HUB_EXPORTED_BY = "server:bluepencil";
 
-/** App name the sidecar stamps into canonical bundles and the Markdown mirror. */
-export const SIDECAR_APP_NAME = "bluepencil sidecar";
+/** App name the hub stamps into canonical bundles and the Markdown mirror. */
+export const HUB_APP_NAME = "bluepencil hub";
 
 export const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 
 /**
- * Stable error codes of the sidecar. The wire format is always
+ * Stable error codes of the hub. The wire format is always
  * `{ "error": { "code": "<one of these>", "message": "<one line>" } }`.
  */
 export const ERROR_CODES = [
@@ -101,7 +101,7 @@ export const ERROR_CODES = [
   "method_not_allowed",
   "read_only",
   // Authentication is refused before routing, so it is answered with a code of its own rather than
-  // being folded into a 403 that also means "this sidecar does not accept writes" (#36).
+  // being folded into a 403 that also means "this hub does not accept writes" (#36).
   "unauthorized",
   // A token that is expired and a token that was revoked are the same status and opposite advice: an
   // expired one should be replaced, a revoked one must not be. A client that cannot tell them apart
@@ -139,7 +139,7 @@ export interface ServerResponse {
 }
 
 /**
- * The in-memory note set of one running sidecar. It is the source of truth while the process runs
+ * The in-memory note set of one running hub. It is the source of truth while the process runs
  * and is reloaded from the store file at startup (`server/index.ts`); a mutation replaces the
  * array (never mutates it in place), which is what makes a rolled-back write cheap.
  */
@@ -152,7 +152,7 @@ export interface HandlerContext {
   store: NoteStoreState;
   /** Base path (normalised by `normalizeBase`), e.g. `/api/v1/bluepencil`. */
   base: string;
-  /** The one environment this sidecar serves (NFR-18). */
+  /** The one environment this hub serves (NFR-18). */
   environment: Environment;
   /** `--read-only`: every non-GET request is refused with 403. */
   readOnly?: boolean;
@@ -165,7 +165,7 @@ export interface HandlerContext {
    * is the smallest thing that works, and it composes with the signed token in phase 2: both are
    * checked here, so the stronger one can be added without touching the routes.
    *
-   * Unset means no authentication, which is the correct default for a sidecar bound to loopback —
+   * Unset means no authentication, which is the correct default for a hub bound to loopback —
    * an unauthenticated local store is the same trust boundary as the file it writes to.
    */
   authSecret?: string;
@@ -173,8 +173,8 @@ export interface HandlerContext {
    * Verifies signed per-device tokens presented as `Authorization: Bearer …` (#36, phase 2).
    *
    * Set this *instead of* `authSecret` when devices are individually revocable — the two are
-   * alternatives, not layers. A sidecar with an issuer hands out short-lived signed tokens and
-   * drops one device by recording its `jti`; a sidecar with only a secret has every client holding
+   * alternatives, not layers. A hub with an issuer hands out short-lived signed tokens and
+   * drops one device by recording its `jti`; a hub with only a secret has every client holding
    * the same string, so withdrawing it means rotating it everywhere at once. What the issuer returns
    * is deliberately just a verdict: the handler does not need to know the format, only whether this
    * request may proceed and under which scope, so the token format can change without touching a
@@ -233,7 +233,7 @@ export interface HandlerContext {
   persist?: (state: NoteStoreState, event?: MutationEvent) => void;
 }
 
-/** What a mutation was about — the sidecar's journal records this, the note set is the payload. */
+/** What a mutation was about — the hub's journal records this, the note set is the payload. */
 export interface MutationEvent {
   op: "create" | "update" | "message" | "bulk-delete";
   /** The note the mutation was about; unset for a filtered bulk delete. */
@@ -316,7 +316,7 @@ function tokenRefusal(reason: "expired" | "revoked" | "insufficient-scope" | "ot
       return {
         status: 401,
         code: "token_expired",
-        advice: "request a new token from the sidecar",
+        advice: "request a new token from the hub",
       };
     case "revoked":
       return {
@@ -336,7 +336,7 @@ function tokenRefusal(reason: "expired" | "revoked" | "insufficient-scope" | "ot
       return {
         status: 401,
         code: "unauthorized",
-        advice: "the token is not valid for this sidecar",
+        advice: "the token is not valid for this hub",
       };
   }
 }
@@ -357,7 +357,7 @@ function bearerToken(request: ServerRequest): string | undefined {
  *
  * The length check is the early-out: it leaks the secret's length, which a fixed-length comparison
  * would too, and hiding that would cost a hash for no real gain. The content compare is what
- * matters — a byte-by-byte `===` returns as soon as two characters differ, and a local sidecar is
+ * matters — a byte-by-byte `===` returns as soon as two characters differ, and a local hub is
  * reachable by anything that can open a socket.
  */
 function secretsMatch(expected: string, presented: string): boolean {
@@ -831,8 +831,8 @@ function assertKnownDraftFields(payload: Record<string, unknown>): void {
 
 /**
  * The journal's "who" (FR-18): the `X-Bluepencil-Actor` header wins, otherwise the payload's own
- * `author`. Both are the caller's own statement — the sidecar has no authentication, so this is a
- * provenance note, not an identity claim (see the sidecar README on that boundary).
+ * `author`. Both are the caller's own statement — the hub has no authentication, so this is a
+ * provenance note, not an identity claim (see the hub README on that boundary).
  */
 function actorOf(request: ServerRequest, payload?: Record<string, unknown>): string | undefined {
   const header = headerValue(request.headers, "x-bluepencil-actor");
@@ -889,7 +889,7 @@ function findNote(context: HandlerContext, id: string): Note {
 
 /**
  * Environment isolation (NFR-18): a write that names or targets another environment is refused
- * unless the host allowed it; with `--allow-env-mismatch` the note ends up in the sidecar's
+ * unless the host allowed it; with `--allow-env-mismatch` the note ends up in the hub's
  * environment (FR-14.8 promotion) instead of being stored next to it.
  */
 function assertEnvironment(noteEnvironment: Environment, context: HandlerContext): void {
@@ -897,7 +897,7 @@ function assertEnvironment(noteEnvironment: Environment, context: HandlerContext
   refuse(
     400,
     "environment_mismatch",
-    `this sidecar serves the ${context.environment} environment — a ${noteEnvironment} note is refused ` +
+    `this hub serves the ${context.environment} environment — a ${noteEnvironment} note is refused ` +
       `(restart it with --allow-env-mismatch to promote such notes)`,
   );
 }
@@ -912,7 +912,7 @@ function health(context: HandlerContext): ServerResponse {
 
 function listNotes(query: URLSearchParams, context: HandlerContext): ServerResponse {
   const filter = filterFromQuery(query);
-  // One filter predicate for UI, CLI, MCP and the sidecar (FR-15.3), then the shared review order.
+  // One filter predicate for UI, CLI, MCP and the hub (FR-15.3), then the shared review order.
   const matching = sortForReview(filterNotes(context.store.notes, filter));
   return json(200, { notes: matching.map(canonicalNote) }, context);
 }
@@ -921,8 +921,8 @@ function listNotes(query: URLSearchParams, context: HandlerContext): ServerRespo
 function bundleOf(context: HandlerContext) {
   return createBundle(context.store.notes, {
     environment: context.environment,
-    app: { name: context.appName ?? SIDECAR_APP_NAME },
-    exportedBy: context.exportedBy ?? SIDECAR_EXPORTED_BY,
+    app: { name: context.appName ?? HUB_APP_NAME },
+    exportedBy: context.exportedBy ?? HUB_EXPORTED_BY,
     ...(context.now !== undefined ? { now: context.now() } : {}),
   });
 }
@@ -974,7 +974,7 @@ function createNoteFromBody(request: ServerRequest, context: HandlerContext): Se
     if (requested !== undefined) assertEnvironment(requested, context);
     const draft: NoteDraft = {
       ...(payload as unknown as NoteDraft),
-      // A note is always born in the sidecar's environment (see `assertEnvironment`).
+      // A note is always born in the hub's environment (see `assertEnvironment`).
       environment: context.environment,
     };
     if (draft.now === undefined && context.now !== undefined) draft.now = context.now();
@@ -1064,7 +1064,7 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
           400,
           "environment_mismatch",
           `the selection contains ${foreign.join(", ")} note(s) — refusing to remove them from a ` +
-            `${context.environment} sidecar (restart with --allow-env-mismatch to allow it)`,
+            `${context.environment} hub (restart with --allow-env-mismatch to allow it)`,
         );
       }
     }
@@ -1130,10 +1130,10 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   // learn which paths exist by watching 405s turn into 404s, and no route may forget the check.
   //
   // It deliberately sits *after* the "not even under the base" 404. A request for something that is
-  // not this API at all is not the sidecar's business, and answering 401 to it would turn every
-  // sidecar on a shared host into something that 401s unrelated traffic.
+  // not this API at all is not the hub's business, and answering 401 to it would turn every
+  // hub on a shared host into something that 401s unrelated traffic.
   //
-  // A signed token is accepted first when the sidecar has a verifier, because a token is the
+  // A signed token is accepted first when the hub has a verifier, because a token is the
   // stronger credential and accepting the weaker one alongside it would let an old deployment's
   // long-lived secret outlive the day someone switched to tokens. The secret is still honoured
   // alongside it, because a CLI without a token flow is a real client and refusing it would be a
@@ -1141,7 +1141,7 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   //
   // The trigger is a *configured* credential, and nothing else. Refusing a request merely because it
   // carries an `Authorization` header sounds stricter and is in fact a breakage: a page may send its
-  // own bearer header for its own API on the same origin, and a sidecar that never asked for a
+  // own bearer header for its own API on the same origin, and a hub that never asked for a
   // credential has no business judging one. Measured, not hypothetical — `examples/attach` passes
   // `token`/`token-header`/`token-scheme` on purpose, and the embed smoke's host probe fails with
   // `401 … no token key configured` the moment the header alone arms the check. What must not happen
@@ -1172,8 +1172,8 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
           401,
           "unauthorized",
           presented === undefined
-            ? `missing ${AUTH_HEADER} — this sidecar requires authentication (--auth-secret)`
-            : `invalid ${AUTH_HEADER} — this sidecar requires authentication (--auth-secret)`,
+            ? `missing ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`
+            : `invalid ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`,
           context,
         );
       }
@@ -1185,7 +1185,7 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
       return errorResponse(
         401,
         "unauthorized",
-        `missing ${BEARER_HEADER}: Bearer <token> — this sidecar requires a signed token (--token-key)`,
+        `missing ${BEARER_HEADER}: Bearer <token> — this hub requires a signed token (--token-key)`,
         context,
       );
     }
@@ -1207,7 +1207,7 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
     return errorResponse(
       403,
       "read_only",
-      "this sidecar runs read-only (--read-only) — writes are refused",
+      "this hub runs read-only (--read-only) — writes are refused",
       context,
     );
   }

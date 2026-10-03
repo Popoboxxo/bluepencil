@@ -483,7 +483,7 @@ async function checkInBrowser() {
     //    credential is what decides which header leaves the browser, and the whole reason the mode is
     //    a select rather than a header name is that the wrong one fails as a 401 that reads like a
     //    dead server. Nothing here needs a signing key: the page reads `exp` out of a token to tell
-    //    the user when it dies and verifies nothing (the sidecar is the only party that decides), so
+    //    the user when it dies and verifies nothing (the hub is the only party that decides), so
     //    a hand-built payload is enough — and asserting on it *is* the check that the page does not
     //    pretend to verify anything.
     await browser.attachTo((t) => t.targetId === worker.targetId);
@@ -591,7 +591,7 @@ async function checkInBrowser() {
       saved.settings?.auth === "token" && saved.settings?.deviceName === "smoke-laptop",
       JSON.stringify(saved.settings));
     // A save that never happened must not look like a slow one: the page says so itself, and this
-    // turns "timed out after 20000 ms" into the sentence that says why (a refused sidecar URL, a
+    // turns "timed out after 20000 ms" into the sentence that says why (a refused hub URL, a
     // validation block) — the failure mode measured on CI.
     ok("the page says it saved, rather than refusing silently",
       saved.status === "Saved.", `status=${JSON.stringify(saved.status)}`);
@@ -610,7 +610,7 @@ async function checkInBrowser() {
     //
     // The page paints its own text and the browser paints the controls and their popup, so the two
     // can disagree: on a dark-mode screenshot (2026-10-01) the option row of the open dropdown was
-    // white on white — invisible — and the sidecar warning inherited the browser's white text onto
+    // white on white — invisible — and the hub warning inherited the browser's white text onto
     // its own light background, 1.05:1. The pair is therefore the contract, and it is measured
     // rather than trusted: any field below 4.5:1 fails, in either scheme.
     const contrastProbe = `(() => {
@@ -666,7 +666,7 @@ async function checkInBrowser() {
         sample("#appName", "a text field"),
         sample("#token", "the credential field"),
         sample("#auth option", "an option in the open dropdown"),
-        sample(".warn", "the sidecar warning"),
+        sample(".warn", "the hub warning"),
         sample(".hint", "a hint line"),
         sample(".disclosure", "the data disclosure"),
       ]);

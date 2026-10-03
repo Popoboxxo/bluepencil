@@ -39,7 +39,7 @@ No framework, no bundler, no backend.
 ## Automated check
 
 The deck is one of the pages `npm run smoke:embed` drives in a real browser: it opens
-`examples/presentation/` served by the sidecar and asserts that the loader mounted exactly one
+`examples/presentation/` served by the hub and asserts that the loader mounted exactly one
 `<bluepencil-notes>`, injected the layer styles once and forwarded `adapter="localStorage"` and
 `language="de"` — i.e. that the "no backend" mode really works from a plain script tag.
 

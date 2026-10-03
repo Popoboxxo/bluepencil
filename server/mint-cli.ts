@@ -12,11 +12,11 @@
  */
 import { mintToken, parseScope } from "./mint";
 
-const HELP = `bluepencil token — mint a signed device token for a sidecar (#36, phase 2).
+const HELP = `bluepencil token — mint a signed device token for a hub (#36, phase 2).
 
   Usage: bluepencil token --device <name> [--scope read|write|read,write] [--ttl <seconds>]
 
-  The signing key must match the sidecar's --token-key / BLUEPENCIL_TOKEN_KEY. It is read from the
+  The signing key must match the hub's --token-key / BLUEPENCIL_TOKEN_KEY. It is read from the
   environment or from --key, never from a positional argument, so it stays out of the process list
   and out of shell history as far as the environment allows.
 
@@ -30,7 +30,7 @@ const HELP = `bluepencil token — mint a signed device token for a sidecar (#36
   The token goes to stdout and nothing else does, so it can be captured:
       export BLUEPENCIL_TOKEN=$(bluepencil token --device work-laptop)
 
-  To revoke it later, put the printed id in the sidecar's --revoked-tokens file and restart it.
+  To revoke it later, put the printed id in the hub's --revoked-tokens file and restart it.
   Tokens are short-lived, so rotating the key also invalidates every one of them at once.
 `;
 
@@ -62,10 +62,10 @@ export async function runTokenCommand(argv: readonly string[]): Promise<number> 
 
   const key = flag(argv, "--key") ?? process.env.BLUEPENCIL_TOKEN_KEY;
   if (key === undefined) {
-    // Naming both sources matters more than it looks: an operator who set the key on the sidecar and
+    // Naming both sources matters more than it looks: an operator who set the key on the hub and
     // not here should be told where it is called, not left guessing.
     err("token: no signing key — set BLUEPENCIL_TOKEN_KEY or pass --key");
-    err("token: the key must match the sidecar's --token-key; they are different from --auth-secret.");
+    err("token: the key must match the hub's --token-key; they are different from --auth-secret.");
     return 2;
   }
   if (key.length === 0) {

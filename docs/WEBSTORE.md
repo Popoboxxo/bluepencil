@@ -10,7 +10,7 @@ Everything in the blocks below is written to be pasted **verbatim**. The charact
 form's own (1,000 per field, 2,048 for the privacy-policy URL) and each block stays well under.
 
 > **Status: submittable.** The decisions below are taken — the host permission is kept and justified,
-> `tabs` is gone, the in-product disclosure is in the options page, and the plain-http sidecar endpoint
+> `tabs` is gone, the in-product disclosure is in the options page, and the plain-http hub endpoint
 > is justified rather than a gap. What is left is mechanical: enable Pages once, then fill the form
 > from the blocks below.
 
@@ -43,7 +43,7 @@ unless it is marked *manual*.
 | Privacy → Disclosure | In-product disclosure + consent | ✅ options page, before any field; checked + contrast-measured |
 | Privacy → Privacy Policy | Accurate policy, posted in the dashboard | ✅ `docs/PRIVACY.md`, published at `/privacy/` (live) |
 | Privacy → Limited Use | Affirmative statement on a project page | ✅ live at `/privacy/` + linked from the README |
-| Privacy → Handling | Secure transmission of user data | ✅ sidecar endpoint is user-specified (FAQ §15), loopback exempt (§16) |
+| Privacy → Handling | Secure transmission of user data | ✅ hub endpoint is user-specified (FAQ §15), loopback exempt (§16) |
 | Quality → Single purpose | One narrow purpose | ✅ annotation layer, one sentence, nothing else |
 | Quality → Minimum Functionality | Real, working functionality | ✅ 47-check smoke in a real Chrome |
 | Marketing → Ads / Affiliate | No ads, no affiliate injection | ✅ none, and no permission that could inject |
@@ -90,7 +90,7 @@ where a future reader would look.
 
 **Decision: implemented.** `extension/options.html` opens with a *What Bluepencil stores* section,
 before any field: it names the categories that are actually stored (the notes, the settings, and — only
-in sidecar mode — the URL plus credential), says what is *not* touched, and links the policy. The
+in hub mode — the URL plus credential), says what is *not* touched, and links the policy. The
 compliance check fails if the block or its link disappears, and `npm run smoke:ext` measures its
 contrast in both colour schemes.
 
@@ -98,9 +98,9 @@ The residual, stated rather than hidden: the options page is not shown automatic
 first mount would be the stronger form of "before user data is handled". Judged sufficient, because a
 note only ever exists after the user's own explicit annotate action.
 
-### D4 — the plain-http sidecar endpoint is justified, not a gap
+### D4 — the plain-http hub endpoint is justified, not a gap
 
-**Decision: keep.** The sidecar is a **user-specified** server: the user types the URL, the developer
+**Decision: keep.** The hub is a **user-specified** server: the user types the URL, the developer
 operates no server, and no data reaches the developer. The User Data FAQ answers exactly that shape
 (§15, a client for an internet protocol with user-specified servers) — the Limited Use section and the
 secure-transmission requirement do not apply to traffic with the user's own server — and §16 additionally
@@ -133,7 +133,7 @@ direction (the FAQ treats a dashboard/policy/behaviour mismatch as a violation):
 | --- | --- | --- |
 | **Website content** | ✅ yes | A note stores the annotated element's text, its CSS selector/classes and computed styles, and the page URL. This is the *content* of a page the user explicitly annotated. |
 | **Personally identifiable information** | ✅ yes | With the default *"ask me once, then remember"* author mode a note carries the name the user typed. |
-| **Authentication information** | ✅ yes | If the user configures a sidecar, the credential they paste is kept in `chrome.storage.local`. |
+| **Authentication information** | ✅ yes | If the user configures a hub, the credential they paste is kept in `chrome.storage.local`. |
 | **Web history** | ❌ no | The extension builds no list of visited pages. It records one URL per note the user chose to create, which is covered by *Website content*. If a reviewer reads `route: "url"` strictly, ticking this too is the safe over-disclosure — but it is not what the code does. |
 | Personal communications | ❌ no | No mail, SMS or chat. |
 | Health, Financial, Location | ❌ no | Never touched. |
@@ -142,7 +142,7 @@ direction (the FAQ treats a dashboard/policy/behaviour mismatch as a violation):
 **The three certifications** — all three are true and all three must be ticked:
 
 - *"I do not sell or transfer user data to third parties, outside of the approved use cases"* — there
-  are no third parties. The only outbound path is the sidecar URL the **user** configured, and it is
+  are no third parties. The only outbound path is the hub URL the **user** configured, and it is
   optional and off by default.
 - *"I do not use or transfer user data for purposes that are unrelated to my item's single purpose"* —
   the single purpose is taking review notes; nothing else reads the data.
@@ -193,12 +193,12 @@ tab and no other page is touched.
 chrome.storage.local holds two things, both inside the user's own browser profile and never synced:
 
 1. the extension's settings — interface language, the environment badge, which notes store to use, and
-   (only if the user opts into the sidecar mode) the sidecar URL and the credential the user entered;
+   (only if the user opts into the hub mode) the hub URL and the credential the user entered;
 2. the review notes the user creates, in the default store mode, so that notes taken on a page are
    still there on the next visit and are visible across tabs.
 
 Nothing in chrome.storage.local is transmitted anywhere unless the user explicitly switches the notes
-store to a sidecar URL they supply themselves. There is no server, no account and no telemetry.
+store to a hub URL they supply themselves. There is no server, no account and no telemetry.
 ```
 
 #### **Justification — `activeTab`**
@@ -248,7 +248,7 @@ The justification field is not required for a "No" answer. If a reviewer asks, t
 ```
 All logic ships inside the package. The extension's own build inlines the review layer into the
 content script that is registered in the page's world; no code is fetched or evaluated at runtime. The
-only network call in the package belongs to the optional sidecar adapter, which the user configures
+only network call in the package belongs to the optional hub adapter, which the user configures
 themselves, and it exchanges note data — never code.
 ```
 
@@ -262,15 +262,15 @@ field, because "before" is the requirement:
 ```
 What Bluepencil stores
 
-Everything stays in this browser profile unless you point Bluepencil at a sidecar URL of your own.
+Everything stays in this browser profile unless you point Bluepencil at a hub URL of your own.
 
 - The notes you create — the text you type, the element each note is anchored to, and the page it was
   taken on.
-- The settings on this page, and — only if you switch the notes store to a sidecar — the URL you enter
+- The settings on this page, and — only if you switch the notes store to a hub — the URL you enter
   and the credential you paste.
 - Nothing else: no account, no analytics, no ads, and no browsing history.
 
-A note is sent only to the sidecar URL you enter yourself; with the default store nothing leaves your
+A note is sent only to the hub URL you enter yourself; with the default store nothing leaves your
 machine. Privacy policy: https://popoboxxo.github.io/bluepencil/privacy/
 ```
 
@@ -316,7 +316,7 @@ WHAT IT STORES
 • The notes you create: the text you type, which element it is attached to, and the page it was taken
   on.
 • Your settings: interface language, environment badge, and the notes store you picked.
-• If you switch on the optional sidecar mode: the URL you entered and the credential you pasted. Both
+• If you switch on the optional hub mode: the URL you entered and the credential you pasted. Both
   stay in your browser profile, and both are only ever sent to the URL you supplied.
 
 WHAT IT DOES NOT DO
@@ -326,7 +326,7 @@ WHAT IT DOES NOT DO
 • Nothing runs until you click — the extension does not touch a page you have not invoked it on.
 
 The default store keeps your notes in the browser profile. Nothing leaves your machine unless you
-configure a sidecar yourself.
+configure a hub yourself.
 
 Privacy policy: https://popoboxxo.github.io/bluepencil/privacy/
 ```
