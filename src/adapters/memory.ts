@@ -11,7 +11,8 @@
  * Failure rules (NFR-8, FR-15.3):
  *  - a subscriber that throws is logged and skipped — one broken listener must never turn a
  *    successful (or failing) write into an unrelated rejection;
- *  - a failing **read** degrades to memory, reported once: the session keeps working (NFR-5);
+ *  - a failing **read** degrades reads to memory, reported once: the session keeps working (NFR-5)
+ *    and later writes still go to the host, replacing a corrupt blob (issue #39);
  *  - a failing **write** is surfaced per `JsonAdapterIo.writeFailure`: `"reject"` (default) keeps
  *    the change in memory and rejects the mutation promise so a caller that has to know (CLI,
  *    MCP, HTTP host) never mistakes an unpersisted write for a saved one; `"degrade"` is the
@@ -188,15 +189,22 @@ export interface JsonAdapterIo {
 /**
  * Adapter over a single JSON blob. Every mutation is a read-modify-write cycle that is serialized
  * through one queue, so concurrent calls can never overwrite each other (NFR-8). When the I/O
- * fails — storage unavailable, quota exceeded, unreadable blob — the adapter degrades to memory
- * **with the change already applied** and reports it exactly once: the change is never lost, it
- * is only no longer persisted. A failing *write* follows `io.writeFailure` (default: the mutation
- * promise rejects, see `WriteFailurePolicy`).
+ * fails the change is kept in memory **with the change already applied** and the fallback is
+ * reported exactly once: the change is never lost, it is only no longer persisted. The two
+ * failure kinds are tracked separately (issue #39): a failed *read* must not stop writes — the
+ * in-memory set is authoritative and writing it back is exactly the recovery that replaces a corrupt
+ * blob — while a failed *write* follows `io.writeFailure` (default: the mutation promise rejects,
+ * see `WriteFailurePolicy`).
  */
 export function createJsonAdapter(name: string, io: JsonAdapterIo): Adapter {
   let known: Note[] = [];
-  let degraded = false;
-  let writeFailureReported = false;
+  // The two causes are latched separately because they mean different things. A failed read leaves
+  // the in-memory set authoritative and must NOT stop writes; a failed write under "degrade" has no
+  // other copy to fall back to, so it stops further writes for the session (issue #39).
+  let readFailed = false;
+  let writeDegraded = false;
+  // `onFallback` is reported at most once per session, whichever cause fires first (NFR-14).
+  let reported = false;
   let queue: Promise<unknown> = Promise.resolve();
   const subscribers = new Set<(notes: Note[]) => void>();
   const writeFailure: WriteFailurePolicy = io.writeFailure ?? "reject";
@@ -212,11 +220,12 @@ export function createJsonAdapter(name: string, io: JsonAdapterIo): Adapter {
     }
   };
 
-  const degrade = (reason: unknown): void => {
-    if (degraded) {
+  /** Reports the first fallback of the session; later causes are the same degradation to the caller. */
+  const report = (reason: unknown): void => {
+    if (reported) {
       return;
     }
-    degraded = true;
+    reported = true;
     io.onFallback(reason);
   };
 
@@ -230,7 +239,10 @@ export function createJsonAdapter(name: string, io: JsonAdapterIo): Adapter {
   };
 
   const load = async (): Promise<Note[]> => {
-    if (degraded) {
+    // After a read failure the in-memory set is authoritative: retrying would hammer storage and a
+    // later read could clobber changes a write has since persisted. After a write degrade there is
+    // nothing to persist to, so a read would only risk overwriting the in-memory set on disk.
+    if (readFailed || writeDegraded) {
       return known;
     }
     try {
@@ -238,7 +250,8 @@ export function createJsonAdapter(name: string, io: JsonAdapterIo): Adapter {
       known = notes;
       return notes;
     } catch (error) {
-      degrade(error);
+      readFailed = true;
+      report(error);
       return known;
     }
   };
@@ -253,20 +266,18 @@ export function createJsonAdapter(name: string, io: JsonAdapterIo): Adapter {
    */
   const persist = async (notes: Note[]): Promise<void> => {
     known = notes;
-    if (degraded) {
+    if (writeDegraded) {
       return;
     }
     try {
       await io.writeText(serializeNoteSet(notes));
     } catch (error) {
       if (writeFailure === "degrade") {
-        degrade(error);
+        writeDegraded = true;
+        report(error);
         return;
       }
-      if (!writeFailureReported) {
-        writeFailureReported = true;
-        io.onFallback(error);
-      }
+      report(error);
       throw error;
     }
   };
