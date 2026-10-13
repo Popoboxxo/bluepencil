@@ -152,7 +152,7 @@ jobs:
         # failure here is reported and does not cost the release.
         if: ${{ !inputs.dry_run }}
         continue-on-error: true
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: release-assets/*
 
@@ -268,7 +268,7 @@ jobs:
       - name: Attest the image
         if: ${{ !inputs.dry_run }}
         continue-on-error: true
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.push.outputs.digest }}
