@@ -39,6 +39,7 @@ import {
   BluepencilValidationError,
   MESSAGE_KINDS,
   NOTE_INTENTS,
+  NOTE_SEVERITIES,
   NOTE_STATUSES,
   NOTE_TYPES,
   createMessage,
@@ -213,6 +214,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         body: { type: "string" },
         type: { type: "string", enum: [...NOTE_TYPES], default: "text" },
         intent: { type: "string", enum: [...NOTE_INTENTS], default: "implement" },
+        severity: { type: "string", enum: [...NOTE_SEVERITIES] },
         hook: { type: "string" },
         selector: { type: "string" },
         quote: { type: "string" },
@@ -454,6 +456,7 @@ const COMPARED_FIELDS = [
   "source",
   "environment",
   "ticketRef",
+  "severity",
   "debug",
 ] as const;
 
@@ -655,6 +658,10 @@ export async function callTool(
       if (intent.issue) {
         return errorResponse(intent.issue);
       }
+      const severity = readEnumArgument(args.severity, NOTE_SEVERITIES, "severity");
+      if (severity.issue) {
+        return errorResponse(severity.issue);
+      }
       const body = String(args.body ?? "").trim();
       if (body === "") {
         return errorResponse("body must not be empty");
@@ -674,6 +681,7 @@ export async function callTool(
           body,
           anchor,
           intent: intent.value ?? "implement",
+          ...(severity.value !== undefined ? { severity: severity.value } : {}),
           author: agentAuthor(context),
           authorType: "agent",
           source: "agent",

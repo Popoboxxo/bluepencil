@@ -82,3 +82,19 @@ requires-trace-from: []
 The schema is versioned and documented; migrations from older data are defined
 
 *Acceptance criteria:* A v1 file loads in a v2 build; migration is documented and tested
+
+## FR-3.6 An optional severity ∈ {blocker, major, minor} may be set on a note; it is orthogonal to…
+
+```attr
+prio: P1
+origin: G
+milestone: "M2"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+An optional severity ∈ {blocker, major, minor} may be set on a note; it is orthogonal to type/intent, meaningful only for type = bug, and omitted otherwise
+
+*Acceptance criteria:* A note without `severity` stays valid (old stores/bundles import unchanged, no `schemaVersion` bump); an unknown `severity` on import degrades safely (dropped, treated as absent), mirroring the unknown-`type`→`text` fallback

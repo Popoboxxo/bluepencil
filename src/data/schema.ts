@@ -15,6 +15,7 @@ import {
   ENVIRONMENTS,
   MESSAGE_KINDS,
   NOTE_INTENTS,
+  NOTE_SEVERITIES,
   NOTE_STATUSES,
   NOTE_TYPES,
   REVEAL_CONTAINERS,
@@ -210,6 +211,14 @@ function noteIssues(note: JsonObject, path: string): string[] {
     issues.push(`${path}.sessionRef must be a non-empty string`);
   }
   issues.push(...enumIssues(`${path}.type`, note.type, NOTE_TYPES));
+  // FR-3.6: severity is optional; when present it must be a known value AND the note is a bug
+  // (elsewhere severity is meaningless and must be omitted).
+  if (note.severity !== undefined) {
+    issues.push(...enumIssues(`${path}.severity`, note.severity, NOTE_SEVERITIES));
+    if (note.type !== "bug") {
+      issues.push(`${path}.severity is only allowed when type is "bug" (got type ${describe(note.type)})`);
+    }
+  }
   issues.push(...enumIssues(`${path}.intent`, note.intent, NOTE_INTENTS));
   issues.push(...enumIssues(`${path}.status`, note.status, NOTE_STATUSES));
   if (!isNonEmptyString(note.body)) issues.push(`${path}.body must be a non-empty string`);

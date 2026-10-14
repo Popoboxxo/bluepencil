@@ -14,7 +14,9 @@ import type {
   Note,
   NoteDraft,
   NoteIntent,
+  NoteSeverity,
   NoteStatus,
+  NoteType,
 } from "../../src/core/model";
 import { BluepencilValidationError, createNote } from "../../src/core/model";
 import { excludeDone, filterNotes } from "../../src/core/adapter";
@@ -30,6 +32,8 @@ interface NoteSpec {
   id: string;
   now?: string;
   body?: string;
+  type?: NoteType;
+  severity?: NoteSeverity;
   status?: NoteStatus;
   intent?: NoteIntent;
   route?: string | null;
@@ -63,7 +67,8 @@ function makeNote(spec: NoteSpec): Note {
   return createNote({
     id: spec.id,
     now: spec.now ?? T0,
-    type: "text",
+    type: spec.type ?? "text",
+    severity: spec.severity,
     body: spec.body ?? `body of ${spec.id}`,
     status: spec.status,
     intent: spec.intent,
@@ -228,6 +233,21 @@ describe("toMarkdown note rendering", () => {
     expect(md).toContain(`- Created: ${T0}`);
     expect(md).toContain(`- Updated: ${T0}`);
     expect(md).toContain("- Environment: dev");
+  });
+
+  it("prints a severity bullet for a graded bug and nothing otherwise (FR-3.6)", () => {
+    const bug = makeNote({ id: "n-bug", type: "bug", severity: "blocker" });
+    const md = toMarkdown([bug]);
+    expect(md).toContain("- Severity: blocker");
+    // the bullet sits right next to the type it qualifies
+    expect(md.indexOf("- Type: bug")).toBeLessThan(md.indexOf("- Severity: blocker"));
+    expect(md.indexOf("- Severity: blocker")).toBeLessThan(md.indexOf("- Intent: implement"));
+
+    expect(toMarkdown([makeNote({ id: "n-ungraded", type: "bug" })])).not.toContain("- Severity:");
+    expect(toMarkdown([makeNote({ id: "n-text" })])).not.toContain("- Severity:");
+
+    // the label is translated with the rest of the export
+    expect(noteToMarkdown(bug, { language: "de" })).toContain("- Schweregrad: blocker");
   });
 
   it("prints the quote, the anchor parts and the body literally", () => {
@@ -482,6 +502,15 @@ describe("json export", () => {
     expect(back).toHaveLength(notes.length);
     const sortById = (list: Note[]): Note[] => [...list].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     expect(sortById(back)).toEqual(sortById(notes));
+  });
+
+  it("carries a bug's severity through the JSON export and the bundle reader (FR-3.6)", () => {
+    const bug = makeNote({ id: "n-bug", type: "bug", severity: "major" });
+    const text = toJson([bug], { now: T0 });
+    expect(fromJson(text)[0]?.severity).toBe("major");
+    expect(parseBundle(text).notes[0]?.severity).toBe("major");
+    // an ungraded note adds no severity key at all
+    expect(toJson([makeNote({ id: "n-plain" })], { now: T0 })).not.toContain("severity");
   });
 
   it("accepts a bare Note[] document", () => {

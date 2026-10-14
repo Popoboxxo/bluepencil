@@ -769,6 +769,7 @@ function filterFromBody(value: unknown): NoteFilter {
 const PATCH_FIELDS = new Set([
   "status",
   "intent",
+  "severity",
   "body",
   "ticketRef",
   "environment",
@@ -789,6 +790,7 @@ const NOTE_DRAFT_FIELDS = new Set([
   "body",
   "anchor",
   "intent",
+  "severity",
   "status",
   "author",
   "authorType",

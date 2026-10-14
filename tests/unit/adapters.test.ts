@@ -8,13 +8,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AdapterPatch } from "../../src/core/adapter";
+import { applyPatch, coerceNote, matchesFilter } from "../../src/core/adapter";
 import {
   createMessage,
+  createNote,
   newId,
   type Message,
   type NoteDraft,
   type NoteFilter,
   type NotePatch,
+  type NoteSeverity,
   type NoteStatus,
   type Session,
 } from "../../src/core/model";
@@ -873,5 +876,45 @@ describe("http adapter specifics", () => {
 
     const messageCall = server.calls.find((call) => call.path.endsWith("/messages"));
     expect(messageCall?.body).toMatchObject({ text: "hi", kind: "reply", author_type: "human" });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * FR-3.6: how the shared note rules (core/adapter) treat the optional bug severity
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("severity in the shared note rules (FR-3.6)", () => {
+  it("coerceNote keeps a known severity on a bug and drops an unknown one or one on a non-bug", () => {
+    const bug = createNote(draft({ type: "bug", severity: "blocker" }));
+    expect(coerceNote({ ...bug, severity: "major" })?.severity).toBe("major");
+    // an unknown vocabulary degrades to "absent" instead of rejecting the whole document
+    expect(coerceNote({ ...bug, severity: "nope" })?.severity).toBeUndefined();
+    // a severity on a non-bug is meaningless and dropped
+    expect(coerceNote({ ...createNote(draft()), severity: "major" })?.severity).toBeUndefined();
+  });
+
+  it("applyPatch sets severity on a bug, drops it on a text note and rejects an unknown value", () => {
+    const bug = createNote(draft({ type: "bug" }));
+    expect(applyPatch(bug, { severity: "major" }).severity).toBe("major");
+
+    const text = createNote(draft());
+    const dropped = applyPatch({ ...text, severity: "major" }, { severity: "minor" });
+    expect(dropped.severity).toBeUndefined();
+
+    expect(() => applyPatch(bug, { severity: "nope" as NoteSeverity })).toThrowError(
+      /severity must be blocker, major or minor/,
+    );
+  });
+
+  it("matchesFilter honours severity", () => {
+    const blocker = createNote(draft({ type: "bug", severity: "blocker" }));
+    const plainBug = createNote(draft({ type: "bug" }));
+
+    expect(matchesFilter(blocker, { severity: "blocker" })).toBe(true);
+    expect(matchesFilter(blocker, { severity: "major" })).toBe(false);
+    expect(matchesFilter(plainBug, { severity: "major" })).toBe(false);
+    // a filter without a severity is uninfluenced by it
+    expect(matchesFilter(plainBug, { type: "bug" })).toBe(true);
+    expect(matchesFilter(blocker)).toBe(true);
   });
 });

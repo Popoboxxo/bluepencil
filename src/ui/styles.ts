@@ -511,6 +511,22 @@ export const STYLES: string = `
   text-decoration: line-through;
 }
 
+/* FR-3.6: bug severity badges — colours flow through the same host-overridable tokens. */
+.bp-badge--blocker {
+  border-color: var(--bp-danger, #b3261e);
+  color: var(--bp-danger, #b3261e);
+}
+
+.bp-badge--major {
+  border-color: var(--bp-accent, #2a63e8);
+  color: var(--bp-accent, #2a63e8);
+}
+
+.bp-badge--minor {
+  border-color: var(--bp-muted, #5a6072);
+  color: var(--bp-muted, #5a6072);
+}
+
 .bp-badge--orphaned,
 .bp-badge--degraded {
   border-style: dashed;

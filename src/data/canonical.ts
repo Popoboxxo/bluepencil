@@ -136,6 +136,8 @@ export function canonicalNote(note: Note): Note {
     updatedAt: note.updatedAt,
     ...(note.sessionRef !== undefined ? { sessionRef: note.sessionRef } : {}),
     type: note.type,
+    // FR-3.6: fixed position right after `type` keeps bundles diffable (NFR-17).
+    ...(note.severity !== undefined ? { severity: note.severity } : {}),
     intent: note.intent,
     status: note.status,
     body: note.body,

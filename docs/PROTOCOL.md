@@ -10,6 +10,7 @@
 | Field | Values | Meaning |
 |---|---|---|
 | `type` | `text`, `design`, `bug` | What the note is about: content/wording, appearance/layout or a defect report |
+| `severity` | `blocker`, `major`, `minor` | How urgent a bug is; optional, meaningful only for `type=bug`, omitted otherwise (FR-3.6) |
 | `intent` | `implement`, `feedback` | What should happen with the note |
 | `status` | `open`, `done`, `needs_decision` | Where the note stands right now |
 | `author_type` | `human`, `agent` | Who wrote a message in the thread |
@@ -18,6 +19,13 @@
 `intent` and `status` are **independent** on purpose: a note can be "assessment only"
 (`intent=feedback`) while still being `open`, and a note can be `needs_decision` although the
 intent is `implement`.
+
+`severity` is orthogonal to `type`/`intent` like the category itself, and it is **optional**: a
+note without it is valid and imports unchanged (old stores and bundles need no `schemaVersion`
+bump). The degrade rule on import mirrors the unknown-`type` → `text` fallback — an **unknown
+`severity` value is dropped and treated as absent** (never an error, never a half-applied value).
+On the import and write paths a `severity` on a note whose `type` is not `bug` is dropped as well;
+`validateNote`/`assertNote` instead reject such a note as an error.
 
 ## 2. The four states an agent must distinguish
 

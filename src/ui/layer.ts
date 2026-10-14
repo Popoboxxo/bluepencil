@@ -1094,6 +1094,8 @@ export function createLayer(options: LayerOptions): LayerHandle {
         body: input.body,
         anchor: { ...target.anchor },
         intent: input.intent,
+        // FR-3.6: only a bug carries a severity; `createNote` drops it for any other type.
+        ...(input.severity !== undefined ? { severity: input.severity } : {}),
         author: authorName(),
         authorType: "human",
         source: "ui:human",
@@ -1530,7 +1532,12 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (!isElement(target)) return;
 
     const filterName = target.getAttribute("data-bp-filter");
-    if (filterName === "type" || filterName === "intent" || filterName === "status") {
+    if (
+      filterName === "type" ||
+      filterName === "intent" ||
+      filterName === "status" ||
+      filterName === "severity"
+    ) {
       panel?.setFilter(filterName, (target as HTMLSelectElement).value);
       renderMarkers();
       renderCounters();

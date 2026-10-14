@@ -25,11 +25,17 @@ export const DEFAULT_ENVIRONMENT: Environment = "dev";
 /**
  * Note category (FR-3.2): `text` = content/wording, `design` = appearance/layout, `bug` = a
  * defect report. The category is orthogonal to `intent` (implement|feedback) — a bug can still be
- * `implement` or `feedback`. There is deliberately no separate `severity` field yet: severity is an
- * open question in issue #71 and is tracked there, not in the model.
+ * `implement` or `feedback`.
  */
 export const NOTE_TYPES = ["text", "design", "bug"] as const;
 export const NOTE_INTENTS = ["implement", "feedback"] as const;
+/**
+ * Optional severity of a bug report (FR-3.6). Orthogonal to `type`/`intent` like the category is:
+ * it says how urgent a defect is, not what should happen with it. Meaningful only for
+ * `type: "bug"` and omitted for every other type; a note without it stays valid (old stores and
+ * bundles import unchanged, no `schemaVersion` bump).
+ */
+export const NOTE_SEVERITIES = ["blocker", "major", "minor"] as const;
 export const NOTE_STATUSES = ["open", "done", "needs_decision"] as const;
 export const AUTHOR_TYPES = ["human", "agent"] as const;
 export const MESSAGE_KINDS = [
@@ -45,6 +51,8 @@ export const ENVIRONMENTS = ["dev", "staging", "live"] as const;
 export type NoteType = (typeof NOTE_TYPES)[number];
 /** What should happen with the note. `feedback` means "assessment only" (FR-5.1). */
 export type NoteIntent = (typeof NOTE_INTENTS)[number];
+/** How urgent a bug report is (FR-3.6); meaningful only for `type: "bug"`. */
+export type NoteSeverity = (typeof NOTE_SEVERITIES)[number];
 /** Where the note stands right now. `needs_decision` blocks implementation (FR-5.4). */
 export type NoteStatus = (typeof NOTE_STATUSES)[number];
 export type AuthorType = (typeof AUTHOR_TYPES)[number];
@@ -153,6 +161,8 @@ export interface Note {
   /** Review round this note belongs to (FR-3.4). */
   sessionRef?: string;
   type: NoteType;
+  /** How urgent a bug is (FR-3.6); present only when `type: "bug"`. */
+  severity?: NoteSeverity;
   intent: NoteIntent;
   status: NoteStatus;
   body: string;
@@ -200,6 +210,8 @@ export interface NoteDraft {
   body: string;
   anchor: Anchor;
   intent?: NoteIntent;
+  /** Only honoured when `type: "bug"`; silently omitted for every other type (FR-3.6). */
+  severity?: NoteSeverity;
   status?: NoteStatus;
   author?: string;
   authorType?: AuthorType;
@@ -220,6 +232,8 @@ export interface NoteDraft {
 export interface NotePatch {
   status?: NoteStatus;
   intent?: NoteIntent;
+  /** Sets or replaces the severity of a bug; omitted leaves it untouched (FR-3.6). */
+  severity?: NoteSeverity;
   body?: string;
   ticketRef?: string;
   environment?: Environment;
@@ -235,6 +249,7 @@ export interface NoteFilter {
   status?: NoteStatus | NoteStatus[];
   intent?: NoteIntent;
   type?: NoteType;
+  severity?: NoteSeverity;
   session?: string;
   /** ISO timestamp — only notes updated at/after this point. */
   since?: string;
@@ -337,6 +352,9 @@ export function createNote(draft: NoteDraft): Note {
   if (draft.intent !== undefined && !NOTE_INTENTS.includes(draft.intent)) {
     issues.push(`intent must be one of ${NOTE_INTENTS.join(", ")}`);
   }
+  if (draft.severity !== undefined && !isNoteSeverity(draft.severity)) {
+    issues.push(`severity must be one of ${NOTE_SEVERITIES.join(", ")}`);
+  }
   if (draft.status !== undefined && !NOTE_STATUSES.includes(draft.status)) {
     issues.push(`status must be one of ${NOTE_STATUSES.join(", ")}`);
   }
@@ -358,6 +376,8 @@ export function createNote(draft: NoteDraft): Note {
     createdAt: ts,
     updatedAt: ts,
     type: draft.type,
+    // FR-3.6: severity is meaningful only for a bug — silently omitted for text/design notes.
+    ...(draft.type === "bug" && draft.severity !== undefined ? { severity: draft.severity } : {}),
     intent: draft.intent ?? "implement",
     status: draft.status ?? "open",
     body: draft.body,
@@ -404,6 +424,10 @@ export function isNoteType(value: unknown): value is NoteType {
 
 export function isNoteIntent(value: unknown): value is NoteIntent {
   return typeof value === "string" && (NOTE_INTENTS as readonly string[]).includes(value);
+}
+
+export function isNoteSeverity(value: unknown): value is NoteSeverity {
+  return typeof value === "string" && (NOTE_SEVERITIES as readonly string[]).includes(value);
 }
 
 export function isNoteStatus(value: unknown): value is NoteStatus {

@@ -15,6 +15,7 @@ import type {
   Note,
   NoteDraft,
   NoteIntent,
+  NoteSeverity,
   NoteStatus,
   NoteType,
 } from "../../src/core/model";
@@ -55,6 +56,7 @@ interface NoteInput {
   status?: NoteStatus;
   intent?: NoteIntent;
   type?: NoteType;
+  severity?: NoteSeverity;
   body?: string;
   environment?: Environment;
   sessionRef?: string;
@@ -71,6 +73,7 @@ function makeNote(input: NoteInput): Note {
     now: input.now ?? T,
     status: input.status,
     intent: input.intent,
+    severity: input.severity,
     environment: input.environment,
     sessionRef: input.sessionRef,
     messages: input.messages,
@@ -612,5 +615,143 @@ describe("anchor reveal hint (issue #20)", () => {
 
     expect(canonicalNote(note).anchor).toEqual(note.anchor);
     expect(migrateNote(JSON.parse(JSON.stringify(note)) as unknown).anchor).toEqual(note.anchor);
+  });
+});
+
+/* FR-3.6 (issue #71): an optional bug severity. It is meaningful only for `type: "bug"`, stays
+   optional (old documents load unchanged, no schemaVersion bump) and must survive validation,
+   canonical serialisation, migration and the bundle round trip. */
+
+describe("bug severity (FR-3.6, issue #71)", () => {
+  it("createNote keeps severity on a bug but silently omits it on every other type", () => {
+    const bug = createNote({
+      id: "n-bug",
+      type: "bug",
+      severity: "blocker",
+      body: "the save button overlaps the label",
+      anchor: { hook: "save" },
+      now: T,
+    });
+    expect(bug.severity).toBe("blocker");
+
+    const text = makeNote({ id: "n-text", severity: "blocker" });
+    expect(text.severity).toBeUndefined();
+    expect(Object.keys(text)).not.toContain("severity");
+  });
+
+  it("createNote rejects an unknown severity value and accepts one that is absent", () => {
+    expect(() =>
+      createNote({
+        id: "n-bug",
+        type: "bug",
+        severity: "nope" as NoteSeverity,
+        body: "x",
+        anchor: { hook: "h" },
+        now: T,
+      }),
+    ).toThrowError(/severity must be one of blocker, major, minor/);
+
+    const plain = makeNote({ id: "n-plain" });
+    expect(plain.severity).toBeUndefined();
+    expect(validateNote(plain)).toEqual([]);
+  });
+
+  it("validateNote accepts a bug with a known severity and rejects an unknown one", () => {
+    const bug = makeNote({ id: "n-bug", type: "bug", severity: "minor" });
+    expect(validateNote(bug)).toEqual([]);
+    expect(validateNote({ ...bug, severity: "nope" }).join("|")).toContain(
+      "note.severity must be one of blocker, major, minor",
+    );
+  });
+
+  it("validateNote rejects a severity on a non-bug note", () => {
+    expect(validateNote({ ...validNote, severity: "major" }).join("|")).toContain(
+      'note.severity is only allowed when type is "bug"',
+    );
+  });
+
+  it("assertNote throws with every severity issue and returns valid bugs unchanged", () => {
+    const bug = makeNote({ id: "n-bug", type: "bug", severity: "blocker" });
+    expect(assertNote(bug)).toBe(bug);
+
+    let caught: unknown;
+    try {
+      assertNote({ ...bug, severity: "nope" });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(BluepencilValidationError);
+    expect((caught as BluepencilValidationError).issues.join("|")).toContain("note.severity");
+  });
+
+  it("places severity directly after type in the canonical form (NFR-17)", () => {
+    const bug = makeNote({ id: "n-bug", type: "bug", severity: "major" });
+    const keys = Object.keys(canonicalNote(bug));
+    expect(keys.indexOf("severity")).toBe(keys.indexOf("type") + 1);
+    expect(serializeCanonical(canonicalNote(bug))).toContain('"severity": "major"');
+  });
+
+  it("omits severity entirely when unset, so existing bytes are unchanged (NFR-17)", () => {
+    const plain = makeNote({ id: "n-bug", type: "bug" });
+    expect(Object.keys(canonicalNote(plain))).not.toContain("severity");
+
+    const serialized = serializeCanonical(plain);
+    expect(serialized).not.toContain("severity");
+
+    // a document that never carried a severity migrates back to the exact same bytes
+    const legacy = JSON.parse(serialized) as unknown;
+    expect(serializeCanonical(canonicalNote(migrateNote(legacy)))).toBe(serialized);
+  });
+
+  it("migrateNote drops an unknown severity and any severity on a non-bug, but keeps a known one on a bug", () => {
+    const base = { id: "n-1", body: "x", anchor: { hook: "h" }, createdAt: T };
+    expect(migrateNote({ ...base, type: "bug", severity: "catastrophic" }).severity).toBeUndefined();
+    expect(migrateNote({ ...base, type: "text", severity: "major" }).severity).toBeUndefined();
+
+    const kept = migrateNote({ ...base, type: "bug", severity: "major" });
+    expect(kept.severity).toBe("major");
+    expect(validateNote(kept)).toEqual([]);
+  });
+
+  it("migrateBundle degrades an unknown severity the same way and leaves a clean bundle untouched", () => {
+    const migrated = migrateBundle([
+      { id: "n-1", body: "x", type: "bug", severity: "catastrophic", anchor: { hook: "h" }, createdAt: T },
+    ]);
+    expect(at(migrated.notes, 0).severity).toBeUndefined();
+    expect(validateBundle(migrated)).toEqual([]);
+
+    const clean = createBundle([makeNote({ id: "n-1", route: "/a" })], BUNDLE_OPTIONS);
+    expect(migrateBundle(JSON.parse(JSON.stringify(clean)) as unknown)).toEqual(clean);
+    expect(clean.schemaVersion).toBe(SCHEMA_VERSION);
+  });
+
+  it("round-trips a graded bug through the bundle JSON without loss", () => {
+    const bug = makeNote({ id: "n-bug", type: "bug", severity: "blocker" });
+    const bundle = createBundle([bug], BUNDLE_OPTIONS);
+    const parsed = parseBundle(bundleToJson(bundle));
+
+    expect(at(parsed.notes, 0).severity).toBe("blocker");
+    expect(parsed).toEqual(bundle);
+    expect(validateBundle(parsed)).toEqual([]);
+    expect(hashBundle(parsed)).toBe(hashBundle(bundle));
+  });
+
+  it("imports an old bundle without a severity unchanged", () => {
+    const bundle = createBundle([makeNote({ id: "n-legacy", route: "/a" })], BUNDLE_OPTIONS);
+    const text = bundleToJson(bundle);
+    expect(text).not.toContain("severity");
+
+    const parsed = parseBundle(text);
+    expect(at(parsed.notes, 0).severity).toBeUndefined();
+    expect(validateBundle(parsed)).toEqual([]);
+  });
+
+  it("accepts a bug whose severity was actually removed via the `without` helper (FR-3.6)", () => {
+    const bug = makeNote({ id: "n-bug", type: "bug", severity: "blocker" });
+    expect(bug.severity).toBe("blocker");
+
+    const degraded = without(bug, "severity");
+    expect("severity" in degraded).toBe(false);
+    expect(validateNote(degraded)).toEqual([]);
   });
 });

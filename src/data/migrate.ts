@@ -14,6 +14,7 @@ import {
   ENVIRONMENTS,
   MESSAGE_KINDS,
   NOTE_INTENTS,
+  NOTE_SEVERITIES,
   NOTE_STATUSES,
   NOTE_TYPES,
   REVEAL_CONTAINERS,
@@ -110,6 +111,21 @@ function pickLiteral<T extends string>(value: unknown, allowed: readonly T[], fa
     if (match !== undefined) return match;
   }
   return fallback;
+}
+
+/**
+ * FR-3.6 degrade rule: an *optional* literal resolves to a known value or to `undefined`.
+ *
+ * A value outside `allowed` is treated as absent instead of an error, exactly like an unknown
+ * `type` degrades to `text` — a newer writer's vocabulary must never make an older reader refuse
+ * the whole document. This is what `severity` uses on import.
+ */
+function pickOptionalLiteral<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
+  if (typeof value === "string") {
+    const match = allowed.find((candidate) => candidate === value);
+    if (match !== undefined) return match;
+  }
+  return undefined;
 }
 
 /** Normalise any parseable timestamp to ISO 8601; anything else falls back. */
@@ -226,6 +242,9 @@ function upgradeNote(value: unknown, defaults: NoteDefaults, path: string): Note
   const ticketRef = nonEmptyString(doc.ticketRef);
   const debug = upgradeDebug(doc.debug, `${path}.debug`);
   const source = nonEmptyString(doc.source) ?? defaults.source ?? "cli:import";
+  const type = pickLiteral(doc.type, NOTE_TYPES, "text");
+  // FR-3.6: an unknown severity degrades to "absent"; a severity on a non-bug note is dropped too.
+  const severity = type === "bug" ? pickOptionalLiteral(doc.severity, NOTE_SEVERITIES) : undefined;
 
   const note: Note = {
     id: nonEmptyString(doc.id) ?? newId("n"),
@@ -233,7 +252,8 @@ function upgradeNote(value: unknown, defaults: NoteDefaults, path: string): Note
     createdAt,
     updatedAt: toIso(doc.updatedAt, createdAt),
     ...(sessionRef !== undefined ? { sessionRef } : {}),
-    type: pickLiteral(doc.type, NOTE_TYPES, "text"),
+    type,
+    ...(severity !== undefined ? { severity } : {}),
     intent: pickLiteral(doc.intent, NOTE_INTENTS, "implement"),
     status: pickLiteral(doc.status, NOTE_STATUSES, "open"),
     body: typeof doc.body === "string" ? doc.body : "",

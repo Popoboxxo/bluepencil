@@ -243,6 +243,7 @@ async function addNote(store: Store, draft: Partial<NoteDraft> = {}): Promise<No
     anchor: draft.anchor ?? { hook: "seed" },
     ...(draft.status !== undefined ? { status: draft.status } : {}),
     ...(draft.intent !== undefined ? { intent: draft.intent } : {}),
+    ...(draft.severity !== undefined ? { severity: draft.severity } : {}),
     ...(draft.now !== undefined ? { now: draft.now } : {}),
     ...(draft.environment !== undefined ? { environment: draft.environment } : {}),
   });
@@ -1031,6 +1032,79 @@ describe("capture UI", () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* bug severity (FR-3.6, issue #71)                                            */
+/* -------------------------------------------------------------------------- */
+
+describe("bug severity", () => {
+  /** A fresh layer with a host paragraph, ready to open the composer on it. */
+  function startWithHost(store: Store): LayerHandle {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="p1">text</p></main>`;
+    const handle = startLayer(store);
+    pressKey("c");
+    click(byId("host").querySelector("p") as Element);
+    return handle;
+  }
+
+  it("shows the severity switch only for a bug and forgets the choice when leaving it (FR-3.6)", async () => {
+    const store = makeStore();
+    const handle = startWithHost(store);
+
+    const blocker = query('[data-bp-action="composer-severity-blocker"]');
+    const row = blocker.parentElement;
+    expect(row?.hidden).toBe(true); // the default topic is text
+
+    click(query('[data-bp-action="composer-type-bug"]'));
+    expect(row?.hidden).toBe(false);
+
+    click(blocker);
+    expect(blocker.getAttribute("aria-pressed")).toBe("true");
+
+    // leaving the bug topic hides the switch and resets the choice
+    click(query('[data-bp-action="composer-type-design"]'));
+    expect(row?.hidden).toBe(true);
+    expect(blocker.getAttribute("aria-pressed")).toBe("false");
+
+    await saveComposer("spacing is off");
+    expect(store.notes()[0]?.type).toBe("design");
+    expect(store.notes()[0]?.severity).toBeUndefined();
+    expect(Object.keys(store.notes()[0] ?? {})).not.toContain("severity");
+    handle.disable();
+  });
+
+  it("carries the severity of a bug into the saved note (FR-3.6)", async () => {
+    const store = makeStore();
+    const handle = startWithHost(store);
+
+    click(query('[data-bp-action="composer-type-bug"]'));
+    click(query('[data-bp-action="composer-severity-major"]'));
+    expect(query('[data-bp-action="composer-severity-major"]').getAttribute("aria-pressed")).toBe("true");
+
+    await saveComposer("The button overlaps the label.");
+    expect(store.notes()[0]?.type).toBe("bug");
+    expect(store.notes()[0]?.severity).toBe("major");
+    handle.disable();
+  });
+
+  it("re-opening a bug composer starts without a severity again (FR-3.6)", async () => {
+    const store = makeStore();
+    const handle = startWithHost(store);
+
+    click(query('[data-bp-action="composer-type-bug"]'));
+    click(query('[data-bp-action="composer-severity-minor"]'));
+    await saveComposer("first bug");
+    expect(store.notes()[0]?.severity).toBe("minor");
+
+    // a fresh composer defaults back to a text topic without severity
+    pressKey("Escape"); // leave whatever mode is still active
+    pressKey("c");
+    click(byId("host").querySelector("p") as Element);
+    expect(composer().hidden).toBe(false);
+    expect(query('[data-bp-action="composer-severity-minor"]').getAttribute("aria-pressed")).toBe("false");
+    handle.disable();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* markers and panel (FR-4.1–4.8)                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -1142,6 +1216,56 @@ describe("markers and panel", () => {
     intentFilter.dispatchEvent(new Event("change", { bubbles: true }));
     expect(noteEntries()).toHaveLength(1);
     expect(noteEntries()[0]?.textContent).toContain("opinion wanted");
+    handle.disable();
+  });
+
+  it("badges and filters bug severity, with `none` matching ungraded notes (FR-3.6)", async () => {
+    const store = makeStore();
+    await addNote(store, { body: "blocker defect", type: "bug", severity: "blocker" });
+    await addNote(store, { body: "unset defect", type: "bug" });
+    await addNote(store, { body: "plain text" });
+    const handle = startLayer(store);
+
+    pressKey("l");
+    expect(noteEntries()).toHaveLength(3);
+
+    const severityFilter = query<HTMLSelectElement>('[data-bp-filter="severity"]');
+    expect(Array.from(severityFilter.options).map((option) => option.value)).toEqual([
+      "all",
+      "blocker",
+      "major",
+      "minor",
+      "none",
+    ]);
+
+    // the badge exists only for a note that carries a severity
+    const graded = noteEntries().find((entry) => entry.textContent?.includes("blocker defect"));
+    const badge = graded?.querySelector('[data-bp-part="badge-severity"]');
+    expect(badge?.textContent).toBe(en["panel.severity.blocker"]);
+    expect(badge?.classList.contains("bp-badge--blocker")).toBe(true);
+
+    const ungraded = noteEntries().find((entry) => entry.textContent?.includes("unset defect"));
+    expect(ungraded?.querySelector('[data-bp-part="badge-severity"]')).toBeNull();
+
+    // a concrete severity matches exactly
+    severityFilter.value = "blocker";
+    severityFilter.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(noteEntries()).toHaveLength(1);
+    expect(noteEntries()[0]?.textContent).toContain("blocker defect");
+
+    // `none` matches every note without a severity
+    severityFilter.value = "none";
+    severityFilter.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(noteEntries()).toHaveLength(2);
+    const shown = noteEntries().map((entry) => entry.textContent ?? "").join("|");
+    expect(shown).toContain("unset defect");
+    expect(shown).toContain("plain text");
+    expect(shown).not.toContain("blocker defect");
+
+    // resetting the settings restores `all`
+    click(query('[data-bp-action="settings-reset"]'));
+    expect(severityFilter.value).toBe("all");
+    expect(noteEntries()).toHaveLength(3);
     handle.disable();
   });
 
@@ -1656,6 +1780,26 @@ describe("multi-instance and i18n", () => {
 
     layerEn.disable();
     layerDe.disable();
+  });
+
+  it("ships both languages for every severity and filter key (FR-3.6)", () => {
+    const keys: MessageKey[] = [
+      "composer.severityLabel",
+      "composer.severity.blocker",
+      "composer.severity.major",
+      "composer.severity.minor",
+      "panel.filter.severity",
+      "panel.filter.none",
+      "panel.severity.blocker",
+      "panel.severity.major",
+      "panel.severity.minor",
+    ];
+    for (const key of keys) {
+      expect(en[key], key).not.toBe("");
+      expect(de[key], key).not.toBe("");
+      // a translated label must differ from the English one
+      expect(de[key], key).not.toBe(en[key]);
+    }
   });
 
   it("ships a token-driven, host-safe stylesheet (FR-1.9/10.3, NFR-6)", () => {
