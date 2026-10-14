@@ -54,6 +54,9 @@
   .hint { display: block; margin-top: .25rem; font-size: .82rem; color: var(--bp-muted); }
   .row { display: flex; gap: .6rem; align-items: center; }
   .row input[type=checkbox] { width: auto; }
+  /* The `label > span` rule above adds a bottom margin for a stacked field; in a flex row it would
+     nudge the label off the checkbox's centre line. Only the row layout needs the reset. */
+  .row > span { margin-bottom: 0; }
   button {
     font: inherit; padding: .5rem 1.1rem; border-radius: 6px;
     border: 1px solid #2563eb; background: #2563eb; color: #fff; cursor: pointer;
@@ -140,6 +143,23 @@
         </select>
         <span class="hint">Neither is verified — the store has no authentication of its own.</span>
       </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Layer</legend>
+
+      <!-- Off by default (#70). A page that already embeds Bluepencil — a <bluepencil-notes> element,
+           the attach.js loader, or a hub endpoint — carries the layer on its own, and mounting a
+           second one would stack two overlays on the same notes. Ticking this is the explicit
+           override: the reviewer wants their own layer on such a page too. -->
+      <label class="row">
+        <input type="checkbox" id="mountAlongsideHost">
+        <span>Also load the layer on pages that already embed Bluepencil</span>
+      </label>
+      <span class="hint">
+        Off by default. On a page that carries Bluepencil itself the extension steps aside and shows a
+        <em>host</em> badge naming what it found; tick this to load your layer on top of it anyway.
+      </span>
     </fieldset>
 
     <fieldset>

@@ -23,7 +23,14 @@ declare const chrome: {
 
 const SETTINGS_KEY = "bluepencil:settings";
 
-/** The fields the form owns, in the shape the settings object uses. */
+/**
+ * The text/select fields the form owns, in the shape the settings object uses.
+ *
+ * Split from the checkboxes (#70) because the two kinds do not read or write alike: a text field
+ * exposes its value as a *string*, a checkbox as a *boolean*. Listing them in one array would force
+ * `settings[field]` to `string | boolean` and lose exactly the distinction that keeps a hand-edited
+ * `mountAlongsideHost: "false"` from being read as on.
+ */
 const FIELDS = [
   "environment",
   "appName",
@@ -34,6 +41,11 @@ const FIELDS = [
   "auth",
   "token",
   "deviceName",
+] as const satisfies readonly (keyof ExtensionSettings)[];
+
+/** The checkbox fields — booleans, read from `.checked` rather than `.value`. */
+const CHECKBOXES = [
+  "mountAlongsideHost",
 ] as const satisfies readonly (keyof ExtensionSettings)[];
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -61,6 +73,9 @@ function fill(settings: ExtensionSettings): void {
   for (const field of FIELDS) {
     const node = byId<HTMLInputElement | HTMLSelectElement>(field);
     node.value = settings[field];
+  }
+  for (const field of CHECKBOXES) {
+    byId<HTMLInputElement>(field).checked = settings[field];
   }
   showSidecar(settings.store);
 }
@@ -127,6 +142,9 @@ byId<HTMLSelectElement>("store").addEventListener("change", (event) => {
 function readForm(): Record<string, unknown> {
   const raw: Record<string, unknown> = {};
   for (const field of FIELDS) raw[field] = byId<HTMLInputElement | HTMLSelectElement>(field).value;
+  // `.checked`, not `.value`: the checkbox's value string is always "on" and says nothing about
+  // whether it is ticked. `normalizeSettings` then keeps the result strictly boolean (#70).
+  for (const field of CHECKBOXES) raw[field] = byId<HTMLInputElement>(field).checked;
   return raw;
 }
 

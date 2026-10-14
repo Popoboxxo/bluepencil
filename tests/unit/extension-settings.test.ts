@@ -35,6 +35,7 @@ describe("normalizeSettings", () => {
       token: "shared-secret",
       tokenExpiresAt: "2026-10-01T12:00:00.000Z",
       deviceName: "work-laptop",
+      mountAlongsideHost: true,
     };
     expect(normalizeSettings(input)).toEqual(input);
   });
@@ -60,6 +61,13 @@ describe("normalizeSettings", () => {
       ["auth", "bearer", "auth"],
       ["auth", "Secret", "auth"],
       ["auth", "", "auth"],
+      // The host-embed override is a *boolean* switch (#70): a string that looks like it ("true",
+      // "yes") or a number must not turn it on, because "on" is what lets the extension stack a
+      // second layer onto a page that already embeds one.
+      ["mountAlongsideHost", "true", "mountAlongsideHost"],
+      ["mountAlongsideHost", "yes", "mountAlongsideHost"],
+      ["mountAlongsideHost", 1, "mountAlongsideHost"],
+      ["mountAlongsideHost", null, "mountAlongsideHost"],
     ];
     for (const [field, bad, expectedKey] of cases) {
       const result = normalizeSettings({ [field]: bad });
@@ -134,6 +142,15 @@ describe("normalizeSettings", () => {
     expect(DEFAULT_SETTINGS.store).toBe("chromeStorage");
     expect(DEFAULT_SETTINGS.endpoint).toBe("");
     expect(DEFAULT_SETTINGS.token).toBe("");
+  });
+
+  it("defaults the host-embed override off and keeps it strictly boolean (#70)", () => {
+    // The default off is the product guarantee of #70: on a page that already embeds the layer, the
+    // extension must do nothing until the user explicitly asks it to mount alongside.
+    expect(DEFAULT_SETTINGS.mountAlongsideHost).toBe(false);
+    expect(normalizeSettings({}).mountAlongsideHost).toBe(false);
+    expect(normalizeSettings({ mountAlongsideHost: true }).mountAlongsideHost).toBe(true);
+    expect(normalizeSettings({ mountAlongsideHost: false }).mountAlongsideHost).toBe(false);
   });
 
   it("keeps a readable expiry and drops one that cannot be read", () => {
