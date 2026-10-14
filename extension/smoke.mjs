@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Browser, findChrome, requireBrowser } from "../scripts/lib/browser.mjs";
+import { selectWorker } from "./probe.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const extDist = join(here, "dist");
@@ -143,6 +144,113 @@ async function checkArtefacts() {
 }
 
 /* -------------------------------------------------------------------------- */
+/* probe bookkeeping — pure logic, no browser (issue #60)                       */
+/* -------------------------------------------------------------------------- */
+
+/** A fake wall clock: `sleep` advances it, so the retry/backoff logic runs instantly. */
+function fakeClock() {
+  let time = 0;
+  return {
+    now: () => time,
+    sleep: async (ms) => {
+      time += ms;
+    },
+  };
+}
+
+/**
+ * The bug #60 was bookkeeping, not browser behaviour: the selection loop recorded a targetId as
+ * "probed" on its first answer, so a *single* transient failure (the worker had not finished its
+ * first evaluation, a 2 s attach timeout, a CDP hiccup) excluded the real worker for the rest of the
+ * 20 s budget and the run failed with "no extension service worker" while the worker was there.
+ *
+ * These cases pin the corrected behaviour with synthetic candidates and an injected clock — no
+ * Chrome needed — so the flake can never come back unnoticed.
+ */
+async function checkProbeBookkeeping() {
+  // (a) #60 exactly: the first name read fails, the second answers. The target must still be
+  //     selected — this is the case the old one-shot logic failed.
+  {
+    const clock = fakeClock();
+    let calls = 0;
+    const result = await selectWorker({
+      candidates: () => [{ targetId: "ours", url: "chrome-extension://abc/sw.js" }],
+      probe: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("Inspected target navigated or closed");
+        return "Bluepencil";
+      },
+      expect: /bluepencil/i,
+      timeoutMs: 5000,
+      now: clock.now,
+      sleep: clock.sleep,
+      maxAttempts: 3,
+      backoffMs: 50,
+      settleMs: 150,
+    });
+    ok("a target that fails its first probe is retried and still selected",
+      result.targetId === "ours" && result.name === "Bluepencil" && result.attempts === 2,
+      `targetId=${result.targetId} name=${result.name} attempts=${result.attempts}`);
+  }
+
+  // (b) A candidate that never answers must not shadow a later candidate that matches.
+  {
+    const clock = fakeClock();
+    const result = await selectWorker({
+      candidates: () => [
+        { targetId: "component", url: "chrome-extension://dead/sw.js" },
+        { targetId: "ours", url: "chrome-extension://abc/sw.js" },
+      ],
+      probe: async (targetId) => {
+        if (targetId === "component") throw new Error("no manifest");
+        return "Bluepencil";
+      },
+      expect: /bluepencil/i,
+      timeoutMs: 5000,
+      now: clock.now,
+      sleep: clock.sleep,
+      maxAttempts: 2,
+      backoffMs: 50,
+      settleMs: 150,
+    });
+    ok("a never-answering candidate does not prevent a later matching one",
+      result.targetId === "ours", `targetId=${result.targetId} attempts=${result.attempts}`);
+  }
+
+  // (c) With no match at all the loop must still fail closed, and the message has to name each
+  //     candidate with its attempt count and whether it was still retryable.
+  {
+    const clock = fakeClock();
+    let error;
+    try {
+      await selectWorker({
+        candidates: () => [
+          { targetId: "a", url: "chrome-extension://a/sw.js" },
+          { targetId: "b", url: "chrome-extension://b/sw.js" },
+        ],
+        probe: async () => {
+          throw new Error("nope");
+        },
+        expect: /bluepencil/i,
+        timeoutMs: 4000,
+        now: clock.now,
+        sleep: clock.sleep,
+        maxAttempts: 3,
+        backoffMs: 50,
+        settleMs: 100,
+      });
+    } catch (thrown) {
+      error = thrown;
+    }
+    const message = error?.message ?? "";
+    ok("a genuine miss fails closed with the per-candidate attempt counts",
+      error !== undefined && /a\/sw\.js/.test(message) && /b\/sw\.js/.test(message) &&
+        /attempts=3/.test(message) && /retryable=no/.test(message),
+      message);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* browser checks — the parts that only a real browser can answer               */
 /* -------------------------------------------------------------------------- */
 
@@ -160,39 +268,50 @@ async function checkArtefacts() {
  * context. That is the extension's own answer, and it also settles the second problem with a URL
  * match — this Chrome build runs a component extension and a built-in one, each with its own worker,
  * and the first `chrome-extension://` worker in the list is not necessarily ours.
+ *
+ * The selection itself lives in `./probe.mjs` (`selectWorker`), where the retry bookkeeping can be
+ * driven by a test without a browser. The name read stays the discriminator: a failed read is
+ * retryable there, never final, which is the fix for #60 — one transient miss used to exclude the
+ * real worker for the rest of the budget.
  */
 async function attachToBlueprintWorker(browser, { timeoutMs = 20000, expect = /bluepencil/i } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  const probed = new Map();
-  const seen = new Set();
-  while (Date.now() < deadline) {
-    const { targetInfos } = await browser.send("Target.getTargets");
-    const targets = targetInfos ?? [];
-    for (const target of targets) {
-      if (target.type === "service_worker") seen.add(`${target.type}:${target.url}`);
-    }
-    for (const candidate of targets) {
-      if (candidate.type !== "service_worker") continue;
-      if (!candidate.url.startsWith("chrome-extension://")) continue;
-      if (probed.has(candidate.targetId)) continue;
-      const attached = await browser.attachTo((t) => t.targetId === candidate.targetId, {
-        timeoutMs: 2000,
-      });
-      const name = await browser
-        .evaluate("chrome.runtime.getManifest().name")
-        .catch(() => undefined);
-      probed.set(candidate.targetId, `${name ?? "no manifest"} <${candidate.url}>`);
-      if (typeof name === "string" && expect.test(name)) {
-        return { ...attached, name, candidates: [...probed.values()] };
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 150));
-  }
-  throw new Error(
-    `no extension service worker matching ${expect} within ${timeoutMs} ms; probed: ${
-      [...probed.values()].join(" | ") || "nothing"
-    }; seen: ${[...seen].join(", ") || "nothing"}`,
-  );
+  let latest = [];
+  const worker = await selectWorker({
+    // Re-read the target list on every pass: a worker that starts late must still become a candidate.
+    candidates: async () => {
+      const { targetInfos } = await browser.send("Target.getTargets");
+      latest = targetInfos ?? [];
+      return latest
+        .filter((t) => t.type === "service_worker" && String(t.url).startsWith("chrome-extension://"))
+        .map((t) => ({ targetId: t.targetId, url: t.url }));
+    },
+    // A name string on success; a throw on a transient failure. `selectWorker` retries both — the
+    // old `.catch(() => undefined)` was the bug: it made one warm-up race a permanent verdict.
+    probe: async (targetId) => {
+      await browser.attachTo((t) => t.targetId === targetId, { timeoutMs: 2000 });
+      return await browser.evaluate("chrome.runtime.getManifest().name");
+    },
+    expect,
+    timeoutMs,
+    // Only for the failure message: everything the wire showed, so a genuine miss is diagnosable.
+    seen: () =>
+      latest
+        .filter((t) => t.type === "service_worker")
+        .map((t) => `${t.type}:${t.url}`),
+  });
+
+  // The checks that follow read `browser`'s session, so attach to the winner explicitly.
+  const attached = await browser.attachTo((t) => t.targetId === worker.targetId);
+  return { ...attached, name: worker.name, candidates: worker.probed };
+}
+
+/** One line per probed candidate for a check's detail string. */
+function formatProbes(probes) {
+  return probes.length === 0
+    ? "nothing"
+    : probes
+      .map((p) => `"${p.last}" <${p.url}> (${p.attempts} attempt(s)${p.retryable ? ", retryable" : ""})`)
+      .join(" | ");
 }
 
 /**
@@ -259,7 +378,7 @@ async function checkInBrowser() {
     // failing here is clearer than eleven later failures that all say "nothing was injected".
     const worker = await attachToBlueprintWorker(browser);
     ok("the extension's own service worker is attached", /bluepencil/i.test(worker.name),
-      `attached ${worker.name} via ${launched.how}; probed ${worker.candidates.join(" | ")}`);
+      `attached ${worker.name} via ${launched.how}; probed ${formatProbes(worker.candidates)}`);
 
     // 2. Drive the worker's own mount entry point.
     //
@@ -691,6 +810,9 @@ async function checkInBrowser() {
 
 try {
   await checkArtefacts();
+  // Runs before (and independently of) the browser checks: it needs no Chrome, so a regression in
+  // the retry bookkeeping is caught even on a machine with no usable browser.
+  await checkProbeBookkeeping();
   requireBrowser({ browser: findChrome() });
   await checkInBrowser();
 } catch (error) {
