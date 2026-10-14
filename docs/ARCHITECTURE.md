@@ -362,6 +362,7 @@ The Markdown export opens with the two exception sections (`⚠ open decisions`,
 | Unit | model, anchor resolution (hook/path/quote, orphaning), capture, exports, adapters | vitest (jsdom) |
 | Adapter conformance | one suite, all adapters | vitest |
 | E2E | `examples/vanilla` fixture: annotate text/design, quote capture, filters, done-hidden default, feedback mode, decision thread, export, enable/disable cycles (bulk delete is M2 and not implemented) | dependency-free CDP harness (`scripts/lib/browser.mjs`), no test framework |
+| Functional parity | `examples/parity` fixture: one document served at the same path on two loopback ports, driven once through the one-tag embed loader (`dist/attach.js`) and once through the built MV3 extension mounting the active tab (unforced); identical observations required | dependency-free CDP harness (`scripts/lib/browser.mjs`) |
 | Host integration | React example: mount/unmount, no leaks, host-supplied theme | Playwright |
 | Size guard | bundle budget (NFR-3) | CI check |
 | A11y | keyboard-only path, contrast of layer surfaces | Playwright + axe |
@@ -369,6 +370,17 @@ The Markdown export opens with the two exception sections (`⚠ open decisions`,
 
 The fixture app exists so that every FR group has a reproducible target; it doubles as the
 demo page (M3).
+
+The **functional-parity suite** (NFR-11) proves that the *same* layer behaves identically however it
+arrives on the page. One fixture document (`examples/parity/page.html`) is served twice, at the same
+path, on two loopback ports; the identical case matrix — `layer-mounted`, `capture-anchor`,
+`note-fields`, `design-context`, `export-canonical` — runs against both strands: strand **embed**
+loads the layer through the one-tag loader (`dist/attach.js`), strand **extension** lets the built
+MV3 extension mount it on the active tab, unforced (no `force: true`). `normalize()` scrubs
+everything that is volatile by construction (generated ids, timestamps, loopback ports) before the
+two observations are compared, so a divergence is a real behavioural difference rather than a
+fixture artefact. The runner prints a `case | embed | extension | parity` matrix and exits non-zero
+on any failure or divergence.
 
 ## 10. Mapping from the proven prototype
 

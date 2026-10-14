@@ -13,6 +13,15 @@
 #     dependency-free CDP layer with the embed smoke (scripts/lib/browser.mjs), so no test framework
 #     has to be installed to run it (NFR-4, NFR-11).
 #
+#   - parity: the same layer, two arrival paths. One fixture document is served at the same path on
+#     two loopback ports; strand "embed" loads the layer through the one-tag loader (dist/attach.js),
+#     strand "extension" lets the built MV3 extension mount the active tab, unforced. The fixed case
+#     matrix (layer-mounted, capture-anchor, note-fields, design-context, export-canonical) must
+#     produce identical observations once normalize() has scrubbed the volatile ids, timestamps and
+#     ports, so any divergence is a real behavioural difference. The run prints a
+#     `case | embed | extension | parity` matrix and exits non-zero on any failure or divergence
+#     (NFR-11).
+#
 #   - ext-smoke: the built MV3 extension loaded into a real Chrome — the MAIN-world injection, a page
 #     with a strict CSP, and the element loading from the extension's own origin. Nothing about this
 #     is reproducible in jsdom, so it is the only leg that can fail on a browser-behaviour regression.
@@ -30,7 +39,7 @@
 #     form cannot drift away from the artefact. Judgement calls (permission breadth, in-product
 #     disclosure) are printed as ADVICE and never fail the build.
 #
-# Both real-browser legs need a Chrome/Chromium; the runner image ships one, and BP_REQUIRE_BROWSER=1
+# The real-browser legs need a Chrome/Chromium; the runner image ships one, and BP_REQUIRE_BROWSER=1
 # makes a missing browser a failure so the browser round cannot be skipped silently.
 name: CI
 
@@ -160,6 +169,35 @@ jobs:
 
       - name: Secret scan
         run: npm run secret-scan
+
+  parity:
+    # NFR-11: the same layer must behave identically however it arrives on the page. This dedicated
+    # job exists so the required check is literally called "parity": it builds both arrival paths and
+    # fails red on any divergence between the embed-loader strand and the MV3-extension strand.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Build extension (MV3)
+        run: npm run build:ext
+
+      - name: Functional parity (embed loader vs MV3 extension)
+        env:
+          # The whole point of this leg is the comparison, so a missing Chrome has to fail it rather
+          # than turn it into a skip.
+          BP_REQUIRE_BROWSER: "1"
+        run: npm run smoke:parity
 
   image:
     # The Dockerfile is a shipped artefact (FR-6.14), so it is built and *run* on every change instead

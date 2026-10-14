@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bluepencil parity fixture</title>
+<!--
+  Functional-parity fixture (tests/e2e/parity.e2e.mjs).
+
+  This ONE document is served by the harness in two variants, at the same path (`/`) on two
+  ports:
+
+    * embed  — the loader-slot comment in the body is replaced with the one-tag loader
+               (`/dist/attach.js`), which mounts the layer itself;
+    * extension — the placeholder is left empty, so the page carries no embed and the MV3
+               extension is the only source of the layer (it mounts unforced).
+
+  The body markup is byte-identical in both variants, which is what makes the per-case comparison
+  meaningful: the same anchor target, the same CSS path and the same window size on both sides.
+
+  Targets carry `data-testid` (the layer's documented anchor hook, D6) so a note's `hook` is the
+  same stable handle in both strands.
+-->
+<style>
+  :root { color-scheme: light; }
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    color: #14181d;
+    background: #f4f5f7;
+  }
+  /*
+    The layer's bar is fixed to the top of the viewport (FR-12.10). Its width depends on the UI
+    language — the embed pins `en`, the extension follows the browser — so on some locales it
+    reaches across the left-aligned heading and swallows a real pointer click aimed at the anchor.
+    The content therefore starts below the bar, so the same click reaches the same target on both
+    sides of the harness whatever language the chrome happens to use.
+  */
+  main { display: grid; gap: 1rem; max-width: 46rem; padding: 5rem 1.5rem 1.5rem; }
+  h1 { margin: 0; font-size: 1.4rem; }
+  p { margin: 0; }
+  article {
+    padding: 1rem;
+    background: #ffffff;
+    border: 1px solid #d7dce2;
+    border-radius: 10px;
+  }
+  article h2 { margin: 0 0 .35rem; font-size: 1rem; }
+</style>
+</head>
+<body>
+  <main>
+    <h1 id="parity-title" data-testid="parity-title">Parity fixture</h1>
+    <p id="parity-body" data-testid="parity-body">
+      The same paragraph, anchored by the same stable hook, on both sides of the harness.
+    </p>
+    <article id="parity-card" data-testid="parity-card">
+      <h2>Card target</h2>
+      <p data-testid="parity-card-text">A block target for design notes and captured state.</p>
+    </article>
+  </main>
+  <!--BP_PARITY_LOADER_SLOT-->
+</body>
+</html>
