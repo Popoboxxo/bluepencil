@@ -5,6 +5,7 @@
     "declaration": true,
     "emitDeclarationOnly": true,
     "declarationMap": false,
+    "rootDir": "src",
     "outDir": "dist/types"
   },
   // The declarations mirror `src/` one-to-one (`src/index.ts` → `dist/types/index.d.ts`), which is
