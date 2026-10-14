@@ -47,6 +47,22 @@ const HOST_HTML = `<!doctype html>
 /** The host's own stylesheet, served same-origin so the CSP permits it. */
 const HOST_CSS = `#target { color: rgb(34, 34, 34); }`;
 
+/**
+ * A second host fixture: a page that already carries the layer itself (#70).
+ *
+ * The `<bluepencil-notes>` element is the page's own — in a real embed the one-tag loader would
+ * define and connect it. Here the bare tag is enough, because detection reads the page's markup and
+ * nothing else. The extension must recognise it and step aside rather than stack a second element
+ * on top of it.
+ */
+const EMBED_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>extension smoke host — already embedded</title></head>
+<body>
+  <main id="host"><h1 id="target">Already annotated</h1><p id="para">This page owns the layer.</p></main>
+  <bluepencil-notes id="host-layer"></bluepencil-notes>
+</body></html>`;
+
 let passed = 0;
 let failed = 0;
 
@@ -62,9 +78,17 @@ function ok(name, condition, detail = "") {
 
 function startHost() {
   const server = createServer((req, res) => {
-    if ((req.url ?? "").startsWith("/host.css")) {
+    const url = req.url ?? "";
+    if (url.startsWith("/host.css")) {
       res.writeHead(200, { "content-type": "text/css; charset=utf-8" });
       res.end(HOST_CSS);
+      return;
+    }
+    // The second route (#70). Kept separate from HOST_HTML so the already-embedded case is a
+    // fixture of its own rather than a flag threaded through the strict-CSP page.
+    if (url.startsWith("/embed")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(EMBED_HTML);
       return;
     }
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -80,7 +104,7 @@ function startHost() {
 /* -------------------------------------------------------------------------- */
 
 async function checkArtefacts() {
-  for (const required of ["manifest.json", "sw.js", "bridge.js", "options.html", "options.js",
+  for (const required of ["manifest.json", "sw.js", "bridge.js", "detect.js", "options.html", "options.js",
     "bluepencil.element.iife.js", "build-info.json"]) {
     try {
       await stat(join(extDist, required));
@@ -251,6 +275,68 @@ async function checkProbeBookkeeping() {
 }
 
 /* -------------------------------------------------------------------------- */
+/* host-embed detection — pure function, no browser (issue #70)                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `detectHostEmbed` against fake documents.
+ *
+ * The detection decides whether the extension mounts or steps aside, so its three shapes and their
+ * precedence deserve a case each that needs no Chrome. It also keeps the loader case honest about
+ * *both* traces: the `attach.js` script tag and the `bluepencilAttach` global it installs.
+ */
+async function checkDetect() {
+  let detectHostEmbed;
+  try {
+    // Built standalone by `extension/build.mjs` (the bootstrap imports the same source), so this is
+    // a seam onto the one implementation, not a second copy.
+    ({ detectHostEmbed } = await import("./dist/detect.js"));
+  } catch {
+    ok("detect.js is built", false, "missing — run `npm run build:ext`");
+    return;
+  }
+
+  // A fake document that "has" exactly the selectors it is given. Detection only calls
+  // `querySelector`, so a stub for that one method is the whole contract.
+  const docWith = (...selectors) => ({
+    querySelector: (selector) => (selectors.includes(selector) ? { selector } : null),
+  });
+
+  // `globalThis.bluepencilAttach` is process-global state: set it only for the case that needs it
+  // and restore whatever was there, so the cases cannot leak into one another.
+  const hadAttach = Object.prototype.hasOwnProperty.call(globalThis, "bluepencilAttach");
+  const previousAttach = globalThis.bluepencilAttach;
+  delete globalThis.bluepencilAttach;
+  try {
+    ok("a <bluepencil-notes> element detects as \"element\"",
+      detectHostEmbed(docWith("bluepencil-notes")) === "element");
+
+    ok("an attach.js script detects as \"loader\"",
+      detectHostEmbed(docWith('script[src*="attach.js"]')) === "loader");
+
+    globalThis.bluepencilAttach = {};
+    ok("a bluepencilAttach global detects as \"loader\"",
+      detectHostEmbed(docWith()) === "loader");
+    delete globalThis.bluepencilAttach;
+
+    ok("a [data-endpoint] element detects as \"hub\"",
+      detectHostEmbed(docWith("[data-endpoint]")) === "hub");
+
+    ok("a page with none of the three detects as null",
+      detectHostEmbed(docWith()) === null);
+
+    // Precedence: the first match wins, in the order element → loader → hub.
+    ok("the element wins over the loader and the hub",
+      detectHostEmbed(docWith("bluepencil-notes", 'script[src*="attach.js"]', "[data-endpoint]")) === "element");
+    ok("the loader wins over the hub",
+      detectHostEmbed(docWith('script[src*="attach.js"]', "[data-endpoint]")) === "loader");
+  } finally {
+    if (hadAttach) globalThis.bluepencilAttach = previousAttach;
+    else delete globalThis.bluepencilAttach;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
 /* browser checks — the parts that only a real browser can answer               */
 /* -------------------------------------------------------------------------- */
 
@@ -360,6 +446,15 @@ async function checkInBrowser() {
   try {
     await browser.navigate(`http://127.0.0.1:${HOST_PORT}/`);
     await browser.waitFor(`document.readyState === "complete"`);
+
+    // #70, the "without one" half of the issue's two cases: this fixture carries no embed of its own,
+    // so the extension is the only possible source of the layer. Asserting the page starts clean is
+    // what makes the later "the layer mounted" mean the extension put it there — on a page that had
+    // one all along that assertion would pass without the worker doing anything.
+    const preMount = await browser.evaluate(
+      "document.querySelectorAll('bluepencil-notes').length",
+    );
+    ok("the plain host starts without a layer of its own", preMount === 0, `found ${preMount}`);
 
     // 1. The service worker must exist at all. A manifest error stops it, and every later
     //    assertion would then fail with a confusing "nothing injected" instead.
@@ -801,6 +896,226 @@ async function checkInBrowser() {
           : fields.map((f) => `${f.label} ${f.ratio}:1`).join(", "));
     }
     await browser.setColorScheme("light");
+
+    // 7. A page that already embeds the layer (#70).
+    //
+    //    The extension's own `__bluepencilMounted` guard only knows about a *second injection by
+    //    itself*; it says nothing about a `<bluepencil-notes>` element the page created, so the old
+    //    code stacked a second overlay over the same notes. Detection now runs before every mount and,
+    //    by default, steps aside — and it must say *why*, which is what the toolbar badge carries.
+    //
+    //    A fixture of its own (`/embed`) rather than a flag on the strict-CSP host: the case is about
+    //    the page's own markup, and mixing the two would make a failure ambiguous.
+    await browser.attachTo((t) => t.targetId === worker.targetId);
+    const embedTabId = await browser.evaluate(
+      `(async () => {
+        const tab = await chrome.tabs.create({ url: 'http://127.0.0.1:${HOST_PORT}/embed', active: true });
+        return tab.id ?? null;
+      })()`,
+    );
+    ok("the already-embedded fixture opens in its own tab", embedTabId !== null, `tab id ${embedTabId}`);
+
+    await browser.attachToPageWhere((t) => t.url.includes("/embed"));
+    await browser.waitFor('document.readyState === "complete"');
+
+    // Arm the page's own listener *before* the mount. The report is a `postMessage` from the MAIN
+    // world, and a listener that arrives afterwards would miss a mount that is deliberately silent.
+    // This is the page seeing, first-hand, that detection named a source — not the badge echoing it.
+    await browser.evaluate(`(() => {
+      window.__BP_HOST_REPORTS__ = [];
+      window.addEventListener('message', (event) => {
+        if (event.source !== window) return;
+        const data = event.data;
+        if (data && data.source === 'bluepencil-extension' && data.kind === 'host-embed-detected') {
+          window.__BP_HOST_REPORTS__.push({ host: data.host ?? null });
+        }
+      });
+      return 'armed';
+    })()`);
+
+    // Mount through the worker's own entry point, exactly as the toolbar click would. On this page it
+    // must find the embed first and step aside rather than append a second element.
+    await browser.attachTo((t) => t.targetId === worker.targetId);
+    const embedMount = await browser.evaluate(
+      `(async () => {
+        try {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const tab = tabs[0];
+          if (!tab || tab.id === undefined) return { ok: false, error: 'no active tab' };
+          return await self.__bluepencilModule.mountOnTab(tab.id, tab.url ?? '');
+        } catch (error) {
+          return { ok: false, error: String(error) };
+        }
+      })()`,
+    );
+    ok("the worker's mount call completes on an already-embedded page",
+      embedMount?.ok === true, `mount: ${JSON.stringify(embedMount)}`);
+
+    // The page → bridge → worker relay is asynchronous, so poll rather than sleep a fixed time.
+    await browser.attachToPageWhere((t) => t.url.includes("/embed"));
+    await browser.waitFor("(window.__BP_HOST_REPORTS__ || []).length > 0");
+    const embedState = JSON.parse(await browser.evaluate(`(() => {
+      const layers = document.querySelectorAll('bluepencil-notes');
+      return JSON.stringify({
+        reports: window.__BP_HOST_REPORTS__ ?? [],
+        layers: layers.length,
+        ownLayer: document.getElementById('host-layer') !== null,
+        // The page's own element is the one with the fixture's id; anything else would be the
+        // extension's. Counting by "not the page's own" avoids depending on which attributes the
+        // extension writes, which change with the store the options step selected above.
+        extensionLayers: document.querySelectorAll('bluepencil-notes:not(#host-layer)').length,
+      });
+    })()`));
+
+    // Note: the page's *own* element legitimately renders its own `.bp-root` — loading the layer's
+    // code is what defines the custom element, and the fixture's element upgrades with it. What must
+    // not happen is a *second* element: that is the count below, not the presence of any UI at all.
+    ok("the page's own <bluepencil-notes> is not duplicated",
+      embedState.layers === 1 && embedState.ownLayer === true && embedState.extensionLayers === 0,
+      `layers=${embedState.layers} own=${embedState.ownLayer} extensionLayers=${embedState.extensionLayers}`);
+    ok("the extension surfaces the detected source as \"element\"",
+      embedState.reports.some((r) => r.host === "element"), JSON.stringify(embedState.reports));
+
+    // The badge is the user-facing half of the same fact: it names what was found. The chain under
+    // test is the full one — MAIN world → bridge → worker → chrome.action.
+    await browser.attachTo((t) => t.targetId === worker.targetId);
+    const readBadge = `(async () => {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const id = tabs[0]?.id;
+      if (id === undefined) return null;
+      return JSON.stringify({
+        text: await chrome.action.getBadgeText({ tabId: id }),
+        title: await chrome.action.getTitle({ tabId: id }),
+      });
+    })()`;
+    let badgeState = null;
+    try {
+      await browser.waitFor(
+        `(async () => {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const id = tabs[0]?.id;
+          return id !== undefined && (await chrome.action.getBadgeText({ tabId: id })) === 'host';
+        })()`,
+        { timeoutMs: 5000 },
+      );
+      badgeState = JSON.parse(await browser.evaluate(readBadge));
+    } catch {
+      badgeState = null;
+    }
+    ok("the toolbar badge marks the tab as host-embedded, naming the source",
+      badgeState !== null && badgeState.text === "host" &&
+        /already embeds it \(element\)/.test(badgeState.title ?? ""),
+      JSON.stringify(badgeState));
+
+    // 7b. The override (#70): stepping aside must not latch. The page's own embed is the *default*
+    //     reason to stay out, not a final verdict — otherwise the "also load" switch could never work,
+    //     because the embed would already have decided for the tab.
+    await browser.attachTo((t) => t.targetId === worker.targetId);
+    const forcedMount = await browser.evaluate(
+      `(async () => {
+        try {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const tab = tabs[0];
+          if (!tab || tab.id === undefined) return { ok: false, error: 'no active tab' };
+          return await self.__bluepencilModule.mountOnTab(tab.id, tab.url ?? '', { force: true });
+        } catch (error) {
+          return { ok: false, error: String(error) };
+        }
+      })()`,
+    );
+    ok("a forced mount still works on an already-embedded page",
+      forcedMount?.ok === true, `mount: ${JSON.stringify(forcedMount)}`);
+
+    await browser.attachToPageWhere((t) => t.url.includes("/embed"));
+    await browser.waitFor("document.querySelectorAll('bluepencil-notes').length >= 2");
+    const forcedState = JSON.parse(await browser.evaluate(`(() => {
+      return JSON.stringify({
+        layers: document.querySelectorAll('bluepencil-notes').length,
+        // "The extension's own" is the element that is not the page's: identified by the page's id,
+        // not by an adapter attribute — the options step above switched the store to a hub, so the
+        // extension's element carries an endpoint instead.
+        addedLayers: document.querySelectorAll('bluepencil-notes:not(#host-layer)').length,
+      });
+    })()`));
+    ok("the forced mount adds the extension's own layer alongside the page's",
+      forcedState.layers >= 2 && forcedState.addedLayers >= 1, JSON.stringify(forcedState));
+
+    // Once the layer is up, "this page already embeds it" no longer describes the tab, so the badge
+    // must go back to nothing — otherwise it would keep claiming a step-aside that was overridden.
+    await browser.attachTo((t) => t.targetId === worker.targetId);
+    let badgeCleared = false;
+    try {
+      await browser.waitFor(
+        `(async () => {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const id = tabs[0]?.id;
+          return id !== undefined && (await chrome.action.getBadgeText({ tabId: id })) === '';
+        })()`,
+        { timeoutMs: 5000 },
+      );
+      badgeCleared = true;
+    } catch {
+      badgeCleared = false;
+    }
+    ok("the host-embed badge is cleared once the layer is up", badgeCleared,
+      `badge=${badgeCleared ? "cleared" : "still set"}`);
+
+    // 7c. The page → bridge → worker force path (#70, F1). 7b proved the worker forwards a `force`
+    //     handed *directly* to `mountOnTab`; this proves the page's documented
+    //     `bluepencil:mount { force: true }` survives the bridge hop too — the hop that silently
+    //     dropped the flag before. It needs a fresh tab: a successful mount is final, so the
+    //     already-mounted embed tab could not mount a second time. `/embed-forced` is served by the
+    //     same `/embed` fixture route (the host matches on the prefix) under a URL this test can
+    //     attach to unambiguously.
+    await browser.attachTo((t) => t.targetId === worker.targetId);
+    const forceTabId = await browser.evaluate(
+      `(async () => {
+        const tab = await chrome.tabs.create({ url: 'http://127.0.0.1:${HOST_PORT}/embed-forced', active: true });
+        return tab.id ?? null;
+      })()`,
+    );
+    ok("the force-path fixture opens in its own tab", forceTabId !== null, `tab id ${forceTabId}`);
+
+    // A plain mount first: it injects the isolated-world bridge into this tab, and — being unforced —
+    // steps aside. Without the bridge the page's own `postMessage` could not reach the worker at all.
+    const bridgeMount = await browser.evaluate(
+      `(async () => {
+        try {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const tab = tabs[0];
+          if (!tab || tab.id === undefined) return { ok: false, error: 'no active tab' };
+          return await self.__bluepencilModule.mountOnTab(tab.id, tab.url ?? '');
+        } catch (error) {
+          return { ok: false, error: String(error) };
+        }
+      })()`,
+    );
+    ok("the bridge is in place before the page's own force request",
+      bridgeMount?.ok === true, `mount: ${JSON.stringify(bridgeMount)}`);
+
+    await browser.attachToPageWhere((t) => t.url.includes("/embed-forced"));
+    await browser.waitFor('document.readyState === "complete"');
+    // Fire the page's documented override. It is not awaited: its answer returns over the bridge's
+    // `postMessage` channel, and the observable result — the extension's own layer — is what matters.
+    await browser.evaluate(`(() => {
+      window.postMessage(
+        { source: 'bluepencil-page', kind: 'request-mount', force: true, requestId: 'force-mount' },
+        window.location.origin,
+      );
+      return 'posted';
+    })()`);
+    // The layer can only appear if `force` crossed the bridge: an unforced mount on this page steps
+    // aside by default. `#host-layer` is the page's own element, so anything else is the extension's.
+    await browser.waitFor(
+      "document.querySelectorAll('bluepencil-notes:not(#host-layer)').length >= 1",
+      { timeoutMs: 5000 },
+    );
+    const forceRelay = JSON.parse(await browser.evaluate(`(() => JSON.stringify({
+      layers: document.querySelectorAll('bluepencil-notes').length,
+      addedLayers: document.querySelectorAll('bluepencil-notes:not(#host-layer)').length,
+    }))()`));
+    ok("the page's request-mount { force: true } survives page → bridge → worker",
+      forceRelay.layers >= 2 && forceRelay.addedLayers >= 1, JSON.stringify(forceRelay));
   } finally {
     await browser.close();
     server.close();
@@ -813,6 +1128,9 @@ try {
   // Runs before (and independently of) the browser checks: it needs no Chrome, so a regression in
   // the retry bookkeeping is caught even on a machine with no usable browser.
   await checkProbeBookkeeping();
+  // Same reason: the detection that decides mount-or-step-aside is a pure function, so it is pinned
+  // without a browser too (#70).
+  await checkDetect();
   requireBrowser({ browser: findChrome() });
   await checkInBrowser();
 } catch (error) {

@@ -64,6 +64,15 @@ export interface ExtensionSettings {
   tokenExpiresAt: string;
   /** A name for the device, so a revocation list stays readable by a human. */
   deviceName: string;
+  /**
+   * Whether the layer may mount on a page that already embeds Bluepencil itself (#70).
+   *
+   * A page can carry the layer on its own — a `<bluepencil-notes>` element, the embed loader, or a
+   * hub endpoint. Stacking the extension's layer on top of that doubles the overlay and is never what
+   * the page asked for, so the default is `false`. Setting it to `true` is the explicit override: the
+   * reviewer wants *their* layer on every page, host embed or not.
+   */
+  mountAlongsideHost: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -77,6 +86,8 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   token: "",
   tokenExpiresAt: "",
   deviceName: "",
+  // Off by default is the whole point of #70: the page's own embed wins unless the user says otherwise.
+  mountAlongsideHost: false,
 };
 
 /**
@@ -123,6 +134,13 @@ export function normalizeSettings(value: unknown): ExtensionSettings {
         ? raw.tokenExpiresAt
         : DEFAULT_SETTINGS.tokenExpiresAt,
     deviceName: typeof raw.deviceName === "string" ? raw.deviceName : DEFAULT_SETTINGS.deviceName,
+    // A boolean, so a hand-edited blob cannot spell "true" as a string and have it read as opt-in.
+    // Anything that is not literally `true` means off, which is the safe direction for a switch that
+    // lets the extension stack a second layer onto a page that already has one (#70).
+    mountAlongsideHost:
+      typeof raw.mountAlongsideHost === "boolean"
+        ? raw.mountAlongsideHost
+        : DEFAULT_SETTINGS.mountAlongsideHost,
   };
 }
 

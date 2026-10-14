@@ -70,8 +70,13 @@ async function main() {
       bridge: join(here, "src", "bridge.ts"),
       options: join(here, "src", "options.ts"),
       // The registered MAIN-world bootstrap. Not a module: it is injected as a classic script into
-      // the page's own world, so it must be self-contained and must not import anything.
+      // the page's own world, so esbuild bundles it into one self-contained file — it inlines the
+      // local `./detect` import — and it must never keep a runtime import or a fetch of its own.
       bootstrap: join(here, "src", "bootstrap.ts"),
+      // Host-embed detection (#70), emitted standalone so the smoke test can exercise the pure
+      // function against fake documents without a browser. The bootstrap imports the same source, so
+      // there is one implementation — this is a test seam, not a second one.
+      detect: join(here, "src", "detect.ts"),
     },
     bundle: true,
     format: "esm",
@@ -92,7 +97,7 @@ async function main() {
   // A build that produced no files is a broken build; catch it here rather than in a browser.
   const produced = await readdir(out);
   const required = ["manifest.json", "sw.js", "bridge.js", "bootstrap.js", "options.html", "options.js",
-    "bluepencil.element.iife.js"];
+    "detect.js", "bluepencil.element.iife.js"];
   const missing = required.filter((name) => !produced.includes(name));
   if (missing.length > 0) throw new Error(`build did not produce: ${missing.join(", ")}`);
 

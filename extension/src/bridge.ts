@@ -51,6 +51,13 @@ type Envelope = {
   error?: unknown;
   /** Only on a `toggle`; absent means "switch on". */
   enabled?: unknown;
+  /**
+   * Only on a `request-mount`: the caller's explicit "mount anyway" (#70). Forwarded to the worker as
+   * `force` so `bluepencil:mount { force: true }` reaches the layer instead of a plain mount.
+   */
+  force?: unknown;
+  /** Only on a `host-embed-detected` report: which shape the page's own embed took (#70). */
+  host?: unknown;
   /** Echoed back on the answer, so a page can match a reply to its request. */
   requestId?: unknown;
   /** Only on a `storage` relay: the operation and its payload. */
@@ -143,7 +150,13 @@ window.addEventListener("message", (event: MessageEvent) => {
             type: "bluepencil:toggle",
             ...(typeof data.enabled === "boolean" ? { enabled: data.enabled } : {}),
           }
-        : { type: "bluepencil:mount" },
+        : {
+            type: "bluepencil:mount",
+            // The documented per-call override (#70) has to survive this hop: without it a page's
+            // `request-mount { force: true }` arrives at the worker as a plain mount and the default
+            // step-aside wins. Only a real boolean is forwarded, never a truthy string.
+            ...(typeof data.force === "boolean" ? { force: data.force } : {}),
+          },
     )
     .then((reply: unknown) => answerPage(data, reply))
     .catch((error: unknown) =>
@@ -151,22 +164,33 @@ window.addEventListener("message", (event: MessageEvent) => {
     );
 });
 
-// MAIN world → here → worker. Only the mount and toggle outcomes are forwarded, and only the fields
-// a caller needs; nothing about the page's content travels in this direction.
+// MAIN world → here → worker. Only the mount outcome, the toggle outcome and the "the page already
+// embeds the layer" report are forwarded, and only the fields a caller needs; nothing about the
+// page's content travels in this direction.
 window.addEventListener("message", (event: MessageEvent) => {
   if (event.source !== window) return;
   const data = event.data as Envelope | null;
   if (typeof data !== "object" || data === null) return;
   if (data.source !== "bluepencil-extension") return;
-  // Both outcomes are forwarded, not just the mount's: a page that switched the layer off has no
-  // other way to learn that it worked, and swallowing the answer would leave it guessing.
-  if (data.kind !== "mounted" && data.kind !== "toggled") return;
+  // All three outcomes are forwarded, not just the mount's: a page that switched the layer off has
+  // no other way to learn that it worked, and the worker needs the host-embed report to put up the
+  // toolbar badge (#70) — the MAIN world cannot reach `chrome` to do either itself.
+  if (data.kind !== "mounted" && data.kind !== "toggled" && data.kind !== "host-embed-detected") {
+    return;
+  }
 
   void chrome.runtime
-    .sendMessage({
-      type: "bluepencil:mounted",
-      ok: data.ok === true,
-      error: typeof data.error === "string" ? data.error : undefined,
-    })
+    .sendMessage(
+      data.kind === "host-embed-detected"
+        ? {
+            type: "bluepencil:host-embed",
+            host: typeof data.host === "string" ? data.host : undefined,
+          }
+        : {
+            type: "bluepencil:mounted",
+            ok: data.ok === true,
+            error: typeof data.error === "string" ? data.error : undefined,
+          },
+    )
     .catch(() => undefined);
 });

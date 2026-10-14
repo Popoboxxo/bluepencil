@@ -36,12 +36,18 @@
 import { createChromeStorageAdapter } from "../../dist/adapters/chrome-storage.js";
 import type { ChromeStorageArea } from "../../dist/adapters/chrome-storage.js";
 import { defineBluepencilElement, registerAdapter } from "../../dist/bluepencil.element.js";
+import { detectHostEmbed, type HostEmbedSource } from "./detect";
 import { elementAttributesFor } from "./handoff";
 import type { ExtensionSettings } from "./settings";
 
 /** The settings for this mount, placed here by the worker. Absent until the user asks for the layer. */
 const CONFIG_KEY = "__bluepencilConfig__";
-/** Set once the layer is up, so a second injection in the same document is a no-op. */
+/**
+ * Set once the layer is up, so a second injection in the same document is a no-op.
+ *
+ * Deliberately *not* set when the mount steps aside for a host embed (#70): that is a decision the
+ * user can reverse in the same document, so it must not latch.
+ */
 const MOUNTED_KEY = "__bluepencilMounted";
 /** The in-flight storage relays, shared by every adapter area this document creates. */
 const STORAGE_PENDING_KEY = "__bluepencilStoragePending";
@@ -66,29 +72,57 @@ interface BridgeReply {
   error?: string;
 }
 
+/** The overrides a caller may pass when it asks the layer to mount. */
+interface MountOptions {
+  /**
+   * Mount even when the page already embeds the layer (#70).
+   *
+   * Set by the options page's "also load the layer on pages that already embed Bluepencil" switch, or
+   * by an explicit `bluepencil:mount { force: true }`. It is never inferred: stepping aside is the
+   * default, and running a second layer is always something the user asked for.
+   */
+  force?: boolean;
+}
+
 type BpGlobal = typeof globalThis & {
   [CONFIG_KEY]?: MountConfig;
   [MOUNTED_KEY]?: boolean;
   [STORAGE_PENDING_KEY]?: Map<string, (reply: BridgeReply) => void>;
-  /** Lets the worker wake this script on a tab that was already open. */
-  __bluepencilTryMount?: () => void;
+  /** Lets the worker wake this script on a tab that was already open, carrying its mount options. */
+  __bluepencilTryMount?: (options?: MountOptions) => void;
 };
 
 const g = globalThis as BpGlobal;
 
 // A registered script runs on every matching document, whether or not the user asked for the layer.
 // Doing nothing until the configuration arrives is what keeps that cheap and unobtrusive. The hook
-// lets the worker wake it on an already-open tab, where the registration has not taken effect yet.
+// lets the worker wake it on an already-open tab, where the registration has not taken effect yet —
+// and it forwards the worker's options, so an explicit force is not lost between the two calls.
 g.__bluepencilTryMount = mount;
 
 if (g[MOUNTED_KEY] !== true && g[CONFIG_KEY] !== undefined) {
   mount();
 }
 
-function mount(): void {
+function mount(options?: MountOptions): void {
   const config = g[CONFIG_KEY];
   if (config === undefined) return;
   if (g[MOUNTED_KEY] === true) return;
+
+  // #70: before mounting, ask whether the page already carries the layer itself. On such a page a
+  // second overlay is redundant at best and a bug at worst — the two layers would fight over the same
+  // notes. The detection reads the page's own markup (`detect.ts`) and the default is to step aside.
+  //
+  // `MOUNTED_KEY` is deliberately NOT set on this path: the page's embed does not make the decision
+  // final, so a later, explicit activation (the options switch, or a forced mount) must still be able
+  // to bring the layer up in this same document.
+  const host = detectHostEmbed();
+  const forced = options?.force === true || config.settings.mountAlongsideHost === true;
+  if (host !== null && !forced) {
+    reportHostEmbed(host);
+    return;
+  }
+
   g[MOUNTED_KEY] = true;
 
   try {
@@ -213,6 +247,19 @@ function report(ok: boolean, error: string): void {
   // runs in the page, which has no `chrome`.
   window.postMessage(
     { source: "bluepencil-extension", kind: "mounted", ok, error: error || undefined },
+    window.location.origin === "null" ? "*" : window.location.origin,
+  );
+}
+
+/**
+ * Tell the worker (through the bridge) that the page owns the layer already, and which shape it was.
+ *
+ * Nothing mounted: this is the "I stepped aside" report (#70). The worker turns it into the toolbar
+ * badge, so a click that appears to do nothing says *why* — the page embeds Bluepencil itself.
+ */
+function reportHostEmbed(host: HostEmbedSource): void {
+  window.postMessage(
+    { source: "bluepencil-extension", kind: "host-embed-detected", host },
     window.location.origin === "null" ? "*" : window.location.origin,
   );
 }

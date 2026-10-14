@@ -12,9 +12,11 @@ npm run build:ext     # writes extension/dist/
 Then load it: `chrome://extensions` → enable *Developer mode* → *Load unpacked* → pick
 `extension/dist`.
 
-`npm run smoke:ext` verifies the build: 47 checks, of which the last dozen drive a real Chrome against
-a host page with `script-src 'self'` and assert the layer actually mounted there. The options page
-has its own cases in that suite — the credential mode, the header it means, and the expiry line —
+`npm run smoke:ext` verifies the build: 67 checks — static artefact checks, the host-embed detection
+pinned against fake documents without a browser, and a real Chrome run. The browser run mounts the
+layer against a host page with `script-src 'self'`, asserts it actually mounted, and drives a second
+page that already carries `<bluepencil-notes>` to prove the extension steps aside there. The options
+page has its own cases in that suite — the credential mode, the header it means, and the expiry line —
 because the settings UI is the only place a credential is entered and it was otherwise untested.
 
 ### From a release
@@ -33,6 +35,31 @@ of an item, never create one.
 ## What it looks for on a page
 
 Nothing. The extension injects only when you ask it to, and only into the tab you are looking at.
+
+### A page that already embeds Bluepencil
+
+Before it mounts, the extension checks whether the page carries the layer on its own (`#70`). A page
+can do that in three ways, and the check is a plain read of the page's own markup — never a guess
+about intent:
+
+| What the page has | Reported as |
+| --- | --- |
+| A `<bluepencil-notes>` element | `element` |
+| The one-tag loader — a `script[src*="attach.js"]`, or the `bluepencilAttach` global it installs | `loader` |
+| An element carrying `[data-endpoint]` | `hub` |
+
+The first match wins, in that order: the element is unambiguous, the loader is the documented way to
+create one, and a bare `[data-endpoint]` is the loosest signal. When any of them is found the
+extension **steps aside by default** — mounting would put a second overlay over the same notes, with
+its own store, and no way for a reviewer to tell which note went where.
+
+A stepped-aside tab is not a silent no-op: the toolbar badge shows `host` and its tooltip names the
+source that was found (element, loader or hub), so a click that appears to do nothing says why.
+
+To run your own layer on such a page anyway, tick **Also load the layer on pages that already embed
+Bluepencil** in the options page (off by default). The same override is available per call as
+`bluepencil:mount { force: true }`. Stepping aside does not latch: a later explicit activation brings
+the layer up in the same document, even though the page still embeds its own.
 
 ## How it gets in, and why it is built that way
 
