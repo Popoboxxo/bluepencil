@@ -270,6 +270,7 @@ export type {
   NoteFilter,
   NoteIntent,
   NotePatch,
+  NoteSeverity,
   NoteSource,
   NoteStatus,
   NoteType,

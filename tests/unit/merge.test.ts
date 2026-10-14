@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { BluepencilValidationError, createNote } from "../../src/core/model";
-import type { Environment, Message, Note, NoteDraft, NoteIntent, NoteStatus, NoteType } from "../../src/core/model";
+import type { Environment, Message, Note, NoteDraft, NoteIntent, NoteSeverity, NoteStatus, NoteType } from "../../src/core/model";
 import { mergeNotes } from "../../src/data/index";
 
 const T = "2026-09-14T18:20:00.000Z";
@@ -26,6 +26,7 @@ interface NoteInput {
   status?: NoteStatus;
   intent?: NoteIntent;
   type?: NoteType;
+  severity?: NoteSeverity;
   body?: string;
   environment?: Environment;
   sessionRef?: string;
@@ -42,6 +43,7 @@ function makeNote(input: NoteInput): Note {
     now: input.now ?? T,
     status: input.status,
     intent: input.intent,
+    severity: input.severity,
     environment: input.environment,
     sessionRef: input.sessionRef,
     messages: input.messages,
@@ -307,5 +309,38 @@ describe("environment isolation (NFR-18)", () => {
   it("accepts a matching environment", () => {
     const liveStore = [makeNote({ id: "n-1", environment: "live" })];
     expect(mergeNotes(liveStore, liveBundle).added).toBe(1);
+  });
+});
+
+/* FR-3.6: the severity is ordinary note content — an upsert carries the incoming value and a
+   divergence is reported with the field name like any other. */
+describe("severity in the merge (FR-3.6)", () => {
+  it("carries the incoming severity through an upsert and stays idempotent", () => {
+    const base = [makeNote({ id: "n-bug", type: "bug", body: "overlaps the label" })];
+    const incoming = [
+      {
+        ...makeNote({ id: "n-bug", type: "bug", body: "overlaps the label", severity: "blocker" }),
+        updatedAt: LATER,
+      },
+    ];
+
+    const result = mergeNotes(base, incoming, { mode: "upsert", onConflict: "keep-incoming" });
+    expect(result).toMatchObject({ added: 0, updated: 1, skipped: 0 });
+    expect(at(result.notes, 0).severity).toBe("blocker");
+
+    const second = mergeNotes(result.notes, incoming, { mode: "upsert", onConflict: "keep-incoming" });
+    expect(second).toMatchObject({ added: 0, updated: 0, skipped: 1 });
+    expect(second.notes).toEqual(result.notes);
+  });
+
+  it("names severity among the diverging fields of a conflict", () => {
+    const existing = [makeNote({ id: "n-bug", type: "bug", body: "overlaps the label" })];
+    const incoming = [makeNote({ id: "n-bug", type: "bug", body: "overlaps the label", severity: "major" })];
+
+    const result = mergeNotes(existing, incoming);
+    expect(result).toMatchObject({ added: 0, updated: 0, skipped: 1 });
+    expect(result.conflicts).toHaveLength(1);
+    expect(at(result.conflicts, 0).reason).toContain("severity");
+    expect(at(result.notes, 0).severity).toBeUndefined();
   });
 });

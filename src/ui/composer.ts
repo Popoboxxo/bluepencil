@@ -12,7 +12,7 @@
  *  - render every user value as **text** (FR-9.3): `textContent` only, no HTML anywhere.
  */
 
-import type { Anchor, CapturedContext, NoteIntent, NoteType } from "../core/model";
+import type { Anchor, CapturedContext, NoteIntent, NoteSeverity, NoteType } from "../core/model";
 import { applyTranslations, type Translate } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 
@@ -32,6 +32,8 @@ export interface ComposerSaveInput {
   body: string;
   type: NoteType;
   intent: NoteIntent;
+  /** FR-3.6: only set for `type: "bug"`; omitted for every other type. */
+  severity?: NoteSeverity;
 }
 
 /** `{ ok: false }` means "the layer refused" — the composer stays open and shows `reasonKey`. */
@@ -101,6 +103,7 @@ export function createComposer(options: ComposerOptions): Composer {
   let open = false;
   let selectedType: NoteType = "text";
   let selectedIntent: NoteIntent = "implement";
+  let selectedSeverity: NoteSeverity | null = null;
   let previousActive: Element | null = null;
 
   const element = createEl(doc, "div", "bp-composer");
@@ -152,6 +155,25 @@ export function createComposer(options: ComposerOptions): Composer {
   const feedbackButton = intentButton("feedback", "composer.intent.feedback");
   intentRow.append(textNode(doc, "span", "bp-hint", "composer.intentLabel"), implementButton, feedbackButton);
 
+  // FR-3.6: the severity switch is only shown for a bug report; every other topic hides it.
+  const severityRow = createEl(doc, "div", "bp-field");
+  const severityButton = (value: NoteSeverity, key: MessageKey): HTMLButtonElement => {
+    const node = textNode(doc, "button", "bp-btn", key);
+    node.setAttribute("type", "button");
+    node.setAttribute("data-bp-action", `composer-severity-${value}`);
+    node.setAttribute("aria-pressed", "false");
+    return node as HTMLButtonElement;
+  };
+  const severityButtons: [NoteSeverity, HTMLButtonElement][] = [
+    ["blocker", severityButton("blocker", "composer.severity.blocker")],
+    ["major", severityButton("major", "composer.severity.major")],
+    ["minor", severityButton("minor", "composer.severity.minor")],
+  ];
+  severityRow.append(
+    textNode(doc, "span", "bp-hint", "composer.severityLabel"),
+    ...severityButtons.map(([, button]) => button),
+  );
+
   const feedbackNote = textNode(doc, "p", "bp-hint", "composer.feedbackOnlyActive");
   feedbackNote.setAttribute("data-bp-part", "composer-feedback-note");
   feedbackNote.hidden = true;
@@ -195,6 +217,7 @@ export function createComposer(options: ComposerOptions): Composer {
     targetLine,
     typeRow,
     intentRow,
+    severityRow,
     feedbackNote,
     bodyLabel,
     bodyInput,
@@ -275,6 +298,11 @@ export function createComposer(options: ComposerOptions): Composer {
     feedbackButton.setAttribute("aria-pressed", selectedIntent === "feedback" ? "true" : "false");
     implementButton.classList.toggle("is-active", selectedIntent === "implement");
     feedbackButton.classList.toggle("is-active", selectedIntent === "feedback");
+    severityRow.hidden = selectedType !== "bug";
+    for (const [value, button] of severityButtons) {
+      button.setAttribute("aria-pressed", selectedSeverity === value ? "true" : "false");
+      button.classList.toggle("is-active", selectedSeverity === value);
+    }
     feedbackNote.hidden = !options.feedbackOnly();
     applyTranslations(element, options.t);
   }
@@ -316,17 +344,27 @@ export function createComposer(options: ComposerOptions): Composer {
     else if (action === "composer-type-bug") selectType("bug");
     else if (action === "composer-intent-implement") selectIntent("implement");
     else if (action === "composer-intent-feedback") selectIntent("feedback");
+    else if (action === "composer-severity-blocker") selectSeverity("blocker");
+    else if (action === "composer-severity-major") selectSeverity("major");
+    else if (action === "composer-severity-minor") selectSeverity("minor");
     else return false;
     return true;
   }
 
   function selectType(value: NoteType): void {
     selectedType = value;
+    // FR-3.6: severity is meaningful only for a bug — leaving the bug topic clears the choice.
+    if (value !== "bug") selectedSeverity = null;
     renderForm();
   }
 
   function selectIntent(value: NoteIntent): void {
     selectedIntent = value;
+    renderForm();
+  }
+
+  function selectSeverity(value: NoteSeverity): void {
+    selectedSeverity = value;
     renderForm();
   }
 
@@ -339,6 +377,7 @@ export function createComposer(options: ComposerOptions): Composer {
     bodyInput.value = "";
     reportError(undefined);
     target = null;
+    selectedSeverity = null;
     restoreFocus();
   }
 
@@ -349,7 +388,13 @@ export function createComposer(options: ComposerOptions): Composer {
       reportError("composer.error.empty");
       return;
     }
-    const input: ComposerSaveInput = { body, type: selectedType, intent: selectedIntent };
+    const input: ComposerSaveInput = {
+      body,
+      type: selectedType,
+      intent: selectedIntent,
+      // FR-3.6: only a bug carries a severity; the field is omitted otherwise.
+      ...(selectedType === "bug" && selectedSeverity !== null ? { severity: selectedSeverity } : {}),
+    };
     let result: ComposerSaveResult | Promise<ComposerSaveResult>;
     try {
       result = options.onSave(input);
@@ -389,6 +434,7 @@ export function createComposer(options: ComposerOptions): Composer {
       target = next;
       selectedType = next.type;
       selectedIntent = options.feedbackOnly() ? "feedback" : "implement";
+      selectedSeverity = null;
       bodyInput.value = "";
       reportError(undefined);
       renderTarget();

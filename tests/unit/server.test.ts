@@ -347,6 +347,28 @@ describe("hub handler — the documented endpoints", () => {
       expect(jsonOf(response).error.message).toContain("status must be open, done or needs_decision");
       expect(harness.state.notes[0]?.status).toBe("open");
     });
+
+    it("applies a severity patch and rejects an unknown severity value (FR-3.6)", () => {
+      const harness = createHarness({ notes: [note("n1", "2026-09-15T09:00:01.000Z", { type: "bug" })] });
+      const response = harness.call(request("PATCH", "/notes/n1", { body: { severity: "major" } }));
+      expect(response.status).toBe(200);
+      expect(jsonOf(response).note.severity).toBe("major");
+      expect(harness.state.notes[0]?.severity).toBe("major");
+      expect(harness.saves()).toBe(1);
+
+      const refusal = harness.call(request("PATCH", "/notes/n1", { body: { severity: "nope" } }));
+      expect(refusal.status).toBe(400);
+      expect(jsonOf(refusal).error.message).toContain("severity must be blocker, major or minor");
+      expect(harness.state.notes[0]?.severity).toBe("major");
+    });
+
+    it("drops a severity patched onto a non-bug note (FR-3.6)", () => {
+      const harness = createHarness({ notes: [note("n1", "2026-09-15T09:00:01.000Z")] });
+      const response = harness.call(request("PATCH", "/notes/n1", { body: { severity: "major" } }));
+      expect(response.status).toBe(200);
+      expect(jsonOf(response).note.severity).toBeUndefined();
+      expect(harness.state.notes[0]?.severity).toBeUndefined();
+    });
   });
 
   describe("POST {base}/notes/{id}/messages", () => {
@@ -1129,6 +1151,27 @@ describe("hub handler — a create body is not a guessing game", () => {
     expect(created.sessionRef).toBe("s1");
     expect(created.anchor.route).toBe("/cart");
     expect(created.ticketRef).toBe("T-1");
+  });
+
+  it("accepts a severity on a bug instead of refusing it, while an unknown field still 400s (FR-3.6)", () => {
+    const harness = createHarness();
+    const response = harness.call(
+      request("POST", "/notes", {
+        body: { type: "bug", body: "overlaps the label", anchor: { hook: "save" }, severity: "blocker" },
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(jsonOf(response).note.severity).toBe("blocker");
+    expect(harness.state.notes[0]?.severity).toBe("blocker");
+
+    const unknown = harness.call(
+      request("POST", "/notes", {
+        body: { type: "bug", body: "x", anchor: { hook: "save" }, bogusField: 1 },
+      }),
+    );
+    expect(unknown.status).toBe(400);
+    expect(jsonOf(unknown).error.code).toBe("invalid_payload");
+    expect(jsonOf(unknown).error.message).toContain("bogusField");
   });
 });
 

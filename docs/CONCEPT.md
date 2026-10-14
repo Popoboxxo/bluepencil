@@ -125,8 +125,11 @@ does not.
 ## 5. Core concepts
 
 **Note** — the unit of feedback. Fields: `id`, `author` (+ `author_type`), `type`
-(`text`/`design`/`bug`), `intent` (`implement`/`feedback`), `status` (`open`/`done`/`needs_decision`),
-`body`, `quote`, `anchor`, `context`, `route`, `session`, timestamps, `thread`.
+(`text`/`design`/`bug`), optional `severity` (`blocker`/`major`/`minor`, meaningful only for a
+bug and omitted otherwise), `intent` (`implement`/`feedback`), `status`
+(`open`/`done`/`needs_decision`), `body`, `quote`, `anchor`, `context`, `route`, `session`,
+timestamps, `thread`. Severity is orthogonal to `type`/`intent` and stays optional: a note without
+one is valid, and an unknown value on import degrades to "absent" rather than being refused.
 
 **Anchor** — a resolved path back to the element, in this order:
 `data-bluepencil`/`data-testid` hook → stored CSS path → text quote. The quote is the buffer
@@ -174,6 +177,8 @@ schema-versioned JSON file.
 
 * Three note categories: **text** (reviews content), **design** (reviews appearance, captures
   state) and **bug** (a defect report).
+* A bug note may additionally carry an optional **severity** (`blocker`/`major`/`minor`); it is
+  independent of the category switch and is omitted for text and design notes.
 * Click to annotate; a selection inside the element becomes the quote.
 * Floating, collapsible control bar + a handle that never disappears; keyboard-first
   (`J/K` navigate, `?` shortcut legend, `S` speaker notes in presentation use, `C`/`D` modes,

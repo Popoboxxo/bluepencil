@@ -73,6 +73,7 @@ function divergingFields(existing: Note, incoming: Note): string[] {
   if (left.environment !== right.environment) fields.push("environment");
   if ((left.sessionRef ?? null) !== (right.sessionRef ?? null)) fields.push("sessionRef");
   if ((left.ticketRef ?? null) !== (right.ticketRef ?? null)) fields.push("ticketRef");
+  if ((left.severity ?? null) !== (right.severity ?? null)) fields.push("severity");
   if (serializeCanonical(left.debug ?? null) !== serializeCanonical(right.debug ?? null)) fields.push("debug");
   if (left.createdAt !== right.createdAt) fields.push("createdAt");
   if (left.schemaVersion !== right.schemaVersion) fields.push("schemaVersion");
@@ -103,6 +104,8 @@ function mergeNoteInto(existing: Note, incoming: Note): Note {
     updatedAt: laterTimestamp(existing.updatedAt, incoming.updatedAt),
     ...(sessionRef !== undefined ? { sessionRef } : {}),
     type: incoming.type,
+    // FR-3.6: incoming content wins, like every other field of an upsert.
+    ...(incoming.severity !== undefined ? { severity: incoming.severity } : {}),
     intent: incoming.intent,
     status: incoming.status,
     body: incoming.body,

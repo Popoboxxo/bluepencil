@@ -55,6 +55,7 @@ interface ExportStrings {
   readonly noRoute: string;
   readonly none: string;
   readonly type: string;
+  readonly severity: string;
   readonly intent: string;
   readonly status: string;
   readonly source: string;
@@ -96,6 +97,7 @@ const STRINGS: Record<Language, ExportStrings> = {
     noRoute: "(no route)",
     none: "none",
     type: "Type",
+    severity: "Severity",
     intent: "Intent",
     status: "Status",
     source: "Source",
@@ -132,6 +134,7 @@ const STRINGS: Record<Language, ExportStrings> = {
     noRoute: "(ohne Route)",
     none: "keine",
     type: "Typ",
+    severity: "Schweregrad",
     intent: "Absicht",
     status: "Status",
     source: "Quelle",
@@ -278,6 +281,10 @@ function renderNote(note: Note, s: ExportStrings, headingLevel: number): string[
   lines.push(`${"#".repeat(headingLevel)} ${inline(note.id)} — ${note.type}/${note.intent}/${note.status}`);
 
   lines.push(bullet(s.type, note.type));
+  // FR-3.6: a bug's severity travels with the note; every other type carries none.
+  if (note.severity !== undefined) {
+    lines.push(bullet(s.severity, note.severity));
+  }
   lines.push(bullet(s.intent, note.intent));
   lines.push(bullet(s.status, note.status));
   lines.push(bullet(s.source, code(note.source)));

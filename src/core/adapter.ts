@@ -15,6 +15,7 @@ import {
   isEnvironment,
   isMessageKind,
   isNoteIntent,
+  isNoteSeverity,
   isNoteStatus,
   isNoteType,
   systemClock,
@@ -117,6 +118,10 @@ export function matchesFilter(note: Note, filter?: NoteFilter): boolean {
   if (filter.type !== undefined && note.type !== filter.type) {
     return false;
   }
+  // FR-3.6: an exact severity match; a filter is only ever set to a known value.
+  if (filter.severity !== undefined && note.severity !== filter.severity) {
+    return false;
+  }
   if (filter.intent !== undefined && note.intent !== filter.intent) {
     return false;
   }
@@ -179,6 +184,9 @@ export function applyPatch(note: Note, patch: AdapterPatch, now?: string): Note 
   if (patch.intent !== undefined && !isNoteIntent(patch.intent)) {
     issues.push("intent must be implement or feedback");
   }
+  if (patch.severity !== undefined && !isNoteSeverity(patch.severity)) {
+    issues.push("severity must be blocker, major or minor");
+  }
   if (patch.body !== undefined && (typeof patch.body !== "string" || patch.body.trim() === "")) {
     issues.push("body must be a non-empty string");
   }
@@ -198,6 +206,15 @@ export function applyPatch(note: Note, patch: AdapterPatch, now?: string): Note 
   }
   if (patch.intent !== undefined) {
     next.intent = patch.intent;
+  }
+  // FR-3.6: severity is meaningful only for a bug — a patch drops it on any other type.
+  if (patch.severity !== undefined) {
+    if (next.type === "bug") {
+      next.severity = patch.severity;
+    } else {
+      // Absent, not undefined: keep the key off the object entirely (repo-wide invariant).
+      delete next.severity;
+    }
   }
   if (patch.body !== undefined) {
     next.body = patch.body;
@@ -245,12 +262,16 @@ export function coerceNote(value: unknown): Note | null {
     return null;
   }
   const createdAt = typeof value.createdAt === "string" ? value.createdAt : systemClock.now();
+  const type = isNoteType(value.type) ? value.type : "text";
   const note: Note = {
     id,
     schemaVersion: typeof value.schemaVersion === "number" ? value.schemaVersion : 1,
     createdAt,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : createdAt,
-    type: isNoteType(value.type) ? value.type : "text",
+    type,
+    // FR-3.6: an unknown severity degrades to absent (mirrors the unknown-type fallback to `text`),
+    // and a severity on a non-bug note is dropped rather than kept as a dangling value.
+    ...(type === "bug" && isNoteSeverity(value.severity) ? { severity: value.severity } : {}),
     intent: isNoteIntent(value.intent) ? value.intent : "implement",
     status: isNoteStatus(value.status) ? value.status : "open",
     body: typeof value.body === "string" ? value.body : "",

@@ -19,7 +19,9 @@ import {
   type Message,
   type Note,
   type NoteIntent,
+  type NoteSeverity,
   type NoteStatus,
+  type NoteType,
 } from "../../src/core/model";
 
 const CREATED = "2026-01-01T00:00:00.000Z";
@@ -36,6 +38,8 @@ function makeNote(input: {
   environment: Environment;
   createdAt?: string;
   updatedAt?: string;
+  type?: NoteType;
+  severity?: NoteSeverity;
   intent?: NoteIntent;
   status?: NoteStatus;
   sessionRef?: string;
@@ -46,7 +50,8 @@ function makeNote(input: {
   const createdAt = input.createdAt ?? CREATED;
   const note = createNote({
     id: input.id,
-    type: "text",
+    type: input.type ?? "text",
+    severity: input.severity,
     body: input.body,
     anchor: { hook: input.id },
     intent: input.intent ?? "implement",
@@ -210,6 +215,28 @@ describe("argument validation (F12b)", () => {
     const result = await call(session.context, "list_notes", { status: "nonsense" });
     expect(result.isError).toBe(true);
     expect(result.text).toContain("status must be one of open, done, needs_decision");
+  });
+
+  it("reads the create_note severity against the allowed values (FR-3.6)", async () => {
+    const session = await openSession();
+    const accepted = await call(session.context, "create_note", {
+      type: "bug",
+      body: "overlaps the label",
+      hook: "save",
+      severity: "blocker",
+    });
+    expect(accepted.isError).toBe(false);
+    expect(accepted.value<{ created: Note }>().created.severity).toBe("blocker");
+    expect(persistedNotes(session)[0]?.severity).toBe("blocker");
+
+    const refused = await call(session.context, "create_note", {
+      type: "bug",
+      body: "x",
+      hook: "save",
+      severity: "nope",
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("severity must be one of blocker, major, minor");
   });
 });
 
@@ -424,6 +451,14 @@ describe("compareNoteSets", () => {
       "note n-1 was persisted differently (updatedAt)",
     ]);
     expect(compareNoteSets([], [note])).toEqual(["note n-1 is still in the persisted set"]);
+  });
+
+  it("reports a severity-only divergence as the compared field (FR-3.6)", () => {
+    const expected = makeNote({ id: "n-1", body: "boom", environment: "dev", type: "bug", severity: "blocker" });
+    const persisted = makeNote({ id: "n-1", body: "boom", environment: "dev", type: "bug", severity: "major" });
+    expect(compareNoteSets([expected], [persisted])).toEqual([
+      "note n-1 was persisted differently (severity)",
+    ]);
   });
 });
 

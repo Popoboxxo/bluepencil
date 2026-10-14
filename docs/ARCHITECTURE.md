@@ -166,7 +166,8 @@ export interface Note {
   createdAt: string;
   updatedAt: string;
   sessionRef?: string;              // review round                     (FR-3.4)
-  type: NoteType;
+  type: NoteType;                   // text | design | bug
+  severity?: NoteSeverity;          // blocker | major | minor, only for a bug (FR-3.6)
   intent: NoteIntent;
   status: NoteStatus;
   body: string;

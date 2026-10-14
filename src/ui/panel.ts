@@ -18,6 +18,7 @@ import type {
   MessageKind,
   Note,
   NoteIntent,
+  NoteSeverity,
   NoteStatus,
   NoteType,
 } from "../core/model";
@@ -46,6 +47,12 @@ const STATUS_KEYS: Record<NoteStatus, MessageKey> = {
   done: "panel.status.done",
 };
 
+const SEVERITY_KEYS: Record<NoteSeverity, MessageKey> = {
+  blocker: "panel.severity.blocker",
+  major: "panel.severity.major",
+  minor: "panel.severity.minor",
+};
+
 const AUTHOR_TYPE_KEYS: Record<AuthorType, MessageKey> = {
   human: "panel.author.human",
   agent: "panel.author.agent",
@@ -63,14 +70,28 @@ const MESSAGE_KIND_KEYS: Record<MessageKind, MessageKey> = {
 const STATUS_FILTER_VALUES: readonly (NoteStatus | "all")[] = ["all", "open", "needs_decision", "done"];
 const TYPE_FILTER_VALUES: readonly (NoteType | "all")[] = ["all", "text", "design", "bug"];
 const INTENT_FILTER_VALUES: readonly (NoteIntent | "all")[] = ["all", "implement", "feedback"];
+/** FR-3.6: `none` matches every note without a severity (non-bugs and ungraded bugs). */
+const SEVERITY_FILTER_VALUES: readonly (NoteSeverity | "none" | "all")[] = [
+  "all",
+  "blocker",
+  "major",
+  "minor",
+  "none",
+];
 
 export interface PanelFilters {
   type: NoteType | "all";
   intent: NoteIntent | "all";
   status: NoteStatus | "all";
+  severity: NoteSeverity | "none" | "all";
 }
 
-export const DEFAULT_FILTERS: PanelFilters = { type: "all", intent: "all", status: "all" };
+export const DEFAULT_FILTERS: PanelFilters = {
+  type: "all",
+  intent: "all",
+  status: "all",
+  severity: "all",
+};
 
 /* -------------------------------------------------------------------------- */
 /* counters (FR-4.3, FR-4.8)                                                   */
@@ -194,18 +215,23 @@ function filterOptionKey(name: keyof PanelFilters, value: string): MessageKey {
   if (value === "all") return "panel.filter.all";
   if (name === "type") return TYPE_KEYS[value as NoteType];
   if (name === "intent") return INTENT_KEYS[value as NoteIntent];
+  if (name === "severity") {
+    return value === "none" ? "panel.filter.none" : SEVERITY_KEYS[value as NoteSeverity];
+  }
   return STATUS_KEYS[value as NoteStatus];
 }
 
 function filterValues(name: keyof PanelFilters): readonly string[] {
   if (name === "type") return TYPE_FILTER_VALUES;
   if (name === "intent") return INTENT_FILTER_VALUES;
+  if (name === "severity") return SEVERITY_FILTER_VALUES;
   return STATUS_FILTER_VALUES;
 }
 
 function filterLabelKey(name: keyof PanelFilters): MessageKey {
   if (name === "type") return "panel.filter.type";
   if (name === "intent") return "panel.filter.intent";
+  if (name === "severity") return "panel.filter.severity";
   return "panel.filter.status";
 }
 
@@ -242,9 +268,10 @@ export function createPanel(options: PanelOptions): Panel {
     type: createEl(doc, "select", "bp-select"),
     intent: createEl(doc, "select", "bp-select"),
     status: createEl(doc, "select", "bp-select"),
+    severity: createEl(doc, "select", "bp-select"),
   };
 
-  for (const name of ["type", "intent", "status"] as const) {
+  for (const name of ["type", "intent", "status", "severity"] as const) {
     const select = selects[name];
     select.setAttribute("data-bp-filter", name);
     select.setAttribute("data-bp-i18n-aria", filterLabelKey(name));
@@ -290,6 +317,11 @@ export function createPanel(options: PanelOptions): Panel {
       if (filters.status !== "all" && note.status !== filters.status) return false;
       if (filters.type !== "all" && note.type !== filters.type) return false;
       if (filters.intent !== "all" && note.intent !== filters.intent) return false;
+      // FR-3.6: `none` selects notes without a severity; any other value matches exactly.
+      if (filters.severity !== "all") {
+        const severity = note.severity ?? "none";
+        if (severity !== filters.severity) return false;
+      }
       return true;
     });
     return sortForReview(selected);
@@ -403,6 +435,14 @@ export function createPanel(options: PanelOptions): Panel {
 
     head.append(statusBadge, typeBadge);
 
+    // FR-3.6: a bug's severity is shown as its own badge; notes without it show nothing.
+    if (note.severity !== undefined) {
+      const severityBadge = createEl(doc, "span", `bp-badge bp-badge--${note.severity}`);
+      severityBadge.setAttribute("data-bp-part", "badge-severity");
+      severityBadge.setAttribute("data-bp-i18n", SEVERITY_KEYS[note.severity]);
+      head.append(severityBadge);
+    }
+
     if (note.intent === "feedback") {
       const intentBadge = createEl(doc, "span", "bp-badge bp-badge--feedback");
       intentBadge.setAttribute("data-bp-i18n", INTENT_KEYS[note.intent]);
@@ -475,6 +515,7 @@ export function createPanel(options: PanelOptions): Panel {
     selects.type.value = filters.type;
     selects.intent.value = filters.intent;
     selects.status.value = filters.status;
+    selects.severity.value = filters.severity;
     doneToggle.setAttribute("data-bp-i18n", showDoneValue ? "panel.hideDone" : "panel.showDone");
     doneToggle.setAttribute("aria-pressed", showDoneValue ? "true" : "false");
     doneToggle.classList.toggle("is-active", showDoneValue);
@@ -545,12 +586,14 @@ export function createPanel(options: PanelOptions): Panel {
       if (name === "type") filters.type = value as PanelFilters["type"];
       else if (name === "intent") filters.intent = value as PanelFilters["intent"];
       else if (name === "status") filters.status = value as PanelFilters["status"];
+      else if (name === "severity") filters.severity = value as PanelFilters["severity"];
       render();
     },
     resetFilters(): void {
       filters.type = DEFAULT_FILTERS.type;
       filters.intent = DEFAULT_FILTERS.intent;
       filters.status = DEFAULT_FILTERS.status;
+      filters.severity = DEFAULT_FILTERS.severity;
       render();
     },
     replyValue(note: Note): string {

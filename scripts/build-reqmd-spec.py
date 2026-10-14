@@ -183,6 +183,7 @@ VERIFY = {
     "FR-2.1": "Test", "FR-2.2": "Test", "FR-2.3": "Test", "FR-2.4": "Test",
     "FR-2.5": "Inspection", "FR-2.6": "Test", "FR-2.7": "Test",
     "FR-3.1": "Test", "FR-3.2": "Test", "FR-3.3": "Test", "FR-3.4": "Test", "FR-3.5": "Test",
+    "FR-3.6": "Test",
     "FR-4.1": "Test", "FR-4.2": "Test", "FR-4.3": "Test", "FR-4.4": "Test",
     "FR-4.5": "Test", "FR-4.6": "Test", "FR-4.7": "Test", "FR-4.8": "Test",
     "FR-5.1": "Test", "FR-5.2": "Test", "FR-5.3": "Test", "FR-5.4": "Test",

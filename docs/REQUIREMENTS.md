@@ -53,6 +53,7 @@
 | FR-3.3 | Notes carry an append-only **thread** of messages with `author_type` (`human`/`agent`) and `kind` (`note`/`decision_request`/`decision`/`feedback`/`reply`) | P0 | M1 | P | Agent and human replies appear in order, each with author and timestamp |
 | FR-3.4 | Notes can be grouped into a **session** and exported/purged per session | P1 | M2 | G | Purge removes exactly the session's notes, count reported |
 | FR-3.5 | The schema is versioned and documented; migrations from older data are defined | P0 | M1 | G | A v1 file loads in a v2 build; migration is documented and tested |
+| FR-3.6 | An **optional** `severity` ∈ {`blocker`, `major`, `minor`} may be set on a note; it is orthogonal to `type`/`intent`, meaningful only for `type` = `bug`, and omitted otherwise | P1 | M2 | G | A note without `severity` stays valid (old stores/bundles import unchanged, no `schemaVersion` bump); an unknown `severity` on import degrades safely (dropped, treated as absent), mirroring the unknown-`type`→`text` fallback |
 
 > **Field names as implemented:** the note JSON uses camelCase — `createdAt`, `updatedAt`,
 > `authorType`, `sessionRef`, `schemaVersion`, `messages` (the thread) — and `quote` / `route` sit on
@@ -265,7 +266,7 @@ export. The MCP interface is therefore **not optional** (Daniel, 2026-09-14).
 | Origin | Meaning | Requirement groups |
 |---|---|---|
 | **P** (prototype) | Behaviour already proven in the reference implementation — must be preserved 1:1 | FR-1.2–1.5, 1.8–1.9, FR-2.1, 2.3, 2.7, FR-3.1–3.3, FR-4.1–4.7, FR-6.3–6.5, FR-7.1–7.2, 7.4, FR-8.1 |
-| **G** (gap) | Missing in the prototype — the reason a library exists at all | FR-1.1, 1.10, FR-2.2, 2.4–2.6, FR-3.4–3.5, FR-6.1–6.2, FR-7.3, FR-9.1, 9.4, FR-10.1–10.3, NFR-3, 6, 11 |
+| **G** (gap) | Missing in the prototype — the reason a library exists at all | FR-1.1, 1.10, FR-2.2, 2.4–2.6, FR-3.4–3.6, FR-6.1–6.2, FR-7.3, FR-9.1, 9.4, FR-10.1–10.3, NFR-3, 6, 11 |
 | **N** (product need) | Driven by the admin debug-mode requirement of a downstream ALM product | FR-5.x (all), FR-8.2–8.5, FR-9.2, FR-10.4, FR-6.6 |
 
 ## Decisions (resolved)
