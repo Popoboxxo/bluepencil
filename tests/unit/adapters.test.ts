@@ -18,7 +18,7 @@ import {
   type NoteStatus,
   type Session,
 } from "../../src/core/model";
-import { createMemoryAdapter } from "../../src/adapters/memory";
+import { createJsonAdapter, createMemoryAdapter, type JsonAdapterIo } from "../../src/adapters/memory";
 import { createLocalStorageAdapter, localStorageKey } from "../../src/adapters/local-storage";
 import { createFileAdapter, type FileAdapterIo } from "../../src/adapters/file";
 import { HttpAdapterError, createHttpAdapter } from "../../src/adapters/http";
@@ -506,15 +506,27 @@ describe("localStorage adapter specifics", () => {
     expect(storage.getItem("full")).toBeNull();
   });
 
-  it("keeps a corrupt blob untouched instead of overwriting it", async () => {
+  it("replaces a corrupt blob on the next write instead of leaving it to poison every session", async () => {
+    // Regression for issue #39: a failed read used to latch the degrade flag that also gated writes,
+    // so the bad blob was never replaced. Now the in-memory set is authoritative and writing it back
+    // is the recovery — a reload reads the note from disk.
     const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
     const storage = createFakeStorage();
     storage.setItem("corrupt", "{ not json");
     const adapter = createLocalStorageAdapter({ key: "corrupt", storage });
     expect(await adapter.list()).toEqual([]);
-    await adapter.create(draft({ body: "new" }));
+
+    const note = await adapter.create(draft({ body: "new" }));
     expect(await adapter.list()).toHaveLength(1);
-    expect(storage.getItem("corrupt")).toBe("{ not json");
+    const raw = storage.getItem("corrupt");
+    expect(raw).not.toBe("{ not json");
+    expect(JSON.parse(raw ?? "{}")).toMatchObject({
+      version: 1,
+      notes: [{ id: note.id, body: "new" }],
+    });
+
+    const reloaded = createLocalStorageAdapter({ key: "corrupt", storage });
+    expect((await reloaded.list()).map((entry) => entry.id)).toEqual([note.id]);
     expect(debug).toHaveBeenCalledTimes(1);
   });
 });
@@ -611,6 +623,99 @@ describe("file adapter specifics", () => {
     expect(store.notes().map((entry) => entry.body)).toEqual(["not saved"]);
     expect(debug).toHaveBeenCalledTimes(1);
     await store.destroy();
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * JSON adapter — a corrupt read must not stop writes (issue #39)
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("createJsonAdapter — read failures degrade reads only (issue #39)", () => {
+  /**
+   * A `JsonAdapterIo` over one in-memory string. `writeAttempts` counts every `writeText` call
+   * (including the ones that fail), `writes` records only the successful values, and `fallbacks`
+   * captures the single-report channel (NFR-14).
+   */
+  function trackingIo(
+    initial: string | null,
+    options: { failWrite?: Error } = {},
+  ): {
+    io: JsonAdapterIo;
+    writes: string[];
+    writeAttempts: string[];
+    fallbacks: unknown[];
+    text: () => string | null;
+  } {
+    let stored = initial;
+    const writes: string[] = [];
+    const writeAttempts: string[] = [];
+    const fallbacks: unknown[] = [];
+    const io: JsonAdapterIo = {
+      readText: async () => stored,
+      writeText: async (text) => {
+        writeAttempts.push(text);
+        if (options.failWrite) throw options.failWrite;
+        writes.push(text);
+        stored = text;
+      },
+      onFallback: (reason) => fallbacks.push(reason),
+    };
+    return { io, writes, writeAttempts, fallbacks, text: () => stored };
+  }
+
+  it("replaces a corrupt blob on the next create, and a fresh adapter reads the note back", async () => {
+    const { io, writes, fallbacks, text } = trackingIo("{ not json");
+    const adapter = createJsonAdapter("test", io);
+
+    const note = await adapter.create(draft({ body: "recovered" }));
+
+    // (a) the note is created and (b) the write went out with the new set.
+    expect(note.body).toBe("recovered");
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(text() ?? "{}")).toMatchObject({
+      version: 1,
+      notes: [{ id: note.id, body: "recovered" }],
+    });
+
+    // (c) a fresh adapter over the same I/O sees the note — the corrupt blob is gone.
+    const reloaded = createJsonAdapter("test", io);
+    expect((await reloaded.list()).map((entry) => entry.id)).toEqual([note.id]);
+    // (d) the fallback is reported exactly once, even though a read failed.
+    expect(fallbacks).toHaveLength(1);
+  });
+
+  it("still attempts the write and rejects when writeFailure is reject and the read was corrupt", async () => {
+    const boom = new Error("EACCES: permission denied, open 'store.json'");
+    const { io, writeAttempts, fallbacks } = trackingIo("{ not json", { failWrite: boom });
+    const adapter = createJsonAdapter("test", { ...io, writeFailure: "reject" });
+
+    await expect(adapter.create(draft({ body: "attempted" }))).rejects.toThrow(/EACCES/);
+    // The failed read no longer short-circuits the write: it was attempted, and it rejected.
+    expect(writeAttempts).toHaveLength(1);
+    // Both causes are the same degradation to the caller: reported once, not twice.
+    expect(fallbacks).toHaveLength(1);
+  });
+
+  it("still latches after a failed write under writeFailure: degrade", async () => {
+    let attempts = 0;
+    const { io, fallbacks } = trackingIo(null);
+    const adapter = createJsonAdapter("test", {
+      ...io,
+      writeFailure: "degrade",
+      writeText: async () => {
+        attempts += 1;
+        throw new Error("QuotaExceededError");
+      },
+    });
+
+    await adapter.create(draft({ body: "first" }));
+    await adapter.create(draft({ body: "second" }));
+
+    // The write-degrade latch holds: the second write is not attempted …
+    expect(attempts).toBe(1);
+    // … the change still lands in memory, and the fallback is reported once (NFR-14).
+    expect((await adapter.list()).map((entry) => entry.body)).toEqual(["first", "second"]);
+    expect(fallbacks).toHaveLength(1);
   });
 });
 

@@ -278,17 +278,11 @@ describe("chromeStorage — a hostile or corrupt stored blob", () => {
     expect(said.length, "degrade reported once").toBeLessThanOrEqual(1);
   });
 
-  it("keeps the note in memory, but the corrupt blob survives on disk for the whole session", async () => {
-    // KNOWN LIMITATION, filed as a separate issue: `load()` degrades on a corrupt read, and
-    // `persist()` returns early once `degraded` is set. So the note is safe in memory and the UI
-    // behaves correctly, but nothing is written back until the extension is reloaded — and the bad
-    // blob on disk is never replaced.
-    //
-    // This is pre-existing behaviour in the shared JSON adapter (memory.ts `load`/`persist`), so it
-    // affects the file and localStorage adapters identically. It is pinned here rather than fixed
-    // because fixing it means changing when `degraded` is allowed to latch, which is a decision for
-    // the adapter's owner, not a side effect of shipping the extension. Until it is fixed, this test
-    // documents the actual contract so nobody has to rediscover it from a bug report.
+  it("replaces the corrupt blob on the next create, so a fresh adapter reads the note back", async () => {
+    // Regression for issue #39: a failed read used to latch the *same* degrade flag that also gated
+    // writes, so nothing was ever written again for the session and the bad blob on disk stayed
+    // there. A corrupt read must degrade reads only: the in-memory set is authoritative and writing
+    // it back is exactly the recovery that replaces the blob.
     const fake = useStored("{{{ corrupt");
     const adapter = createChromeStorageAdapter();
 
@@ -304,10 +298,10 @@ describe("chromeStorage — a hostile or corrupt stored blob", () => {
 
     // The note is in memory and reachable…
     expect(result.listed).toHaveLength(1);
-    // …but the corrupt blob was not overwritten. This is the limitation, stated.
-    expect(result.onDisk).toBe("{{{ corrupt");
-    // And a fresh adapter still sees the damage, which is what makes it a limitation and not a
-    // cosmetic detail: the corruption outlives the session.
-    expect(result.fresh).toEqual([]);
+    // …and the corrupt blob was replaced, so the damage does not outlive this session.
+    expect(result.onDisk).not.toBe("{{{ corrupt");
+    // A fresh adapter — the next tab, the next session — reads the note back.
+    expect(result.fresh).toHaveLength(1);
+    expect(result.fresh[0]?.id).toBe(result.created.id);
   });
 });
