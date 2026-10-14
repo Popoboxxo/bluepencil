@@ -34,8 +34,9 @@ switches on when needed (at runtime, per role), not a separate service:
 
 1. It attaches to a running page (embedded as a library, or loaded into a third-party page
    as a bookmarklet).
-2. The reviewer clicks an element and writes a note — either about **content/wording**
-   (*text note*) or about **appearance/layout** (*design note*).
+2. The reviewer clicks an element and writes a note — about **content/wording**
+   (*text note*), about **appearance/layout** (*design note*), or a **defect report**
+   (*bug note*).
 3. Each note gets a **stable anchor** and, for design notes, a **snapshot of the element's
    state** at the moment of noticing.
 4. Notes are collected, filtered, exported (Markdown/JSON), and **threaded**: humans and
@@ -124,7 +125,7 @@ does not.
 ## 5. Core concepts
 
 **Note** — the unit of feedback. Fields: `id`, `author` (+ `author_type`), `type`
-(`text`/**`design`**), `intent` (`implement`/`feedback`), `status` (`open`/`done`/`needs_decision`),
+(`text`/`design`/`bug`), `intent` (`implement`/`feedback`), `status` (`open`/`done`/`needs_decision`),
 `body`, `quote`, `anchor`, `context`, `route`, `session`, timestamps, `thread`.
 
 **Anchor** — a resolved path back to the element, in this order:
@@ -171,7 +172,8 @@ schema-versioned JSON file.
 
 ## 6. Interaction model
 
-* Two modes: **text** (reviews content) and **design** (reviews appearance, captures state).
+* Three note categories: **text** (reviews content), **design** (reviews appearance, captures
+  state) and **bug** (a defect report).
 * Click to annotate; a selection inside the element becomes the quote.
 * Floating, collapsible control bar + a handle that never disappears; keyboard-first
   (`J/K` navigate, `?` shortcut legend, `S` speaker notes in presentation use, `C`/`D` modes,
@@ -284,7 +286,7 @@ Rules that keep this honest:
 | Milestone | Content | Exit criterion |
 |---|---|---|
 | **M0 — Concept** (this repo) | concept, requirements, architecture | reviewed and merged |
-| **M1 — Core** | types, anchor resolution, state capture, in-memory + `localStorage` adapters, overlay UI (text/design modes), Markdown/JSON export, **runtime `enable()`/`disable()` with complete teardown** | annotate any page, reload, export — no server; 100 toggles leave no residue |
+| **M1 — Core** | types, anchor resolution, state capture, in-memory + `localStorage` adapters, overlay UI (text/design/bug categories), Markdown/JSON export, **runtime `enable()`/`disable()` with complete teardown** | annotate any page, reload, export — no server; 100 toggles leave no residue |
 | **M2 — Server hub & exchange** | reference server (API + static hosting), sessions, purge; **headless data library + CLI**, bundle export/import with merge/dry-run/conflict reporting, environment tagging, write API for dev tooling | a full review round on a real page; a bundle travels dev → live → dev without losing a note |
 | **M3 — Distribution** | ESM + IIFE + **custom-element** builds, bookmarklet generator, docs site/demo fixture app, host-variety examples (static, SPA, web-component host, Home Assistant card) | "drag to your bookmarks bar" works; the element loads in a host without a build step |
 | **M4 — Agent interface** | stable schema, MCP tool group, agent protocol (implement/feedback/decision) | an agent closes a review round end to end |
