@@ -127,7 +127,7 @@ functions, so an integration can render the notes in its own UI (FR-10.4).
 ```ts
 export const SCHEMA_VERSION = 1;
 
-export type NoteType = "text" | "design";
+export type NoteType = "text" | "design" | "bug";
 export type NoteIntent = "implement" | "feedback";                 // FR-5.1
 export type NoteStatus = "open" | "done" | "needs_decision";       // FR-3.2
 export type AuthorType = "human" | "agent";

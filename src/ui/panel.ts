@@ -32,6 +32,7 @@ import type { MessageKey } from "../i18n/en";
 const TYPE_KEYS: Record<NoteType, MessageKey> = {
   text: "panel.type.text",
   design: "panel.type.design",
+  bug: "panel.type.bug",
 };
 
 const INTENT_KEYS: Record<NoteIntent, MessageKey> = {
@@ -60,7 +61,7 @@ const MESSAGE_KIND_KEYS: Record<MessageKind, MessageKey> = {
 
 /** Statuses offered by the filter (FR-4.2); `done` implies revealing done notes. */
 const STATUS_FILTER_VALUES: readonly (NoteStatus | "all")[] = ["all", "open", "needs_decision", "done"];
-const TYPE_FILTER_VALUES: readonly (NoteType | "all")[] = ["all", "text", "design"];
+const TYPE_FILTER_VALUES: readonly (NoteType | "all")[] = ["all", "text", "design", "bug"];
 const INTENT_FILTER_VALUES: readonly (NoteIntent | "all")[] = ["all", "implement", "feedback"];
 
 export interface PanelFilters {

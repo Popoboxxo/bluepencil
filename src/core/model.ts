@@ -22,7 +22,13 @@ export const BUNDLE_KIND = "bluepencil.bundle";
 /** Environment a fresh store/note defaults to when the host does not say otherwise (FR-14.1). */
 export const DEFAULT_ENVIRONMENT: Environment = "dev";
 
-export const NOTE_TYPES = ["text", "design"] as const;
+/**
+ * Note category (FR-3.2): `text` = content/wording, `design` = appearance/layout, `bug` = a
+ * defect report. The category is orthogonal to `intent` (implement|feedback) — a bug can still be
+ * `implement` or `feedback`. There is deliberately no separate `severity` field yet: severity is an
+ * open question in issue #71 and is tracked there, not in the model.
+ */
+export const NOTE_TYPES = ["text", "design", "bug"] as const;
 export const NOTE_INTENTS = ["implement", "feedback"] as const;
 export const NOTE_STATUSES = ["open", "done", "needs_decision"] as const;
 export const AUTHOR_TYPES = ["human", "agent"] as const;

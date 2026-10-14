@@ -9,7 +9,7 @@
 
 | Field | Values | Meaning |
 |---|---|---|
-| `type` | `text`, `design` | What the note is about: content/wording vs. appearance/layout |
+| `type` | `text`, `design`, `bug` | What the note is about: content/wording, appearance/layout or a defect report |
 | `intent` | `implement`, `feedback` | What should happen with the note |
 | `status` | `open`, `done`, `needs_decision` | Where the note stands right now |
 | `author_type` | `human`, `agent` | Who wrote a message in the thread |

@@ -49,7 +49,7 @@
 | ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
 |---|---|---|---|---|---|
 | FR-3.1 | A note has: `id`, `created_at`, author (+`author_type`), `type`, `intent`, `status`, `body`, `quote`, `anchor`, `context`, `route`, `session_ref` | P0 | M1 | P | All fields present in the JSON export and validated |
-| FR-3.2 | `type` ∈ {`text`, `design`}; `intent` ∈ {`implement`, `feedback`}; `status` ∈ {`open`, `done`, `needs_decision`} | P0 | M1 | P | Invalid values rejected by the API/adapter |
+| FR-3.2 | `type` ∈ {`text`, `design`, `bug`}; `intent` ∈ {`implement`, `feedback`}; `status` ∈ {`open`, `done`, `needs_decision`} | P0 | M1 | P | Invalid values rejected by the API/adapter |
 | FR-3.3 | Notes carry an append-only **thread** of messages with `author_type` (`human`/`agent`) and `kind` (`note`/`decision_request`/`decision`/`feedback`/`reply`) | P0 | M1 | P | Agent and human replies appear in order, each with author and timestamp |
 | FR-3.4 | Notes can be grouped into a **session** and exported/purged per session | P1 | M2 | G | Purge removes exactly the session's notes, count reported |
 | FR-3.5 | The schema is versioned and documented; migrations from older data are defined | P0 | M1 | G | A v1 file loads in a v2 build; migration is documented and tested |
