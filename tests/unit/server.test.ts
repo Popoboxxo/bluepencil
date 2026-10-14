@@ -284,7 +284,7 @@ describe("hub handler — the documented endpoints", () => {
       const error = jsonOf(response).error;
       expect(error.code).toBe("invalid_payload");
       expect(error.message).toContain("body must be a non-empty string");
-      expect(error.message).toContain("type must be one of text, design");
+      expect(error.message).toContain("type must be one of text, design, bug");
       expect(error.message).toContain("anchor needs at least one of hook, selector or quote");
       expect(harness.state.notes).toEqual([]);
       expect(harness.saves()).toBe(0);

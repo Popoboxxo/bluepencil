@@ -938,6 +938,27 @@ describe("capture UI", () => {
     handle.disable();
   });
 
+  it("creates a bug-category note from the composer (issue #71)", async () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="p1">text</p></main>`;
+    const paragraph = byId("host").querySelector("p");
+    if (paragraph === null) throw new Error("fixture missing");
+
+    const store = makeStore();
+    const handle = startLayer(store);
+    pressKey("c");
+    click(paragraph);
+
+    const bugButton = query('[data-bp-action="composer-type-bug"]');
+    click(bugButton);
+    expect(bugButton.getAttribute("aria-pressed")).toBe("true");
+    expect(query('[data-bp-part="composer-title"]').getAttribute("data-bp-i18n")).toBe("composer.title.bug");
+
+    await saveComposer("The button overlaps the label.");
+
+    expect(store.notes()[0]?.type).toBe("bug");
+    handle.disable();
+  });
+
   it("refuses to save when the element is gone (FR-2.3)", async () => {
     document.body.innerHTML = `<main id="host"><p data-bluepencil="gone">text</p></main>`;
     const paragraph = byId("host").querySelector("p");
@@ -1094,17 +1115,25 @@ describe("markers and panel", () => {
     const store = makeStore();
     await addNote(store, { body: "text work" });
     await addNote(store, { body: "design work", type: "design" });
+    await addNote(store, { body: "bug work", type: "bug" });
     await addNote(store, { body: "opinion wanted", intent: "feedback" });
     const handle = startLayer(store);
 
     pressKey("l");
-    expect(noteEntries()).toHaveLength(3);
+    expect(noteEntries()).toHaveLength(4);
 
     const typeFilter = query<HTMLSelectElement>('[data-bp-filter="type"]');
     typeFilter.value = "design";
     typeFilter.dispatchEvent(new Event("change", { bubbles: true }));
     expect(noteEntries()).toHaveLength(1);
     expect(noteEntries()[0]?.textContent).toContain("design work");
+
+    typeFilter.value = "bug";
+    typeFilter.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(noteEntries()).toHaveLength(1);
+    const bugEntry = noteEntries()[0];
+    expect(bugEntry?.textContent).toContain("bug work");
+    expect(bugEntry?.querySelector('[data-bp-i18n="panel.type.bug"]')?.textContent).toBe(en["panel.type.bug"]);
 
     typeFilter.value = "all";
     typeFilter.dispatchEvent(new Event("change", { bubbles: true }));

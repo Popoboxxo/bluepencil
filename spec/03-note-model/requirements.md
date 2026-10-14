@@ -19,7 +19,7 @@ A note has: id, created_at, author (+author_type), type, intent, status, body, q
 
 *Acceptance criteria:* All fields present in the JSON export and validated
 
-## FR-3.2 type ∈ {text, design}; intent ∈ {implement, feedback}; status ∈ {open, done, needs_decis…
+## FR-3.2 type ∈ {text, design, bug}; intent ∈ {implement, feedback}; status ∈ {open, done, needs_…
 
 ```attr
 prio: P0
@@ -31,7 +31,7 @@ version: 1
 requires-trace-from: []
 ```
 
-type ∈ {text, design}; intent ∈ {implement, feedback}; status ∈ {open, done, needs_decision}
+type ∈ {text, design, bug}; intent ∈ {implement, feedback}; status ∈ {open, done, needs_decision}
 
 *Acceptance criteria:* Invalid values rejected by the API/adapter
 

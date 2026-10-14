@@ -106,7 +106,7 @@ describe("validateNote", () => {
 
   it("rejects wrong enum values", () => {
     expect(validateNote({ ...validNote, type: "sketch" }).join("|")).toContain(
-      "note.type must be one of text, design",
+      "note.type must be one of text, design, bug",
     );
     expect(validateNote({ ...validNote, intent: "maybe" }).join("|")).toContain("note.intent must be one of implement, feedback");
     expect(validateNote({ ...validNote, status: "review" }).join("|")).toContain(
@@ -387,6 +387,17 @@ describe("bundle I/O (FR-14.2/14.5/14.9)", () => {
     expect(validateBundle(parsed)).toEqual([]);
   });
 
+  it("round-trips a bug-category note through JSON without loss (issue #71)", () => {
+    const bugBundle = createBundle(
+      [makeNote({ id: "n-bug", type: "bug", body: "button overlaps the label" })],
+      BUNDLE_OPTIONS,
+    );
+    const parsed = parseBundle(bundleToJson(bugBundle));
+    expect(at(parsed.notes, 0).type).toBe("bug");
+    expect(parsed).toEqual(bugBundle);
+    expect(validateBundle(parsed)).toEqual([]);
+  });
+
   it("offers a compact form and rejects malformed input", () => {
     const compact = bundleToJson(bundle, { pretty: false });
     expect(compact.split("\n").filter((line) => line !== "")).toHaveLength(1);
@@ -403,7 +414,7 @@ describe("bundle I/O (FR-14.2/14.5/14.9)", () => {
     expect(summary.notes).toBe(3);
     expect(summary.byStatus).toEqual({ open: 2, done: 1, needs_decision: 0 });
     expect(summary.byIntent).toEqual({ implement: 2, feedback: 1 });
-    expect(summary.byType).toEqual({ text: 2, design: 1 });
+    expect(summary.byType).toEqual({ text: 2, design: 1, bug: 0 });
     expect(summary.routes).toEqual(["/a", "/b"]);
     expect(summary.environments).toEqual(["dev"]);
     expect(summary.sessions).toEqual([{ ref: "s-1", label: "s-1", createdAt: T }]);
@@ -468,6 +479,18 @@ describe("migrations (FR-3.5)", () => {
     expect(at(note.messages, 0).kind).toBe("note");
     expect(at(note.messages, 0).authorType).toBe("human");
     expect(Number.isNaN(Date.parse(at(note.messages, 0).ts))).toBe(false);
+    expect(validateNote(note)).toEqual([]);
+  });
+
+  it("falls back to text for a type outside the enum instead of aborting (issue #71)", () => {
+    const note = migrateNote({
+      id: "n-unknown-type",
+      body: "x",
+      type: "sketch",
+      anchor: { hook: "h" },
+      createdAt: T,
+    });
+    expect(note.type).toBe("text");
     expect(validateNote(note)).toEqual([]);
   });
 

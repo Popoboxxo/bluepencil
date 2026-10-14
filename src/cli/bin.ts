@@ -403,7 +403,7 @@ Usage:
       [--allow-env-mismatch] [--environment dev|staging|live]
   bluepencil export <input> [--format md|json] [--out <file>] [--include-done[=true|false]]
       [--status open|done|needs_decision] [--intent implement|feedback]
-      [--type text|design] [--route <route>]
+      [--type text|design|bug] [--route <route>]
   bluepencil import <incoming> <target>        import a set into a target set (alias of merge --out target)
       [--mode ...] [--dry-run] [--json] [--on-conflict ...] [--allow-env-mismatch]
   bluepencil notes <file>                      print the notes of a file as JSON

@@ -2,7 +2,7 @@
  * Note input popover — the composer (FR-1.3/1.4/1.5, FR-5.1/5.2, FR-9.3, FR-11.1/11.2).
  *
  * Responsibilities:
- *  - render the note form: body, topic (text/design), intent switch (implement is the default),
+ *  - render the note form: body, topic (text/design/bug), intent switch (implement is the default),
  *    a feedback-only indicator, the captured state of a design note and the quote;
  *  - never talk to the store: it receives the anchor/captured context from the layer and reports
  *    the save through `options.onSave`, which the layer answers with `{ ok }` (so a refused save
@@ -86,6 +86,13 @@ function textNode(doc: Document, tag: keyof HTMLElementTagNameMap, className: st
   return node;
 }
 
+/** Composer heading per note category (FR-3.2); keeps the three-value switch exhaustive. */
+const COMPOSER_TITLE_KEYS: Record<NoteType, MessageKey> = {
+  text: "composer.title.text",
+  design: "composer.title.design",
+  bug: "composer.title.bug",
+};
+
 export function createComposer(options: ComposerOptions): Composer {
   const doc = options.document;
   const idPrefix = `bp-${options.instanceId}-composer`;
@@ -125,7 +132,13 @@ export function createComposer(options: ComposerOptions): Composer {
   };
   const textTypeButton = typeButton("text", "composer.type.text");
   const designTypeButton = typeButton("design", "composer.type.design");
-  typeRow.append(textNode(doc, "span", "bp-hint", "composer.typeLabel"), textTypeButton, designTypeButton);
+  const bugTypeButton = typeButton("bug", "composer.type.bug");
+  typeRow.append(
+    textNode(doc, "span", "bp-hint", "composer.typeLabel"),
+    textTypeButton,
+    designTypeButton,
+    bugTypeButton,
+  );
 
   const intentRow = createEl(doc, "div", "bp-field");
   const intentButton = (value: NoteIntent, key: MessageKey): HTMLButtonElement => {
@@ -251,11 +264,13 @@ export function createComposer(options: ComposerOptions): Composer {
   }
 
   function renderForm(): void {
-    title.setAttribute("data-bp-i18n", selectedType === "design" ? "composer.title.design" : "composer.title.text");
+    title.setAttribute("data-bp-i18n", COMPOSER_TITLE_KEYS[selectedType]);
     textTypeButton.setAttribute("aria-pressed", selectedType === "text" ? "true" : "false");
     designTypeButton.setAttribute("aria-pressed", selectedType === "design" ? "true" : "false");
+    bugTypeButton.setAttribute("aria-pressed", selectedType === "bug" ? "true" : "false");
     textTypeButton.classList.toggle("is-active", selectedType === "text");
     designTypeButton.classList.toggle("is-active", selectedType === "design");
+    bugTypeButton.classList.toggle("is-active", selectedType === "bug");
     implementButton.setAttribute("aria-pressed", selectedIntent === "implement" ? "true" : "false");
     feedbackButton.setAttribute("aria-pressed", selectedIntent === "feedback" ? "true" : "false");
     implementButton.classList.toggle("is-active", selectedIntent === "implement");
@@ -298,6 +313,7 @@ export function createComposer(options: ComposerOptions): Composer {
     if (action === null) return false;
     if (action === "composer-type-text") selectType("text");
     else if (action === "composer-type-design") selectType("design");
+    else if (action === "composer-type-bug") selectType("bug");
     else if (action === "composer-intent-implement") selectIntent("implement");
     else if (action === "composer-intent-feedback") selectIntent("feedback");
     else return false;
