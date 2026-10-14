@@ -145,6 +145,14 @@ jobs:
           BP_REQUIRE_BROWSER: "1"
         run: npm run smoke:e2e
 
+      - name: Bookmarklet smoke (post-load IIFE arrival, real browser)
+        env:
+          # The IIFE is injected into a page that is already loaded — the bookmarklet's defining
+          # property — and a strict `script-src 'self'` fixture must genuinely block it (NFR-6).
+          # A missing browser has to fail here rather than turn the leg into a silent no-op.
+          BP_REQUIRE_BROWSER: "1"
+        run: npm run smoke:bookmarklet
+
       - name: Build extension (MV3)
         run: npm run build:ext
 
