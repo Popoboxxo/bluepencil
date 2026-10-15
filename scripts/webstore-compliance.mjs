@@ -453,17 +453,18 @@ function adviseOnOpenQuestions(permissions, hosts) {
   if (hosts.some((h) => /^https?:\/\/\*\/\*$/.test(h))) {
     advise(
       "`http://*/*` + `https://*/*` is broad host access",
-      "it exists for the registered MAIN-world content script, which is what makes the overlay " +
-        "survive a navigation — that is the justification the dashboard copy uses (docs/WEBSTORE.md " +
-        "D1). The narrower activeTab-only shape would drop the host permission entirely and is " +
-        "documented there as well.",
+      "it is a deliberate, conservative pre-grant: broader than the on-demand injection needs, kept so " +
+        "access is in place the moment the user asks for the layer (docs/WEBSTORE.md D1). Injection " +
+        "itself is on demand under activeTab, and the overlay is not kept alive across a navigation. " +
+        "The narrower activeTab-only shape would drop the host permission entirely — the shape the " +
+        "manifest deliberately does not take.",
     );
     advise(
       "the host permission must not be justified by testability",
       "extension/smoke.mjs and docs/EXTENSION.md currently say the up-front grant is what makes the " +
         "headless round trip testable. That is true, and it is not a justification the store accepts; " +
-        "the dashboard copy in docs/WEBSTORE.md deliberately justifies it by the user-facing behaviour " +
-        "only.",
+        "the dashboard copy in docs/WEBSTORE.md deliberately justifies it as a conservative pre-grant " +
+        "instead.",
     );
   }
 

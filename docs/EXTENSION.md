@@ -167,7 +167,14 @@ it. See *Known gaps* in [CHANGELOG.md](../CHANGELOG.md) for the current list.
 | `tabs` | resolve the active tab's URL |
 | `http://*/*`, `https://*/*` | host access, granted up front |
 
-Host access is granted at install time on purpose. Without it the extension can only inject after a
-real click, which is the right product behaviour but makes the round trip untestable in a headless
-browser. `file:///*` is deliberately **not** requested — it buys nothing a web user needs, and it is
-the permission a store reviewer objects to first. `<all_urls>` is not used.
+Host access is a deliberate, conservative **pre-grant**. Injection itself is on demand: the overlay only
+enters a page after an explicit user gesture (toolbar click, Alt+Shift+B, the options *Turn on here*, or
+the page's own `request-mount`), into the tab the user is looking at. The up-front grant is broader than
+that on-demand injection strictly needs, but it is what lets the overlay be available the moment the
+user asks for it on any site, without a second prompt. It also keeps the headless round trip testable —
+a real benefit, though not the reason the permission is in the manifest.
+
+The overlay does **not** survive a navigation in this release: a fresh document has no
+`<bluepencil-notes>` until the user invokes the extension again. `file:///*` is deliberately **not**
+requested — it buys nothing a web user needs, and it is the permission a store reviewer objects to
+first. `<all_urls>` is not used.

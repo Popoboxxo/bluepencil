@@ -3,10 +3,13 @@
  *
  * Three responsibilities, deliberately kept small:
  *
- * 1. **Inject the layer on demand.** `activeTab` rather than a permanent `<all_urls>` host
- *    permission: the user grants access to a page by asking for it (toolbar click, keyboard
- *    shortcut), and the grant expires when they leave. A permanently-installed content script with
- *    `<all_urls>` has to justify itself in the Web Store review; an on-demand injection does not.
+ * 1. **Inject the layer on demand.** The user asks for access to a page (toolbar click, keyboard
+ *    shortcut) and the injection happens under `activeTab`, so the grant expires when they leave. A
+ *    MAIN-world `bootstrap.js` *is* registered dynamically (`ensureBootstrapRegistered`) — that is the
+ *    channel that gets the layer past a page's strict `script-src` CSP, not a navigation-survival
+ *    mechanism: a fresh document has no config and no overlay until the user invokes the extension
+ *    again. The manifest additionally carries the broad http/https host permission as a deliberate
+ *    pre-grant; it is broader than the on-demand injection strictly needs.
  *
  * 2. **Run it in the page's MAIN world.** Chromium's isolated content-script world reports
  *    `customElements === null` (measured: `typeof` is `"object"`, the value is `null`), so
