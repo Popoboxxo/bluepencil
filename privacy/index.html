@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy policy — bluepencil</title>
+<meta name="description" content="What the bluepencil browser extension and library store, how they use it, and what they never do.">
+<style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+      margin: 0 auto; padding: 3rem 1.5rem 5rem; max-width: 44rem;
+      background: Canvas; color: CanvasText;
+    }
+    h1 { font-size: 1.7rem; margin: 0 0 .3rem; letter-spacing: -.01em; }
+    h2 { font-size: 1.15rem; margin: 2.2rem 0 .5rem; }
+    p, li { color: CanvasText; }
+    a { color: LinkText; }
+    .lede { color: GrayText; margin: 0 0 2rem; }
+    code {
+      font: .9em/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: color-mix(in srgb, CanvasText 8%, Canvas); padding: .1em .35em; border-radius: 4px;
+    }
+    footer {
+      margin-top: 3rem; padding-top: 1rem; border-top: 1px solid color-mix(in srgb, CanvasText 18%, Canvas);
+      font-size: .9rem; color: GrayText;
+    }
+  </style>
+</head>
+<body>
+<h1>Privacy policy</h1>
+<p><strong>Bluepencil</strong> — the browser extension, the embeddable library, and the optional hub server. Last updated: 2026-10-02.</p>
+<p>Bluepencil is a review tool. It lets a person point at an element on a web page and leave a note about that element's wording or its appearance, and it lets the set of notes be exported and handed to a developer or an AI agent. This policy describes what the software handles, why, and what it does with it. It applies to the Chrome extension and to the library when it is embedded in a page.</p>
+<h2>Short version</h2>
+<p>Bluepencil keeps your notes, and nothing else, in your own browser profile. There is no account, no server operated by the developer, no analytics and no advertising. Nothing leaves your machine unless you yourself configure a hub URL and point Bluepencil at it.</p>
+<h2>What we collect</h2>
+<p>&quot;Collect&quot; here means: what the software reads and stores. There is no separate party that receives data from us.</p>
+<p><strong>Notes you create.</strong> When you annotate an element, the note stores:</p>
+<ul>
+  <li>the text you typed,</li>
+  <li>the reference to the element the note is attached to (its tag, CSS selector or classes),</li>
+  <li>for design notes, the element's computed styles, its position and size, and the current theme and viewport,</li>
+  <li>the URL of the page the note was taken on, and the time it was taken,</li>
+  <li>the author name, if you are using the author mode that asks for one.</li>
+</ul>
+<p><strong>Your settings.</strong> Interface language, the environment badge, which storage mode you chose, and — only if you enable the hub mode — the hub URL and the credential you entered.</p>
+<p><strong>Your credential, only if you supply one.</strong> If you configure the hub mode, the shared secret or signed token you paste is kept in the browser's extension storage on your machine.</p>
+<p>Bluepencil does <strong>not</strong> collect your browsing history, the pages you visit, your clicks or keystrokes, your location, health or financial information, or any form data. It has no access to any page you have not explicitly invoked it on.</p>
+<h2>How we use it</h2>
+<p>The data is used for exactly one thing: showing you your own notes and letting you export them. The notes are read back to render them on the page and in the notes panel; the settings are read to configure the interface. Nothing is used for advertising, profiling, ranking, credit assessment or any other purpose.</p>
+<p>Bluepencil does not run analytics or telemetry. It does not measure how you use it.</p>
+<h2>What we share</h2>
+<p>Nothing, by default. In the default storage mode the notes never leave your browser profile and no network request is made at all.</p>
+<p>If you choose the hub mode and enter a URL, the notes you create are sent to <strong>that URL</strong> — a server you host and control, or one you were given access to. That transmission happens only for the URL you typed, and the note content is the only thing sent. The developer operates no server and receives nothing. No data is sold, transferred or disclosed to advertisers, data brokers or any other third party.</p>
+<p>You can point Bluepencil at a local hub (the default, <code>http://127.0.0.1:8787</code>), in which case nothing leaves your computer at all, or at a remote one, in which case the note data travels to that host. Traffic to a remote host should use HTTPS; a hub on the same computer is not affected by that requirement.</p>
+<h2>Where the data lives, and for how long</h2>
+<p>Notes and settings are kept in your browser's own storage for the extension, in your browser profile. They stay there until you delete them: uninstalling the extension removes them, and the notes panel lets you remove individual notes. If you use the hub mode, the notes also live in the hub's own store, on a machine you control, for as long as you keep them there.</p>
+<h2>Your choices</h2>
+<ul>
+  <li>Do not invoke Bluepencil on a page: nothing is captured on a page you have not switched it on for.</li>
+  <li>Choose the &quot;in this tab only&quot; storage mode: notes are discarded when the tab is reloaded.</li>
+  <li>Choose &quot;leave the notes anonymous&quot;: no author name is stored.</li>
+  <li>Leave the hub mode switched off: nothing is transmitted anywhere.</li>
+  <li>Uninstall: the extension's storage is removed with it.</li>
+</ul>
+<h2>Security</h2>
+<p>Note data is kept inside the browser profile. When a hub is used, transmissions to a remote host are expected to run over HTTPS; a loopback hub needs no transport encryption because the data does not leave the machine. Credentials are stored in the extension's own storage, are never rendered into a page, and are sent only to the hub URL you configured. No authentication, payment or financial information is published or disclosed by this software.</p>
+<h2>Children</h2>
+<p>Bluepencil is a developer and designer tool. It is not directed at children and collects no data from them.</p>
+<h2>Changes</h2>
+<p>If a future version changes what is collected or how it is used, this page will be updated before that version is published, and the change will be stated in the release notes.</p>
+<h2>Limited Use</h2>
+<p>The use of information received from Google APIs will adhere to the Chrome Web Store User Data Policy, including the Limited Use requirements. Data obtained through the extension's permissions is used only to provide the single purpose described above (taking and organising review notes on a page the user has explicitly invoked the tool on), is not transferred to any third party, is never used or transferred for personalised advertising, and is not read by any human except with the user's explicit consent, or where required for security or by law.</p>
+<h2>Contact</h2>
+<p>Questions about this policy, or a request concerning your data, can be raised as an issue at <a href="https://github.com/Popoboxxo/bluepencil/issues">https://github.com/Popoboxxo/bluepencil/issues</a>.</p>
+<footer>bluepencil — MIT licensed. <a href="https://github.com/Popoboxxo/bluepencil">Source</a>.</footer>
+</body>
+</html>
