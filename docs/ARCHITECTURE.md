@@ -65,13 +65,13 @@ small (`bluepencil/adapters/http`).
 
 ```ts
 import { init } from "bluepencil";
-import { httpAdapter } from "bluepencil/adapters/http";
+import { createHttpAdapter } from "bluepencil/adapters/http";
 
 const bp = init({
   // D8: the layer can be switched on and off at runtime, inside any product
   enabled: () => me.roles.includes("admin") && flags.uiNotes,   // evaluated on every enable()
   mount: document.body,                    // or a container / card element (multi-instance safe)
-  adapter: httpAdapter({ endpoint: "/api/v1/bluepencil", headers: authHeaders }),
+  adapter: createHttpAdapter({ endpoint: "/api/v1/bluepencil", headers: authHeaders }),
   identity: { getUser: () => ({ id: me.id, name: me.name }) },   // D3: hook | "prompt" | "anonymous"
   getRoute: () => router.currentRoute.value.fullPath,           // SPA-aware
   canAnnotate: (el) => !el.closest("[data-bp-ignore]"),
@@ -100,7 +100,7 @@ session and take it away again without reloading, and repeated cycles must leave
 import { createStore, createNote, toMarkdown, mergeBundles } from "bluepencil/data";
 
 // A test runner or build script writes a note into the same store the UI reads:
-const store = createStore({ adapter: "localStorage" });     // or httpAdapter / memory
+const store = createStore({ adapter: "localStorage" });     // or createHttpAdapter / memory
 await store.create(createNote({
   type: "text",
   body: "Test `checkout.spec.ts` failed at this element",

@@ -98,7 +98,7 @@ uses `import { init } from "bluepencil"` instead and has no global):
 <script>
   bluepencil.init({
     enabled: () => me.roles.includes("admin"),   // re-checked on every enable(); fail closed
-    adapter: "localStorage",                     // or httpAdapter({ endpoint: "/api/v1/bluepencil" })
+    adapter: "localStorage",                     // or createHttpAdapter({ endpoint: "/api/v1/bluepencil" })
     getRoute: () => location.pathname + location.search,
   });
 </script>
