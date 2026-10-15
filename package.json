@@ -104,8 +104,9 @@
     "spec:check": "reqmd check spec/",
     "spec:ls": "reqmd ls spec/",
     "spec:stats": "reqmd stats spec/",
-    "verify": "npm run typecheck && npm run typecheck:ext && npm run test && npm run build && npm run build:ext && npm run size && npm run smoke:pack && npm run smoke:install && npm run smoke:embed && npm run smoke:e2e && npm run smoke:bookmarklet && npm run smoke:parity && npm run smoke:ext && npm run smoke:webstore",
+    "verify": "npm run typecheck && npm run typecheck:ext && npm run test && npm run build && npm run build:ext && npm run size && npm run smoke:pack && npm run smoke:install && npm run smoke:embed && npm run smoke:e2e && npm run smoke:round-trip && npm run smoke:bookmarklet && npm run smoke:parity && npm run smoke:ext && npm run smoke:webstore",
     "smoke:e2e": "node tests/e2e/vanilla.e2e.mjs",
+    "smoke:round-trip": "node tests/e2e/round-trip.e2e.mjs",
     "smoke:parity": "node tests/e2e/parity.e2e.mjs"
   },
   "dependencies": {},

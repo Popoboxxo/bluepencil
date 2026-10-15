@@ -32,6 +32,11 @@
 #     tsconfig does not include `extension/`, and a typecheck that skips a quarter of the shipped code
 #     is worse than none.
 #
+#   - round-trip: the whole closed loop in one observed run — both browser strands (the one-tag embed
+#     loader and the built MV3 extension) write a note to the hub, an agent reads it and answers over
+#     the hub's MCP door, and the answer comes back into the browser on the next reload. It is the only
+#     leg that proves the two doors share one store end to end (FR-16.8/16.9, NFR-11).
+#
 #   - spec: regenerates spec/ from docs/REQUIREMENTS.md and validates it with reqmd, so a
 #     malformed requirement block fails the build. The regeneration step also proves the committed
 #     spec/ matches the source table — a drifted spec fails instead of passing silently.
@@ -177,6 +182,14 @@ jobs:
           # a missing Chrome has to fail here rather than turn the leg into a silent no-op.
           BP_REQUIRE_BROWSER: "1"
         run: npm run smoke:ext
+
+      - name: Round-trip smoke (browser → hub → MCP agent → browser, both strands)
+        env:
+          # Drives the whole loop in a real browser for BOTH arrival paths (one-tag embed loader and
+          # the built MV3 extension) and the hub's MCP door from Node; a missing browser must fail
+          # here rather than reduce the closed-loop proof to a skip (FR-16.8/16.9, NFR-11).
+          BP_REQUIRE_BROWSER: "1"
+        run: npm run smoke:round-trip
 
       - name: Secret scan
         run: npm run secret-scan
