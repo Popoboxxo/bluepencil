@@ -5,6 +5,9 @@
 #   - cli-smoke: exit codes, conflict refusal, environment isolation, atomic writes
 #   - mcp-smoke: JSON-RPC handshake, read-only default, environment binding, import fidelity
 #   - pack-smoke: every path of the exports map exists, imports and is published
+#   - install-smoke: the package installs from a tarball and every documented subpath resolves by
+#     package specifier from the installed copy; the git `prepare`-on-install leg is a non-blocking
+#     diagnostic (required gate is the tarball leg only)
 #   - embed-smoke: the hub HTTP contract, the element against a running API, and the attach
 #     loader in a real browser (the fixture website examples/attach plus a live version swap)
 #
@@ -206,6 +209,43 @@ jobs:
           # than turn it into a skip.
           BP_REQUIRE_BROWSER: "1"
         run: npm run smoke:parity
+
+  install:
+    # A package a consumer cannot install is not shipped. `pack-smoke` proves the exports map is
+    # right *in the repo*; this job proves it is right from the *installed tarball*: it packs,
+    # installs the tarball into a scratch project and imports every subpath by package specifier, so
+    # Node's real resolution runs against `node_modules/bluepencil` (FR-10.2, FR-15.1, NFR-16).
+    #
+    # The tarball leg is the REQUIRED (fail-red) gate: the package has no runtime dependencies, so it
+    # is offline and deterministic. The git leg (`github:…#<sha>`) is a NON-BLOCKING diagnostic — a
+    # fork PR's head SHA does not exist on the base repo `Popoboxxo/bluepencil` (the install would
+    # 404) and the leg needs npm/GitHub network, so neither may block a packaging change; on main
+    # pushes the ref is present and it normally passes. `continue-on-error: true` keeps it advisory.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Install smoke (tarball)
+        # Required gate: pack → install the tarball → import every exports subpath by specifier.
+        run: npm run smoke:install
+
+      - name: Install smoke (git prepare-on-install, non-blocking diagnostic)
+        # Advisory only: `prepare` must build dist/ during a git install. Never the gate (see job note).
+        continue-on-error: true
+        env:
+          BP_INSTALL_GIT_REF: ${{ github.sha }}
+        run: npm run smoke:install:git
 
   image:
     # The Dockerfile is a shipped artefact (FR-6.14), so it is built and *run* on every change instead
