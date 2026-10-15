@@ -9,10 +9,10 @@ apart. `npm run smoke:webstore` checks the three against each other.
 Everything in the blocks below is written to be pasted **verbatim**. The character budgets are the
 form's own (1,000 per field, 2,048 for the privacy-policy URL) and each block stays well under.
 
-> **Status: submittable.** The decisions below are taken — the host permission is kept and justified,
-> `tabs` is gone, the in-product disclosure is in the options page, and the plain-http hub endpoint
-> is justified rather than a gap. What is left is mechanical: enable Pages once, then fill the form
-> from the blocks below.
+> **Status: submittable.** The decisions below are taken — the host permission is kept as a deliberate
+> pre-grant, `tabs` is gone, the in-product disclosure is in the options page, and the plain-http hub
+> endpoint is justified rather than a gap. What is left is mechanical: enable Pages once, then fill the
+> form from the blocks below.
 
 ## How to use this page
 
@@ -39,7 +39,7 @@ unless it is marked *manual*.
 | Technical → MV3 §1 | No remote code, no string evaluation | ✅ no `eval`, no `new Function`, no dynamic `import()`, CSP `script-src 'self'` |
 | Technical → Code Readability | Not obfuscated | ✅ no packer artefacts; minification only |
 | Technical → API Use | Chrome APIs used for their purpose | ✅ `scripting`/`storage`/`activeTab` only |
-| Privacy → Use of Permissions | Narrowest permission set | ✅ `tabs` dropped (D2), host access kept and justified by behaviour (D1) |
+| Privacy → Use of Permissions | Narrowest permission set | ✅ `tabs` dropped (D2), host access kept as a conservative pre-grant (D1) |
 | Privacy → Disclosure | In-product disclosure + consent | ✅ options page, before any field; checked + contrast-measured |
 | Privacy → Privacy Policy | Accurate policy, posted in the dashboard | ✅ `docs/PRIVACY.md`, published at `/privacy/` (live) |
 | Privacy → Limited Use | Affirmative statement on a project page | ✅ live at `/privacy/` + linked from the README |
@@ -57,12 +57,27 @@ All four are settled. Each names the evidence, because the next person to touch 
 options page has to know *why* it looks the way it does — otherwise the first well-meaning cleanup
 undoes it.
 
-### D1 — the `http(s)://*/*` host permission stays, justified by behaviour
+### D1 — the `http(s)://*/*` host permission stays, as a deliberate pre-grant
 
-**Decision: keep.** The registration in `sw.ts` (`ensureBootstrapRegistered`) is what keeps the overlay
-alive when the user navigates within a page they switched the layer on for; without it the user's notes
-would look lost on the first navigation. The dashboard text below justifies the permission by exactly
-that user-facing behaviour, and by nothing else.
+**Decision: keep.** The manifest declares no `content_scripts`; the overlay is injected on demand
+through `chrome.scripting` after an explicit user gesture (the toolbar click, Alt+Shift+B, the options
+*Turn on here*, or the page's own `request-mount`), into the page's MAIN world. The worker additionally
+dynamically registers one small MAIN-world content script (`bootstrap.js`, id `bluepencil-bootstrap`,
+`runAt: document_start`) via `chrome.scripting.registerContentScripts`. That registration is the channel
+into the page's own world under a strict `script-src 'self'` CSP — it is not a navigation-survival
+mechanism.
+
+**What the permission does not buy.** The overlay is **not** kept alive across a navigation in this
+release. `mainWorldHandoff` (`sw.ts`) writes the page global `__bluepencilConfig__` onto the *current*
+document only, and there is no `tabs.onUpdated` / `webNavigation` listener to re-hand it one, so a fresh
+document has zero `<bluepencil-notes>` until the user invokes the extension again. `extension/smoke.mjs`
+case 3 measures exactly this.
+
+**Why keep `http(s)://*/*` anyway.** It is a **conservative pre-grant**: host access is requested up
+front so it is in place the moment the user asks for the layer on any site, without a second permission
+prompt. That is broader than the on-demand injection strictly requires, and the narrower `activeTab`-only
+shape — injection under `activeTab`, with no host permission at all — is the shape the manifest
+deliberately does not take.
 
 **What must not be written in the form.** `extension/smoke.mjs` and `docs/EXTENSION.md` say the
 up-front grant is what makes the round trip testable in a headless browser. That is true, and it is not
@@ -225,15 +240,21 @@ that matters anyway. See **D2**.
 #### **Justification — host permission**
 
 ```
-http://*/* and https://*/* are required for the registration of one small content script that must run
-in the page's own JavaScript world. That registration is what keeps the annotation overlay alive when
-the user navigates within a page they have switched the layer on for; without it the overlay would
-simply disappear on the first navigation and the user's notes would appear to be lost.
+http://*/* and https://*/* are a deliberate, conservative pre-grant of host access. The extension
+injects its annotation overlay on demand — only after an explicit user gesture, and only into the tab
+the user is looking at — but the grant is requested up front so the overlay is available the moment the
+user invokes it on any site, without a second permission prompt. It is broader than the on-demand
+injection strictly needs; that is the honest trade for a click-to-annotate tool that has to work on
+whatever page the user is already viewing.
 
-The script does nothing until the user has invoked the extension on that tab: it waits for a
-configuration object that the extension writes only after the user clicks the toolbar button. Access
-is limited to http and https — file://, ftp:// and chrome:// are not requested, and <all_urls> is not
-used.
+Injection runs through chrome.scripting into the page's own JavaScript world. The extension also
+registers one small content script in that world, which is the channel that gets the layer past a
+page's strict script-src CSP; it does nothing until the user has invoked the extension on that tab and
+the settings arrive. The overlay is not kept alive across a navigation: a freshly loaded document has
+no overlay until the user invokes the extension again.
+
+Access is limited to http and https — file://, ftp:// and chrome:// are not requested, and <all_urls>
+is not used.
 ```
 
 ### **Remote code**
@@ -343,7 +364,7 @@ Policy, including the Limited Use requirements.
 
 ## Checklist before the first submission
 
-- [ ] **D1** decided: host permission kept, justified by behaviour only (never by testability)
+- [ ] **D1** decided: host permission kept as a conservative pre-grant (not by navigation behaviour, never by testability)
 - [ ] **D2** `tabs` removed from the manifest — and still absent (`npm run smoke:webstore`)
 - [ ] **D3** in-product disclosure in the options page, and its wording matches this page
 - [ ] **D4** plain-http endpoint justified, not changed (FAQ §15/§16)

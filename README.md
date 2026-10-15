@@ -98,7 +98,7 @@ uses `import { init } from "bluepencil"` instead and has no global):
 <script>
   bluepencil.init({
     enabled: () => me.roles.includes("admin"),   // re-checked on every enable(); fail closed
-    adapter: "localStorage",                     // or httpAdapter({ endpoint: "/api/v1/bluepencil" })
+    adapter: "localStorage",                     // or createHttpAdapter({ endpoint: "/api/v1/bluepencil" })
     getRoute: () => location.pathname + location.search,
   });
 </script>
@@ -349,10 +349,28 @@ so CI, scripts and agents use exactly the same data and validators as the UI.
   [docs/WEBSTORE.md](docs/WEBSTORE.md), and `npm run smoke:webstore` keeps the manifest, the shipped
   code and that copy in step.
 
-The pipeline keeps these claims checkable: `.github/workflows/ci.yml` runs the typecheck, the unit
-tests, the build, the size guard, the CLI/MCP/packaging smoke scripts (`scripts/cli-smoke.mjs`,
-`scripts/mcp-smoke.mjs`, `scripts/pack-smoke.mjs`) and the secret scan. The same chain minus the
-process-level smokes is local: `npm run verify`.
+The pipeline keeps these claims checkable. `npm run verify` is the local umbrella (its row below lists
+the chain); the CLI/MCP smokes, the secret scan and the spec regeneration/check are CI-side. CI
+(`.github/workflows/ci.yml`) runs the whole set as five jobs: `spec`, `verify`, `parity`, `install`
+and `image`.
+
+| Script | File | Scope |
+| --- | --- | --- |
+| `smoke:cli` | `scripts/cli-smoke.mjs` | exit codes, conflict refusal, environment isolation, atomic writes |
+| `smoke:mcp` | `scripts/mcp-smoke.mjs` | JSON-RPC handshake, read-only default, environment binding, import fidelity |
+| `smoke:pack` | `scripts/pack-smoke.mjs` | every path of the exports map exists, imports and is published |
+| `smoke:install` | `scripts/install-smoke.mjs` | the package installs from a tarball and every documented subpath resolves by package specifier (`smoke:install:git` is a non-blocking diagnostic) |
+| `smoke:embed` | `scripts/embed-smoke.mjs` | the hub HTTP contract, the element against a running API, and the one-tag attach loader in a real browser |
+| `smoke:e2e` | `tests/e2e/vanilla.e2e.mjs` | the fixture app itself (annotate, filter, thread, export, lifecycle) in a real browser |
+| `smoke:bookmarklet` | `scripts/bookmarklet-smoke.mjs` | the IIFE arriving after load, in a real browser, including a strict-CSP page that must block it |
+| `smoke:round-trip` | `tests/e2e/round-trip.e2e.mjs` | browser → hub → MCP agent → browser, both arrival strands |
+| `smoke:ext` | `extension/smoke.mjs` | the built MV3 extension in a real Chrome (MAIN-world injection, strict CSP, chromeStorage persistence, same-origin navigation, hub round-trip, options page) |
+| `smoke:parity` | `tests/e2e/parity.e2e.mjs` | the same layer via the one-tag loader and via the MV3 extension must produce identical observations |
+| `smoke:webstore` | `scripts/webstore-compliance.mjs` | manifest ↔ shipped code ↔ dashboard copy against the Chrome Web Store policies |
+| `secret-scan` | `scripts/secret-scan.mjs` | scans the tree for committed secrets |
+| `spec` | `scripts/build-reqmd-spec.py` | regenerate `spec/` from `docs/REQUIREMENTS.md` |
+| `spec:check` | `reqmd check spec/` | validate the generated spec; CI also fails on drift (`git status spec/`) |
+| `verify` | — | typechecks (root + extension), unit tests, builds (library + extension), size guard, and the pack/install/embed/e2e/round-trip/bookmarklet/parity/ext/webstore smokes |
 
 ## License
 

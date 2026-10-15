@@ -19,11 +19,11 @@
 
 ```ts
 import { init } from "bluepencil";
-import { httpAdapter } from "bluepencil/adapters/http";
+import { createHttpAdapter } from "bluepencil/adapters/http";
 
 const bp = init({
   enabled: () => currentUser.roles.includes("admin"),
-  adapter: httpAdapter({
+  adapter: createHttpAdapter({
     endpoint: "/api/v1/bluepencil",
     headers: () => ({ Authorization: `Bearer ${getToken()}` }),
   }),
@@ -108,7 +108,7 @@ lists; the file is read once at startup, so revoking a device means restarting t
 Clients authenticate the same way the extension does — over HTTP the adapter sets the header:
 
 ```ts
-adapter: httpAdapter({
+adapter: createHttpAdapter({
   endpoint: "https://notes.example.test/api/v1/bluepencil",
   headers: () => ({ Authorization: `Bearer ${getToken()}` }),
 }),
@@ -133,7 +133,7 @@ This is the pattern the library was designed around.
 ```ts
 init({
   enabled: () => me.roles.includes("admin") && featureFlag("uiDebugNotes"),
-  adapter: httpAdapter({ endpoint: "/api/v1/debug-notes", headers: authHeaders }),
+  adapter: createHttpAdapter({ endpoint: "/api/v1/debug-notes", headers: authHeaders }),
   identity: { getUser: () => ({ id: me.id, name: me.email }) },
   getRoute: () => router.currentRoute.value.fullPath,
   defaultShowDone: false,
