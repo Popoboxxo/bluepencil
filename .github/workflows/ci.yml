@@ -41,6 +41,10 @@
 #     malformed requirement block fails the build. The regeneration step also proves the committed
 #     spec/ matches the source table — a drifted spec fails instead of passing silently.
 #
+#   - sync/version gates: `verify:sync` (inside the verify job, after build:ext) proves the extension
+#     bundle still matches dist/ and the manifest version; the `bump` job fails a pull request when a
+#     behavioural change is not accompanied by a package.json version bump.
+#
 #   - webstore-compliance: the manifest, the shipped code and the dashboard copy (docs/WEBSTORE.md)
 #     against the Chrome Web Store program policies. Its hard checks are MV3, no remote code, no
 #     obfuscation, the permission set, and that every permission is justified in the copy — so the
@@ -100,6 +104,23 @@ jobs:
 
       - name: Validate requirements (reqmd check)
         run: reqmd check spec/
+
+  bump:
+    # `package.json.version` is the version single-source-of-truth. A behavioural change that lands
+    # without a bump would be indistinguishable from a patch to already-shipped code, so this job
+    # diffs the PR against its merge base and fails red when shipped surfaces changed but the
+    # version did not. It needs git + node only, hence no `npm ci`.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0          # merge-base needs full history, not a shallow clone
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Version bump required for behavioural changes
+        run: node scripts/check-version-bump.mjs --base "origin/${{ github.base_ref }}"
 
   verify:
     runs-on: ubuntu-latest
@@ -163,6 +184,12 @@ jobs:
 
       - name: Build extension (MV3)
         run: npm run build:ext
+
+      - name: Extension/library sync gate
+        # The extension copies `dist/bluepencil.element.iife.js` verbatim into extension/dist and
+        # records its hash in build-info.json. Without this gate a stale or mismatched bundle — one
+        # that no longer matches the library build or the manifest version — could ship unnoticed.
+        run: npm run verify:sync
 
       - name: Chrome Web Store compliance
         # The manifest, the shipped code and the dashboard copy (docs/WEBSTORE.md) are checked against

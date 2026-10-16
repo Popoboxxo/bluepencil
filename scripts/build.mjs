@@ -13,7 +13,7 @@
  * No runtime dependencies are bundled: everything in dist/ is built from src/ only.
  */
 import { build } from "esbuild";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { cp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -250,6 +250,80 @@ async function cleanDist() {
   }
 }
 
+/** The jobs whose output the extension loads verbatim; only they trigger an extension rebuild. */
+const ELEMENT_JOBS = new Set(["element", "element-iife"]);
+
+/**
+ * Watch-time hook: rebuild `extension/dist/` whenever the element bundles change.
+ *
+ * The extension loads `dist/bluepencil.element.iife.js` verbatim (see extension/build.mjs), so a
+ * stale extension/dist is the failure mode this closes: under `--watch` the library is always
+ * fresh while the extension silently stays behind, and the extension smoke test then runs against
+ * yesterday's artefact.
+ *
+ * The hook is a plugin, attached only in the watch branch: `context()` consumes the same option
+ * objects as the one-shot `build()`, so putting the hook into `job.options` would make a plain
+ * `npm run build` shell out to the extension build as well.
+ *
+ * One shared controller backs both element contexts — separate per-context timers would let two
+ * extension builds race, and only one is ever needed.
+ */
+function createExtensionSync() {
+  // A single save can retrigger several contexts; coalesce the burst into one extension build.
+  const DEBOUNCE_MS = 200;
+  let timer = null;
+  let running = false;
+  let pending = false;
+
+  const run = () => {
+    if (running) {
+      // One follow-up run picks up every change seen since the current run started — never queue more.
+      pending = true;
+      return;
+    }
+    running = true;
+    pending = false;
+    const child = spawn(process.execPath, ["extension/build.mjs"], { cwd: root, stdio: "inherit" });
+    let settled = false;
+    const finish = (ok, detail) => {
+      // `error` and `exit` can both fire for a failed spawn; settle once so `running` cannot stick.
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (ok) {
+        console.log("[build] extension/dist rebuilt (triggered by the element bundle)");
+      } else {
+        console.warn(`[build] extension auto-build failed (${detail}) — run: npm run build:ext`);
+      }
+      running = false;
+      if (pending) {
+        schedule();
+      }
+    };
+    // A spawn failure or a non-zero exit must never break the watch loop; log and keep watching.
+    child.on("error", (error) => finish(false, error.message));
+    child.on("exit", (code) => finish(code === 0, `exit ${code}`));
+  };
+
+  const schedule = () => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    timer = setTimeout(() => {
+      timer = null;
+      run();
+    }, DEBOUNCE_MS);
+  };
+
+  return () => ({
+    name: "extension-sync",
+    setup(pluginBuild) {
+      pluginBuild.onEnd(() => schedule());
+    },
+  });
+}
+
 async function main() {
   await cleanDist();
   await mkdir(join(root, "dist"), { recursive: true });
@@ -266,8 +340,15 @@ async function main() {
 
   if (watch) {
     const { context } = await import("esbuild");
+    const makeExtensionSyncPlugin = createExtensionSync();
     for (const job of runnable) {
-      const ctx = await context(job.options);
+      // Only the two element contexts trigger the extension rebuild; other jobs keep their own
+      // plugins (e.g. the core job's adapterStubPlugin) untouched.
+      const plugin = ELEMENT_JOBS.has(job.name) ? makeExtensionSyncPlugin() : null;
+      const options = plugin
+        ? { ...job.options, plugins: [...(job.options.plugins ?? []), plugin] }
+        : job.options;
+      const ctx = await context(options);
       await ctx.watch();
       console.log(`[build] watching ${job.name}`);
     }

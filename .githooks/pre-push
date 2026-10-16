@@ -1,0 +1,30 @@
+#!/bin/sh
+# Pre-push guard: rebuild extension/dist and prove dist/ <-> extension/dist are in
+# lockstep before the commit leaves the machine.
+#
+#   npm run build:ext    # regenerates extension/dist/ (requires a prior dist build)
+#   npm run verify:sync  # identity gate: dist sha256 + manifest version match
+#
+# OPT-IN. This hook is NOT installed automatically (package.json "prepare" does not
+# call the installer). Enable it explicitly with:
+#
+#   node scripts/install-hooks.mjs      # sets core.hooksPath = .githooks
+#
+# Disable again with:
+#
+#   git config --unset core.hooksPath
+#
+# NATURE: this is a CONVENTION boundary, not a security boundary. It fail-closed
+# blocks accidental pushes with a stale/unbuilt extension, but it does not defend
+# against a deliberate bypass (e.g. `git push --no-verify`). See
+# .claude/rules/branch-guard.md#guard-terminologie-convention-boundary-vs-security-boundary
+# Fail-closed: a non-zero exit from either leg aborts the push.
+set -eu
+
+echo "[pre-push] build:ext  - rebuilding extension/dist/"
+npm run build:ext
+
+echo "[pre-push] verify:sync - checking dist/ <-> extension/dist lockstep"
+npm run verify:sync
+
+echo "[pre-push] OK - extension bundle is in sync"

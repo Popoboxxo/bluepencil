@@ -322,3 +322,19 @@ requires-trace-from: []
 No sideways scrolling inside the chrome: nothing the layer draws ever creates a horizontal scrollbar, on any viewport
 
 *Acceptance criteria:* The browser leg measures `scrollWidth <= clientWidth` for every visible chrome surface across the six-viewport matrix
+
+## NFR-21 Build parity / single version: the MV3 extension ships the library's element bundle verb…
+
+```attr
+prio: P0
+disposition: implemented
+milestone: "M1"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+Build parity / single version: the MV3 extension ships the library's element bundle verbatim, so every behavioural change must rebuild both artefacts and bump the version in package.json (the single source of truth, mirrored by extension/manifest.json) — a shipped build must never describe a different binary than the code under review
+
+*Acceptance criteria:* CI proves the element-bundle identity (sha256) and fails a behavioural diff without a version bump: `npm run verify:sync` is green after `npm run build && npm run build:ext`, and a behavioural-surface diff without a version bump fails the `bump` job

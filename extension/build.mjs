@@ -9,10 +9,15 @@
  *   run identical code. Re-bundling would let the two drift apart silently.
  * - `manifest.json`, `options.html` — copied as-is.
  *
+ * `dist/build-info.json` records `version` (from manifest.json, the single source of truth),
+ * `elementSha256` (the digest `scripts/verify-sync.mjs` checks the library artefact against) and the
+ * `gitSha` provenance field, so a shipped extension can be traced back to its commit.
+ *
  * The build fails when the library bundle is missing rather than producing an extension that
  * installs and then does nothing: a green CI run has to mean a loadable extension.
  */
 import { build } from "esbuild";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -51,6 +56,22 @@ async function resolveVersion() {
     );
   }
   return manifest.version;
+}
+
+/**
+ * Read the current commit for the provenance field.
+ *
+ * Returns `null` when git is unavailable or `rev-parse` fails for any reason. A missing commit is a
+ * metadata gap, not a build failure: refusing to build because a checkout has no `.git` would turn a
+ * harmless traceability hole into a broken build. A non-string/short result is treated the same way.
+ */
+function readGitSha() {
+  try {
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    return typeof sha === "string" && sha.length > 0 ? sha : null;
+  } catch {
+    return null;
+  }
 }
 
 async function main() {
@@ -106,10 +127,12 @@ async function main() {
   const digest = createHash("sha256")
     .update(await readFile(join(out, "bluepencil.element.iife.js")))
     .digest("hex");
-  await writeFile(join(out, "build-info.json"), `${JSON.stringify({ version, elementSha256: digest }, null, 2)}\n`);
+  const gitSha = readGitSha();
+  await writeFile(join(out, "build-info.json"), `${JSON.stringify({ version, elementSha256: digest, gitSha }, null, 2)}\n`);
 
   console.log(`[ext] built ${version} -> ${out}`);
   console.log(`[ext] element bundle sha256 ${digest.slice(0, 16)}…`);
+  console.log(`[ext] commit ${gitSha ? gitSha.slice(0, 7) : "unknown (git unavailable)"}`);
   console.log(`[ext] files: ${required.join(", ")}, build-info.json`);
 }
 
