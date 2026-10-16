@@ -258,6 +258,7 @@ export. The MCP interface is therefore **not optional** (Daniel, 2026-09-14).
 | NFR-17 | **Canonical, diffable bundles**: deterministic serialization (stable key and list order), so bundles can be committed and hashed | P0 | M2 | Two exports of the same set are byte-identical; a one-note change produces a one-hunk diff |
 | NFR-18 | **Environment isolation by default**: an import never mixes environments unless explicitly asked (`--allow-env-mismatch`) | P0 | M2 | Importing a `live` bundle into a `dev` store is refused by default and explains why |
 | NFR-19 | **Interoperability without the tool**: bundles are plain, documented JSON that any script can read; no proprietary encoding, no binary blobs | P0 | M2 | A 20-line script parses and filters a bundle using only the schema doc |
+| NFR-21 | **Build parity / single version**: the MV3 extension ships the library's element bundle verbatim, so every behavioural change must rebuild both artefacts and bump the version in `package.json` (the single source of truth, mirrored by `extension/manifest.json`) — a shipped build must never describe a different binary than the code under review | P0 | M1 | CI proves the element-bundle identity (sha256) and fails a behavioural diff without a version bump: `npm run verify:sync` is green after `npm run build && npm run build:ext`, and a behavioural-surface diff without a version bump fails the `bump` job |
 
 ---
 
