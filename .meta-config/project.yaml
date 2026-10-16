@@ -209,6 +209,14 @@ variables:
   UNKNOWN_FALLBACK_ASK_USER: false
   REQUIRED_BINARY_NAMES: (keine)
   BUILD_SYSTEM_NOTES: esbuild fuer Bundles, tsc nur fuer Typen und .d.ts.
+  BUILD_SYNC_GUARD: |
+    Bausteine 1-6: dist/ <-> extension/dist in Lockstep, package.json = Version-SSOT
+    1 Identity-Gate: scripts/verify-sync.mjs (npm run verify:sync) - sha256(dist/bluepencil.element.iife.js) == extension/dist/build-info.json.elementSha256 && manifest.version == package.json.version; CI nach build:ext, Teil von verify
+    2 Version-Bump-Gate: scripts/check-version-bump.mjs - Diff (merge-base..HEAD) beruehrt src/**, src/element/**, extension/src/**, extension/manifest.json, server/** aber package.json.version unveraendert -> CI fail
+    3 Local-Auto-Build: scripts/build.mjs --watch + debounced esbuild onEnd (element/element-iife) ruft extension/build.mjs
+    4 Affected-Matrix: Pfad->Legs dokumentieren; verify/parity/image = required status checks (branch protection); optional paths:-Filter fuer docs-only PRs (parity bleibt required)
+    5 Provenance: git rev-parse HEAD in build-info.json (neben version+elementSha256), auch im Store-Zip + Release-Attestation
+    6 Optional pre-push Hook (convention boundary): npm run build:ext && npm run verify:sync
   VERSION_DIST_BEHAVIOUR: 'Release: 1. package.json + VERSION, 2. CHANGELOG.md, 3.
     git tag vX.Y.Z, 4. Push mit Release-Sektion. Ein Release pro Milestone (docs/ARCHITECTURE.md
     §11).'
