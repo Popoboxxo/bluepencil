@@ -17,8 +17,9 @@
  *
  * The extended cases (§8) go past "it mounted": a live hub round-trip (`dist/server.js` as a child
  * process), persistence across a real reload, same-origin navigation, the double-mount guard, the
- * one-tag loader, and adapter selection. They reuse the same browser, worker and fixture host, and
- * reset `chrome.storage` settings before each, so one case cannot colour the next.
+ * one-tag loader, adapter selection and the composer's note-type switch. They reuse the same browser,
+ * worker and fixture host, and reset `chrome.storage` settings before each, so one case cannot colour
+ * the next.
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -1484,7 +1485,8 @@ async function checkInBrowser() {
       forceRelay.layers >= 2 && forceRelay.addedLayers >= 1, JSON.stringify(forceRelay));
 
     // 8. The extended cases: a live hub round-trip, browser-store persistence across a reload,
-    //    same-origin navigation, the double-mount guard, the one-tag loader, and adapter selection.
+    //    same-origin navigation, the double-mount guard, the one-tag loader, adapter selection and the
+    //    composer's note-type switch.
     //    They reuse the same browser, worker and fixture host as the cases above — `writeExtensionSettings`
     //    resets the settings before each one, so the options-page step's dead-port hub cannot leak in.
     await checkExtended(browser, worker);
@@ -1807,6 +1809,97 @@ async function caseLocalStorageAdapter(browser) {
       "document.querySelector('bluepencil-notes')?.blueprint?.store?.adapterName ?? null")}`);
 }
 
+/**
+ * Case 7 — the composer's note-type switch in the BUILT extension (finding (a)).
+ *
+ * `tests/unit/ui.test.ts` covers the switch, but only against the library source in jsdom. Nothing
+ * asserted that the *shipped* extension still renders all three types: the extension loads its own
+ * copy of the element (`extension/build.mjs` bundles `dist/bluepencil.element.js` into `bootstrap.js`),
+ * so a regression that dropped the `bug` type from that copy would pass every other gate. This case
+ * drives the real overlay in a real browser and pins three claims at once: all three type buttons
+ * exist, every one renders with a real translated label (neither an empty button nor the raw i18n
+ * key), and selecting `bug` really reveals the severity switch (FR-3.6).
+ */
+async function caseComposerTypeSwitch(browser) {
+  // memory + anonymous: no hub to talk to, and the element's other identity choice, `prompt`, opens a
+  // blocking dialog a headless browser cannot answer.
+  await writeExtensionSettings(browser, { store: "memory", identity: "anonymous" });
+  const tabId = await openHostTab(browser, "/types");
+  ok("the type-switch fixture opens in its own tab", tabId !== null, `tab id ${tabId}`);
+  await attachToHostPath(browser, "/types");
+
+  const mount = await mountViaWorker(browser);
+  ok("the layer mounts for the type-switch case", mount?.ok === true,
+    `mount: ${JSON.stringify(mount)}`);
+  await attachToHostPath(browser, "/types");
+  await waitForLayer(browser);
+
+  // Open the composer the way a user does — arm the text mode, click the target — and wait for the
+  // popover to be *visible*, using the same geometry expression `openComposerAndSave` relies on. The
+  // wait is a `poll`, so a composer that never opens is a red check here rather than a thrown abort of
+  // the cases after this one.
+  await armMode(browser, "mode-text");
+  await browser.click("#target");
+  const opened = await poll(
+    browser,
+    `(() => { const n = document.querySelector('.bp-composer'); if (!n) return false;
+              const r = n.getBoundingClientRect(); return r.width > 0 && r.height > 0; })()`,
+    8000,
+  );
+  ok("the composer opens from the real UI on the built extension", opened);
+
+  // Read all three buttons in one round trip: presence *and* geometry, because a button that exists but
+  // has a zero-sized box (e.g. an undisplayed row) is not an offered choice and must fail. `label` is
+  // the trimmed textContent, checked below against both emptiness and the raw i18n key.
+  const typeButtons = JSON.parse(await browser.evaluate(`(() => {
+    const read = (value) => {
+      const node = document.querySelector('[data-bp-action="composer-type-' + value + '"]');
+      if (!node) return null;
+      const rect = node.getBoundingClientRect();
+      return { width: rect.width, height: rect.height, label: (node.textContent || '').trim() };
+    };
+    return JSON.stringify({ text: read('text'), design: read('design'), bug: read('bug') });
+  })()`));
+
+  for (const type of ["text", "design", "bug"]) {
+    const button = typeButtons[type];
+    ok(`the composer offers the ${type} type button`, button !== null,
+      `[data-bp-action="composer-type-${type}"] → ${JSON.stringify(button)}`);
+    ok(`the ${type} type button is visible`,
+      button !== null && button.width > 0 && button.height > 0,
+      `box: ${button === null ? "absent" : `${button.width}×${button.height}`}`);
+    // A real translation, not the key: `applyTranslations` fills the `data-bp-i18n` node, and a bundle
+    // that lost the entry would leave an empty (or raw-key) button that no other gate would catch.
+    ok(`the ${type} type button shows a translated label`,
+      button !== null && button.label.length > 0 && button.label !== `composer.type.${type}`,
+      `label=${JSON.stringify(button?.label ?? null)}`);
+  }
+
+  // Selecting `bug` is what carries the extra UI: FR-3.6 says the severity switch appears only for a
+  // bug report. The click routes through the layer's delegated handler, so both the pressed state and
+  // the row's visibility are asynchronous and polled — a timeout is a red check, never a throw.
+  await browser.click('[data-bp-action="composer-type-bug"]');
+  const bugPressed = await poll(
+    browser,
+    `document.querySelector('[data-bp-action="composer-type-bug"]')?.getAttribute('aria-pressed') === 'true'`,
+    5000,
+  );
+  ok("selecting the bug type marks its button pressed", bugPressed,
+    `aria-pressed=${await browser.evaluate(
+      `document.querySelector('[data-bp-action="composer-type-bug"]')?.getAttribute('aria-pressed') ?? null`)}`);
+
+  const severityVisible = await poll(
+    browser,
+    `(() => {
+       const button = document.querySelector('[data-bp-action^="composer-severity-"]');
+       const row = button?.closest('.bp-field');
+       return Boolean(row) && row.getBoundingClientRect().height > 0;
+     })()`,
+    5000,
+  );
+  ok("selecting the bug type reveals the severity switch (FR-3.6)", severityVisible);
+}
+
 /** Runs every extended case; `runCase` keeps one failure from cancelling the rest. */
 async function checkExtended(browser) {
   // Each case starts with `writeExtensionSettings`, which writes a complete blob — so the
@@ -1817,6 +1910,7 @@ async function checkExtended(browser) {
   await runCase("unforced double mount is a no-op", () => caseDoubleMount(browser));
   await runCase("one-tag loader detection", () => caseLoaderDetection(browser));
   await runCase("localStorage adapter selection", () => caseLocalStorageAdapter(browser));
+  await runCase("composer type switch", () => caseComposerTypeSwitch(browser));
 }
 
 try {
