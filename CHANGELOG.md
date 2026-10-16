@@ -1,3 +1,146 @@
+## [0.6.0] - 2026-10-16
+
+### Added
+
+**A third note type, `bug` (FR-3.2, #75).** `type` was `text | design`; a reviewer looking at
+something that is *wrong* rather than merely improvable had to file it as a text note and say so in
+prose. `NOTE_TYPES` now carries `bug` alongside them, the composer offers the three categories (the
+default stays `text`), and the panel gets a badge and a `type` filter, with the copy in `en`/`de`.
+Back-compat is untouched: an unknown type in an old store or bundle still falls back to `text`,
+there is no schema change and no third layer mode.
+
+**Severity on bug notes — `blocker | major | minor` (FR-3.6, #79).** A bug is not made more urgent by
+being a bug, so severity is a **category-orthogonal, optional** dimension next to `type` and
+`intent`: it adds no note types (`type` stays `text | design | bug`, `intent` stays
+`implement | feedback`), it is meaningful only for `type: "bug"`, and it is omitted for every other
+type. Backward compatibility was the constraint — a note without severity stays valid, there is no
+`schemaVersion` bump, and old stores and bundles import unchanged. On the import/migration path an
+unknown severity degrades safely (dropped, treated as absent), mirroring the unknown-type → `text`
+fallback, while the strict write/validate paths reject an unknown value. Markdown export, the MCP tool
+surface and the hub handler carry the field through.
+
+**The web and extension strands must agree: a functional parity suite (NFR-11, #77).** The one-tag
+embed loader and the MV3 extension mount the same layer — but nothing proved they *behaved* the same,
+so a divergence could ship as a silent difference between the two arrival paths. `tests/e2e/parity.e2e.mjs`
+(`npm run smoke:parity`) drives both against a shared fixture (`examples/parity/page.html`,
+`tests/e2e/parity-cases.mjs`) and compares their observations; a behavioural difference is a red
+test. It runs as a dedicated CI `parity` job, which `docs/BUILD-SYNC.md` lists among the jobs that
+should stay required status checks.
+
+**The MV3 smoke now exercises the hub and persistence (extension scope, #80).** `extension/smoke.mjs`
+gained the cases that were still missing at the edges: a live hub round-trip (the built
+`dist/server.js` on a loopback port, a real-UI capture through the `http` adapter, `GET /notes` on the
+hub, then a reload and remount), a `chromeStorage` reload-persistence check (note and marker), a
+same-origin navigation check (a fresh document has no layer; a remount yields exactly one
+`<bluepencil-notes>`), an unforced double-mount no-op, an in-browser one-tag loader detection (the
+extension steps aside and the badge names the source), and a `localStorage` adapter-selection case.
+The shared note/UI drivers were extracted and reused across the existing checks, and a missing browser
+now fails red under `BP_REQUIRE_BROWSER=1` instead of passing quietly.
+
+**The installation is tested, not assumed (NFR-16, #81).** `scripts/install-smoke.mjs`
+(`npm run smoke:install`) packs the package, installs the tarball into a scratch project, imports
+every documented exports subpath by package specifier (root, `data`, the adapters, `i18n`, `attach`,
+`server`; `element` is syntax-checked as browser-only) and runs the `bluepencil` bin — so a documented
+entry point that fails to resolve after a real install fails the build. A second, non-blocking
+diagnostic leg (`smoke:install:git`) installs `github:Popoboxxo/bluepencil#<ref>` to prove `prepare`
+builds `dist/` during a git install; a fork PR's head SHA is not on the base repo, so only the tarball
+leg is the gate.
+
+**The bookmarklet path is smoke-tested in a real browser (NFR-1, NFR-6, NFR-15, #81).**
+`scripts/bookmarklet-smoke.mjs` (`npm run smoke:bookmarklet`) runs the built `dist/bluepencil.iife.js`
+the way a bookmarklet arrives — injected *after* load into a page the code does not own — and asserts
+the layer surfaces, a note captured through the real UI (panel + marker), the markdown export, and
+that `disable()` leaves no residue while `enable()` restores the layer. A second fixture pins the
+documented strict-CSP limitation: under `script-src 'self'` the post-load injection does not mount.
+
+**The closed loop is one observed run: end-to-end round-trip smoke (FR-16.8, FR-16.9, NFR-11, #85).**
+`tests/e2e/round-trip.e2e.mjs` (`npm run smoke:round-trip`) drives both browser strands (the one-tag
+embed loader and the built MV3 extension) to write a note to the hub, has an agent read it and reply
+over the hub's MCP door, and checks the reply returns to the browser on the next reload. This is the
+only leg that proves the two arrival paths share one store end to end; it is wired into
+`npm run verify` and the CI verify job.
+
+**A build-sync guard turns the library ↔ extension identity into a gate, not a hope (NFR-21, #87).**
+The extension ships the library's element bundle verbatim
+(`extension/dist/bluepencil.element.iife.js`), so a library build the extension never picked up
+installs, passes a shallow check, and quietly lacks the fix. `npm run verify:sync`
+(`scripts/verify-sync.mjs`) now reports every inconsistency in one run: the
+`sha256(dist/bluepencil.element.iife.js)` must equal `extension/dist/build-info.json.elementSha256`,
+and both `extension/manifest.json.version` and `build-info.json.version` must equal
+`package.json.version` — the version single source of truth. The version-bump gate
+(`npm run check-version-bump`, CI `bump` job, pull-request-only with `fetch-depth: 0`) fails a
+behavioural-surface diff (`src/`, `src/element/`, `extension/src/`, `extension/manifest.json`,
+`extension/options.html`, `server/`) without a `package.json` bump; an unresolvable base ref is a
+warning and exit 0, never a false red. Under `--watch` the element builds now auto-rebuild the
+extension (debounced), `npm run build:ext` writes `{ version, elementSha256, gitSha }` provenance, and
+the opt-in `.githooks/pre-push` hook (a convention boundary, enabled with
+`node scripts/install-hooks.mjs`) rebuilds and rechecks before a push leaves the machine.
+`docs/BUILD-SYNC.md` documents the guard surface and the changed-path → CI-leg matrix.
+
+### Changed
+
+**The HTTP adapter export is `createHttpAdapter`, and the extension permission copy describes the real
+injection path (#86).** The README, `docs/ARCHITECTURE.md` and `docs/INTEGRATION.md` snippets named a
+non-existent `httpAdapter`; they now import `createHttpAdapter`, so a copy-paste out of the docs
+resolves. `docs/EXTENSION.md` and `docs/WEBSTORE.md` no longer justify the `http(s)://*/*` host
+permission by navigation survival: the overlay is injected on demand after an explicit user gesture
+and does **not** survive a navigation in this release, and the copy now says so.
+
+**The README lists every smoke/verify script and its scope (#86).** The verify chain's smokes were
+previously only implied; a table now maps each script to its file and what it proves, and states that
+CI runs the whole set as five jobs (`spec`, `verify`, `parity`, `install`, `image`).
+
+**Dependency and action bumps.** Dev: `vitest` 5.0.3 → 5.0.4 (#84), `typescript` 5.9.3 → 7.0.2 with an
+explicit `rootDir` for TS7 declaration emit (#66), and `@types/node` (#67, #72). CI / GitHub Actions:
+`docker/build-push-action` v6 → v7 (#82), `docker/setup-buildx-action` v3 → v4 (#83),
+`docker/login-action` v3 → v4 (#68), `actions/checkout` v4 → v7 (#69), and
+`actions/attest-build-provenance` v2 → v4 (#65).
+
+### Fixed
+
+**A corrupt stored blob no longer latches storage off for the whole session (#73).** The single
+`degraded` latch conflated a failed *read* with a failed *write*: a failed read below the write layer
+latched storage off, so a corrupt stored blob could never be replaced and every later mutation stayed
+unpersisted even though the host was healthy again. It is split into `readFailed` and `writeDegraded`
+— a read failure makes the in-memory set authoritative without blocking `persist()`, so the next write
+reaches the host and replaces the corrupt blob, which is exactly the recovery the old latch prevented;
+a write failure under `writeFailure: "degrade"` still stops further writes, because there is no other
+copy to fall back to. Both causes share one `reported` flag, so `onFallback` still fires at most once
+per session (NFR-14); the `writeFailure: "reject"` path is unchanged.
+
+**A transient worker-probe failure is retried instead of latching out (#74).** The extension's name
+probe recorded a failed probe as a permanent verdict, which excluded the real worker for the rest of
+the 20 s budget. The bookkeeping moved into `extension/probe.mjs`'s `selectWorker`: transient probe
+failures are now retried with backoff, no target is permanently excluded, the selection stays
+fail-closed, and per-candidate attempt counts are reported.
+
+### Verified
+
+`npm run typecheck` + `npm run typecheck:ext` green; **784 unit tests** in **34 files**; `npm run build`
++ `npm run build:ext`; `npm run verify:sync` OK (version 0.6.0, element bundle sha256 `6a92e37e…`); the
+size guard within every budget (core 36.3 kB gzip of 100, attach loader 3.3 of 8, IIFE 39.9 of 40,
+custom element 42.4 of 45); `npm run smoke:pack` (12 required artefacts, 107 files), `npm run smoke:install`
+(every documented subpath resolves by package specifier, `bluepencil --help` exit 0), `npm run smoke:cli`
+14/14, `npm run smoke:mcp` 23/23, `npm run secret-scan` clean (2004 files), and `npm run spec`
+**139/139 valid** in 17 documents — 118 functional, 21 non-functional, no requirement without a verify
+method. `BP_REQUIRE_BROWSER=1 npm run verify` green end to end in a real Chrome (found automatically at
+the Playwright cache): **embed 14/14**, **e2e 13/13**, **bookmarklet 2/2**, **parity 5/5**,
+**ext 102/102** (0 failed), **webstore 38/38** (four `ADVICE`, no failures) and **round-trip 11/11**,
+all on one tree.
+
+### Known gaps
+
+- **The new gates are enforced in CI / the local chain, not by branch protection.** `verify:sync` runs
+  inside `npm run verify`; `check-version-bump` is the pull-request-only `bump` job. `docs/BUILD-SYNC.md`
+  *recommends* which jobs should be required status checks, but branch protection is repository
+  configuration a maintainer sets in GitHub — no file in the tree changes it.
+- **`spec:check` (`reqmd check spec/`) is CI-verified.** The regeneration is deterministic — `npm run
+  spec` leaves `git status spec/` empty — and CI fails on drift, but `reqmd` itself is a CI-side tool.
+- **The extension still does not survive a navigation (FR-6.11/6.12).** The overlay is injected on
+  demand and a fresh document has no `<bluepencil-notes>` until the user invokes the extension again;
+  the readable hub picker, the override checkbox and the live status line from 0.5.0's gaps remain
+  unimplemented. Carried forward, not new.
+
 ## [0.5.0] - 2026-10-03
 
 ### Added
