@@ -89,6 +89,8 @@
     "size": "node scripts/size-guard.mjs",
     "serve": "node dist/server.js",
     "build:ext": "node extension/build.mjs",
+    "verify:sync": "node scripts/verify-sync.mjs",
+    "check-version-bump": "node scripts/check-version-bump.mjs",
     "smoke:ext": "node extension/smoke.mjs",
     "smoke:webstore": "node scripts/webstore-compliance.mjs",
     "build:site": "node scripts/build-site.mjs",
@@ -104,7 +106,7 @@
     "spec:check": "reqmd check spec/",
     "spec:ls": "reqmd ls spec/",
     "spec:stats": "reqmd stats spec/",
-    "verify": "npm run typecheck && npm run typecheck:ext && npm run test && npm run build && npm run build:ext && npm run size && npm run smoke:pack && npm run smoke:install && npm run smoke:embed && npm run smoke:e2e && npm run smoke:round-trip && npm run smoke:bookmarklet && npm run smoke:parity && npm run smoke:ext && npm run smoke:webstore",
+    "verify": "npm run typecheck && npm run typecheck:ext && npm run test && npm run build && npm run build:ext && npm run verify:sync && npm run size && npm run smoke:pack && npm run smoke:install && npm run smoke:embed && npm run smoke:e2e && npm run smoke:round-trip && npm run smoke:bookmarklet && npm run smoke:parity && npm run smoke:ext && npm run smoke:webstore",
     "smoke:e2e": "node tests/e2e/vanilla.e2e.mjs",
     "smoke:round-trip": "node tests/e2e/round-trip.e2e.mjs",
     "smoke:parity": "node tests/e2e/parity.e2e.mjs"
