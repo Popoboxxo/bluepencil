@@ -39,7 +39,8 @@ errors, **2** parse error.
 | `14-live-systems/` | FR-14.x | environment tag, bundle export/import, promotion, modes |
 | `15-headless/` | FR-15.x | `bluepencil/data`, `bluepencil/cli`, single source of truth |
 | `16-mcp/` | FR-16.x | MCP tools, read-only default, environment binding, resources, prompts |
-| `99-non-functional/` | NFR-1…20 | footprint, size budget, determinism, CSP, environment isolation |
+| `21-voice/` | FR-21.x | dictation opt-in, feature detection, mic button, teardown, privacy, engine injection, i18n, a11y |
+| `99-non-functional/` | NFR-1…21 | footprint, size budget, determinism, CSP, environment isolation |
 
 Each directory holds a `schema.yaml` (the contract for that document) and
 `requirements.md` (the requirements themselves).
@@ -89,5 +90,5 @@ is the one worth engineering against.
 
 ## Coverage today
 
-137 requirements (117 functional, 20 non-functional), all `status: approved`, all with a
-verification method. Priority split: 87 P0, 41 P1, 9 P2.
+147 requirements (126 functional, 21 non-functional), all `status: approved`, all with a
+verification method. Priority split: 93 P0, 45 P1, 9 P2.

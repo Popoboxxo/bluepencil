@@ -84,6 +84,12 @@ export const en = {
   "composer.error.empty": "Please write something first.",
   "composer.error.vanished": "The element is gone — the note was not saved.",
   "composer.error.save": "The note could not be saved.",
+  "composer.voice.start": "Start dictation",
+  "composer.voice.stop": "Stop dictation",
+  "composer.voice.listening": "Listening…",
+  "composer.voice.error": "Dictation failed.",
+  "composer.voice.permission": "Microphone access was denied.",
+  "composer.voice.unsupported": "Dictation is not supported in this browser.",
 
   /* -- panel --------------------------------------------------------------- */
   "panel.title": "Notes",

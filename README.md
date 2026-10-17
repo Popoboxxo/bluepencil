@@ -292,7 +292,9 @@ swappable transport adapter (memory, `localStorage`, `chromeStorage`, file, HTTP
 MCP server). Notes carry an
 **intent** (`implement` or `feedback`) and a **status** (`open`, `done`, `needs_decision`) plus
 a **thread** of human and agent messages — so an AI agent can read the set, implement what is
-unambiguous, ask for a decision where it is not, and report back in the same thread.
+unambiguous, ask for a decision where it is not, and report back in the same thread. A note can also
+be dictated: an opt-in (`voice`, off by default) puts a mic button in the composer that appends the
+browser's transcript to the note body without saving it.
 
 ## Two more things it must do
 
@@ -333,6 +335,10 @@ so CI, scripts and agents use exactly the same data and validators as the UI.
   page. The hub is where that credential is checked — one shared secret (`--auth-secret`) or
   signed, expiring, revocable per-device tokens (`--token-key`, minted with `bluepencil token`);
   [docs/INTEGRATION.md](docs/INTEGRATION.md) §5 has both.
+* **Dictation is opt-in and text-only (FR-21).** The `voice` opt-in adds a mic button to the composer;
+  only the transcript text is kept — no audio is stored, and the core makes no request of its own.
+  Chromium's Web Speech API may still send audio to a browser service, so a host that must avoid that
+  injects its own engine (`voiceEngine`).
 * **Notes may contain internal wording.** A note is a review artefact, not a data store; treat it as
   if it names internal features, customers or drafts. The policy is **"no personal data in notes"**:
   purge a round once it is worked off, and prefer the local (`localStorage`) or file adapter when in

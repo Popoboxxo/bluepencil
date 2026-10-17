@@ -9,7 +9,7 @@
 > `N` = concrete product need (admin debug mode in an ALM system).
 >
 > **This file is the source of truth.** The machine-checkable projection lives in
-> [`spec/`](../spec/README.md) — 137 requirements as a [reqmd](https://reqmd.dev) tree,
+> [`spec/`](../spec/README.md) — 147 requirements as a [reqmd](https://reqmd.dev) tree,
 > regenerated with `npm run spec` and validated in CI with `reqmd check`. Edit the table
 > below, never the generated spec.
 
@@ -233,6 +233,24 @@ export. The MCP interface is therefore **not optional** (Daniel, 2026-09-14).
 | FR-16.8 | **The same MCP is reachable over HTTP**: the hub answers MCP at its own path in the current Streamable HTTP shape (POST only, no sessions, no server-initiated stream), with the same tools, validators and credential check as the stdio server, read-only by default | P1 | M5 | N | The same tool call over HTTP and over stdio returns the same result for the same store; a write tool is refused without the opt-in; a wrong credential is refused before the method is read |
 | FR-16.9 | **Two doors, one store**: the HTTP MCP endpoint and the notes API of one process share one store and one write path — no second file handle, no second truth | P0 | M5 | N | A note written through MCP is visible in the notes API of the same process without a restart, and the other way round |
 
+## FR-21 Voice dictation
+
+Optional dictation input for the composer, off by default and enabled per host. The layer uses the
+browser's own speech recognition when it exists, lets a host inject its own engine so the core stays
+dependency-free, and never turns speech into a saved note on its own — the human reviews the
+transcript and saves it through the existing flow.
+
+| ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
+|---|---|---|---|---|---|
+| FR-21.1 | Host opt-in, default off: the dictation UI exists only when the host opts in | P0 | M6 | G | With `voice` unset: no mic button in the DOM, no recognition listener and no permission prompt; with `voice` set the mic button appears. `voice`/`data-voice` belong to the embed vocabulary (FR-17), so the attribute is traceable there |
+| FR-21.2 | Feature detection: `Web Speech API`, no throw when unsupported, no silent failure | P0 | M6 | G | Without `SpeechRecognition`/`webkitSpeechRecognition`: no mic button and no exception thrown; with `voice` set but unsupported: an entry in `element.issues`, never silence |
+| FR-21.3 | Dictation: a mic button in the open composer appends the final transcript, no auto-save | P0 | M6 | G | A mic button (`data-bp-action="composer-voice"`) starts recognition in the composer/layer language; interim results show in a live region; the final transcript is appended to the body textarea and saved only by the human's save action |
+| FR-21.4 | Teardown: toggle, `Esc`, close, `disable()`/`destroy()` stop recognition, idempotent | P0 | M6 | G | A second activation stops recognition; `Esc`, closing the composer, `disable()` and `destroy()` all stop it; a repeated `disable()`/`destroy()` is a no-op (NFR-15) |
+| FR-21.5 | Privacy: only the transcript is kept — no audio, no network calls from the core | P0 | M6 | G | No audio is stored; only transcript text remains; the network log shows no request from the core (NFR-7); the docs state that Chromium's Web Speech API may use a browser service |
+| FR-21.6 | The host may inject its own recogniser, keeping the core dependency-free and offline | P1 | M6 | G | A host-supplied engine is used instead of the browser API; `dependencies` stays empty (NFR-4) and an offline host needs no browser service |
+| FR-21.7 | i18n: mic label, listening, error and permission-denied keys exist in both `en` and `de` | P1 | M6 | G | Switching the language changes the mic label and every status message; a key missing in either `en` or `de` fails the test |
+| FR-21.8 | A11y: the mic button is labelled, keyboard-operable and `aria-pressed`; status announced | P1 | M6 | G | Keyboard-only use toggles dictation; `aria-pressed` reflects the state; status/interim are announced through the live region; an error appears inline with `role="alert"` |
+
 ---
 
 ## NFR — non-functional
@@ -241,7 +259,7 @@ export. The MCP interface is therefore **not optional** (Daniel, 2026-09-14).
 |---|---|---|---|---|
 | NFR-1 | **Zero footprint when disabled**: no DOM, no fetch, no listener, no timer — **both** when never enabled and after a runtime `disable()` | P0 | M1 | Bundle loaded but unused / after disable → no network requests, no nodes, no measurable CPU |
 | NFR-2 | No polling. Data is fetched on demand (open/refresh/write) | P0 | M1 | Idle page produces no repeated requests over 10 minutes |
-| NFR-3 | Core bundle small enough to embed casually (target ≤ 33 kB min+gzip, excluding adapters) | P1 | M1 | Build report shows size; CI fails on regression beyond budget. Raised from 30 kB to 31 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13), measured at 30.5 kB. Raised again to 33 kB for the transient container reveal feature (issue #20) and app/build-ref/exportedBy (issue #21), measured at 31.9 kB — a decision, recorded here so it cannot look like drift. Raised to 100 kB core / 45 kB custom element for the presentation mode (FR-20), measured at 35.2 kB core and 40.9 kB element gzip (IIFE 38.5 kB of 40 kB); the presenter surface could not fit under the old ceilings, so the numbers moved openly |
+| NFR-3 | Core bundle small enough to embed casually (target ≤ 33 kB min+gzip, excluding adapters) | P1 | M1 | Build report shows size; CI fails on regression beyond budget. Raised from 30 kB to 31 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13), measured at 30.5 kB. Raised again to 33 kB for the transient container reveal feature (issue #20) and app/build-ref/exportedBy (issue #21), measured at 31.9 kB — a decision, recorded here so it cannot look like drift. Raised to 100 kB core / 45 kB custom element for the presentation mode (FR-20), measured at 35.2 kB core and 40.9 kB element gzip (IIFE 38.5 kB of 40 kB); the presenter surface could not fit under the old ceilings, so the numbers moved openly. Raised the IIFE budget to 45 kB for voice dictation (FR-21), measured at 37.7 kB core / 41.3 kB IIFE / 44.0 kB element gzip — the pre-change IIFE sat at 39.9 kB of 40 kB (0.1 kB headroom), so any feature overflowed it |
 | NFR-4 | No runtime dependencies (peer deps only for framework wrappers) | P0 | M1 | `dependencies` empty in the core package |
 | NFR-5 | Evergreen browsers (Chromium/Firefox/Safari current + previous); graceful degradation otherwise | P1 | M1 | Feature detection; layer self-disables with a console note instead of throwing |
 | NFR-6 | CSP-safe: no `eval`, no `new Function`, no inline script injection | P0 | M3 | Works on a page with `script-src 'self'` (bookmarklet documented with limits) |
@@ -267,7 +285,7 @@ export. The MCP interface is therefore **not optional** (Daniel, 2026-09-14).
 | Origin | Meaning | Requirement groups |
 |---|---|---|
 | **P** (prototype) | Behaviour already proven in the reference implementation — must be preserved 1:1 | FR-1.2–1.5, 1.8–1.9, FR-2.1, 2.3, 2.7, FR-3.1–3.3, FR-4.1–4.7, FR-6.3–6.5, FR-7.1–7.2, 7.4, FR-8.1 |
-| **G** (gap) | Missing in the prototype — the reason a library exists at all | FR-1.1, 1.10, FR-2.2, 2.4–2.6, FR-3.4–3.6, FR-6.1–6.2, FR-7.3, FR-9.1, 9.4, FR-10.1–10.3, NFR-3, 6, 11 |
+| **G** (gap) | Missing in the prototype — the reason a library exists at all | FR-1.1, 1.10, FR-2.2, 2.4–2.6, FR-3.4–3.6, FR-6.1–6.2, FR-7.3, FR-9.1, 9.4, FR-10.1–10.3, NFR-3, 6, 11, FR-21.x (all) |
 | **N** (product need) | Driven by the admin debug-mode requirement of a downstream ALM product | FR-5.x (all), FR-8.2–8.5, FR-9.2, FR-10.4, FR-6.6 |
 
 ## Decisions (resolved)

@@ -49,7 +49,7 @@ requires-trace-from: []
 
 Core bundle small enough to embed casually (target ≤ 33 kB min+gzip, excluding adapters)
 
-*Acceptance criteria:* Build report shows size; CI fails on regression beyond budget. Raised from 30 kB to 31 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13), measured at 30.5 kB. Raised again to 33 kB for the transient container reveal feature (issue #20) and app/build-ref/exportedBy (issue #21), measured at 31.9 kB — a decision, recorded here so it cannot look like drift. Raised to 100 kB core / 45 kB custom element for the presentation mode (FR-20), measured at 35.2 kB core and 40.9 kB element gzip (IIFE 38.5 kB of 40 kB); the presenter surface could not fit under the old ceilings, so the numbers moved openly
+*Acceptance criteria:* Build report shows size; CI fails on regression beyond budget. Raised from 30 kB to 31 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13), measured at 30.5 kB. Raised again to 33 kB for the transient container reveal feature (issue #20) and app/build-ref/exportedBy (issue #21), measured at 31.9 kB — a decision, recorded here so it cannot look like drift. Raised to 100 kB core / 45 kB custom element for the presentation mode (FR-20), measured at 35.2 kB core and 40.9 kB element gzip (IIFE 38.5 kB of 40 kB); the presenter surface could not fit under the old ceilings, so the numbers moved openly. Raised the IIFE budget to 45 kB for voice dictation (FR-21), measured at 37.7 kB core / 41.3 kB IIFE / 44.0 kB element gzip — the pre-change IIFE sat at 39.9 kB of 40 kB (0.1 kB headroom), so any feature overflowed it
 
 ## NFR-4 No runtime dependencies (peer deps only for framework wrappers)
 
