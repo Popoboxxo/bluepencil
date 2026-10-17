@@ -19,7 +19,7 @@ no "the second badge in the header".
 
 ![The review layer on the vanilla fixture: five notes from a review round, the bar with its counters, the marker on the annotated element and the note list](docs/images/fixture-review.png)
 
-**Status:** `0.6.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
+**Status:** `0.7.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
 `main`: the core model, anchoring (now including **transient container reveal**), capture, store and
 the four adapters (with a conformance suite); canonical, diffable bundles with
 `merge`/`upsert`/`replace-session` and migrations; Markdown/JSON export; the collaboration protocol;
@@ -30,14 +30,18 @@ server (read-only by default) and the **hub** — one command, static site and n
 running process without a credential, and a container image (`docker compose up -d`) that generates
 its own credential; a **Chromium MV3 extension** that mounts the
 layer in pages you do not build yourself, with its settings reaching the layer and its rounds kept in
-the extension's own storage; the vanilla fixture app with its seed bundle, 784 unit tests and the
+the extension's own storage; **opt-in composer dictation** (`voice`, off by default — a mic button
+that appends the browser's transcript without saving it); the vanilla fixture app with its seed
+bundle, 813 unit tests and the
 browser legs of the embed, end-to-end, round-trip, bookmarklet, parity and extension smokes.
 
 Honest gaps: the E2E suite is hand-rolled over the CDP pipe rather than Playwright (NFR-4 says no
 test framework), token refresh is manual (an expired token is replaced by hand, and revocation is
-read at hub start), no import/merge surface in the UI, no bulk delete or retention control, i18n
+read at hub start), dictation leans on the browser's own Web Speech API (Chromium/Safari only — no
+Firefox support; Chromium may send audio to a browser service, so inject `voiceEngine` to stay
+offline), no import/merge surface in the UI, no bulk delete or retention control, i18n
 only `en`/`de`, and no npm publish — install from the tag
-(`npm i github:Popoboxxo/bluepencil#v0.6.0`; the `prepare` script builds `dist/` during install) or
+(`npm i github:Popoboxxo/bluepencil#v0.7.0`; the `prepare` script builds `dist/` during install) or
 use the release artefacts: loader, layer, package tarball, the MV3 browser extension, one
 `SHA256SUMS` over all of them, and the hub image on `ghcr.io/popoboxxo/bluepencil`
 ([docs/DOCKER.md](docs/DOCKER.md)). How a release is cut: [docs/RELEASING.md](docs/RELEASING.md).

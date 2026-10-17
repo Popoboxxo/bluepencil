@@ -1,3 +1,76 @@
+## [0.7.0] - 2026-10-17
+
+### Added
+
+**Composer dictation: speak a note instead of typing it (FR-21.1–21.8, #90).** The composer gains a
+mic button that starts the browser's speech recognition, announces interim results in a `role="status"`
+live region and **appends only the final transcript to the body textarea** — the note is saved by the
+human's own save action, there is no auto-save (FR-21.3). The whole surface is **opt-in and off by
+default**: without `voice` (`data-voice` in the loader form) there is no mic button in the DOM, no
+recognition listener and no permission prompt (FR-21.1). The new module `src/ui/voice.ts` wraps the Web
+Speech API behind a minimal `VoiceEngine` interface and owns the start/stop/destroy state machine, so
+teardown is idempotent and `Esc`, closing the composer, `disable()` and `destroy()` all stop
+recognition (FR-21.4). Feature-detected through `SpeechRecognition || webkitSpeechRecognition`: no
+recogniser means no button and no throw, and an explicitly requested `voice` on such a platform is
+reported through `element.issues` instead of failing silently (FR-21.2). A host that wants to stay
+offline — or use its own recogniser — injects an engine through `voiceEngine` / `voice-engine="…"`, a
+global path to a factory that must resolve to a function, keeping the core dependency-free (FR-21.6).
+Six new `en`/`de` keys cover the label and every status message (FR-21.7), and the button is labelled,
+keyboard-operable and carries `aria-pressed`, with status and errors announced in the live region
+(FR-21.8). New requirements `FR-21.1`–`FR-21.8` and the generated `spec/21-voice/` projection.
+
+### Changed
+
+**The IIFE size budget moves from 40 kB to 45 kB (NFR-3, #90).** The measured pre-change IIFE sat at
+39.9 kB gzip against the 40 kB ceiling — 0.1 kB of headroom — so *any* feature overflowed it rather
+than a specific regression. The dictation surface (adapter module, composer wiring, six i18n keys,
+styles) measured 1.4 kB gzip, landing the IIFE at 41.3 kB; 45 kB aligns it with the custom-element
+budget and leaves ~3.7 kB headroom. It is a recorded decision, not drift: NFR-3 and
+`scripts/size-guard.mjs` carry the numbers.
+
+**Version single source of truth: `package.json` and `extension/manifest.json` are `0.7.0` (NFR-21).**
+`0.6.1` was bumped on the feature branch but never tagged; this release goes straight to `0.7.0`.
+`npm run build:ext` regenerates `extension/dist/build-info.json` from the manifest, so a forgotten bump
+is a red build (`verify:sync`), not a stale download.
+
+**Docs carry the dictation contract.** `docs/ARCHITECTURE.md` lists `src/ui/voice.ts`; `docs/EMBED.md`
+documents the `voice` and `voice-engine` attributes and their privacy note; `docs/INTEGRATION.md` gains
+§7 *Voice dictation (FR-21)* with the opt-in, feature-detection, teardown, engine-injection and privacy
+behaviour; the README states that dictation is opt-in and text-only.
+
+### Fixed
+
+No user-visible fixes in this release — the work is the dictation feature and the two enablers above.
+
+### Verified
+
+`npm run typecheck` + `npm run typecheck:ext` green; **813 unit tests** in **36 files**; `npm run build`
++ `npm run build:ext`; `npm run verify:sync` OK (version 0.7.0, element bundle sha256 `aad461d4…`); the
+size guard within every budget (core 37.7 kB gzip of 100, attach loader 3.3 of 8, IIFE 41.3 of 45,
+custom element 44.0 of 45); `npm run smoke:pack` (12 required artefacts, 108 files), `npm run
+smoke:install` (every documented subpath resolves by package specifier, `bluepencil --help` exit 0),
+`npm run secret-scan` clean (2009 files), and `npm run spec` **147/147 valid** in 18 documents — 126
+functional, 21 non-functional, no requirement without a verify method. The browser legs in `npm run
+verify` are green end to end: **embed 14/14**, **e2e 13/13**, **bookmarklet 2/2**, **parity 5/5**,
+**round-trip 11/11**, **ext 116/116** (0 failed) and **webstore 38/38** (four `ADVICE`, no failures).
+
+### Known gaps
+
+- **The Web Speech API's network policy is a browser decision, not the library's.** The core makes no
+  request of its own (NFR-7) and the feature is off by default, but Chromium's own recognition may send
+  audio to a browser service — outside the library's control. A host that must avoid that injects its
+  own engine through `voiceEngine` (FR-21.6).
+- **No Firefox support for the browser engine.** `SpeechRecognition`/`webkitSpeechRecognition` is
+  Chromium/Safari only; on Firefox the mic button does not appear, and an explicitly requested `voice`
+  surfaces in `element.issues` (FR-21.2) rather than working. The injected-engine path is the only
+  offline/Firefox-capable route today.
+- **`spec:check` (`reqmd check spec/`) is CI-verified, not locally.** `reqmd` is a CI-side tool; the
+  regeneration is deterministic (`npm run spec` leaves `git status spec/` empty) and CI fails on drift.
+- **Carried forward from 0.6.0, not new:** the extension still does not survive a navigation
+  (FR-6.11/6.12) and is injected on demand; the README's honest gaps stand (hand-rolled E2E over CDP
+  rather than Playwright, manual token refresh, no import/merge surface in the UI, no bulk delete or
+  retention control, i18n only `en`/`de`, no npm publish — install from the tag).
+
 ## [0.6.0] - 2026-10-16
 
 ### Added
