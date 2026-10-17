@@ -614,6 +614,24 @@ export const STYLES: string = `
   box-shadow: var(--bp-shadow, 0 6px 24px rgba(15, 18, 28, 0.18));
 }
 
+/* -- voice dictation (FR-21) ---------------------------------------------- */
+
+.bp-voice {
+  align-self: flex-start;
+}
+
+.bp-voice.is-listening {
+  border-color: var(--bp-accent, #2a63e8);
+  background: var(--bp-accent, #2a63e8);
+  color: var(--bp-accent-ink, #ffffff);
+}
+
+.bp-voice-status {
+  margin: 0;
+  color: var(--bp-muted, #5a6072);
+  font-size: calc(var(--bp-font-size, 13px) * 0.85);
+}
+
 .bp-details {
   border: 1px dashed var(--bp-line, #d7dae2);
   border-radius: calc(var(--bp-radius, 10px) * 0.6);

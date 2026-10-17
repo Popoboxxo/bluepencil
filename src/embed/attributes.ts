@@ -15,6 +15,7 @@
  */
 import { isEnvironment, type Environment } from "../core/model";
 import { resolveKeymap, type KeymapOverrides } from "../ui/keymap";
+import type { VoiceEngineFactory } from "../ui/voice";
 
 /** Attributes that existed before FR-17 — kept unchanged for existing hosts. */
 export const CORE_ATTRIBUTES = [
@@ -50,6 +51,8 @@ export const EMBED_ATTRIBUTES = [
   "app",
   "build-ref",
   "exported-by",
+  "voice",
+  "voice-engine",
 ] as const;
 
 /** Every attribute the element observes and documents. */
@@ -353,6 +356,46 @@ export function readDock(source: AttributeSource): { dock?: "top" | "bottom"; is
   if (raw === undefined) return { issues: [] };
   if (raw === "top" || raw === "bottom") return { dock: raw, issues: [] };
   return { issues: [`dock must be "top" or "bottom" (got ${JSON.stringify(raw)})`] };
+}
+
+/**
+ * `voice` — presence-based host opt-in for dictation (FR-21.1).
+ *
+ * Dictation is off unless the host says so, and the opt-in is presence-based exactly like a boolean
+ * HTML attribute: an absent attribute is "off", a bare/empty attribute and `"true"` are "on", and
+ * `"false"` is "off". Anything else is reported instead of guessed at, so a typo never silently
+ * enables a microphone. The loader only forwards non-empty values, so `data-voice="true"` is the
+ * documented carrier across the loader boundary.
+ */
+export function readVoice(source: AttributeSource): { voice?: boolean; issues: string[] } {
+  const raw = source.getAttribute("voice");
+  if (raw === null) return { issues: [] };
+  if (raw === "" || raw === "true") return { voice: true, issues: [] };
+  if (raw === "false") return { voice: false, issues: [] };
+  return { issues: [`voice must be "true" or "false" (got ${JSON.stringify(raw)})`] };
+}
+
+/**
+ * `voice-engine="myApp.whisperEngine"` — a host-supplied recogniser factory (FR-21.6).
+ *
+ * The attribute resolves through the same dotted global path as `gate`/`can-annotate` and has to
+ * name a function; anything else is reported rather than ignored, because a host that intended to
+ * inject an offline engine and mistyped the path would otherwise fall back to the browser API
+ * silently.
+ */
+export function readVoiceEngine(
+  source: AttributeSource,
+  resolve: GlobalResolver,
+): { voiceEngine?: VoiceEngineFactory; issues: string[] } {
+  const issues: string[] = [];
+  const path = readAttribute(source, "voice-engine");
+  if (path === undefined) return { issues };
+  const resolved = resolve(path);
+  if (typeof resolved === "function") {
+    return { voiceEngine: resolved as VoiceEngineFactory, issues };
+  }
+  issues.push(`voice-engine "${path}" does not resolve to a function`);
+  return { issues };
 }
 
 /**

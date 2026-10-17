@@ -169,7 +169,30 @@ Host-side checklist:
 | `language` | UI language (`en`, `de`; region/separator agnostic, anything else → `en`) | `en` |
 | `theme` | Token overrides (`accent`, `surface`, `ink`, …) | neutral defaults |
 | `defaultShowDone` | Start with done notes visible | `false` |
+| `voice` | Composer dictation opt-in (FR-21.1): `true` shows a mic button in the composer; unset or `false` means no mic button, no recognition listener and no permission prompt | `false` |
+| `voiceEngine` | Host-supplied recogniser factory (FR-21.6), used instead of the browser engine | unset → the browser's `SpeechRecognition`/`webkitSpeechRecognition` |
 | `onError(err)` | Error reporting | `console.debug` |
+
+### Voice dictation (FR-21)
+
+Dictation is **off by default** and opted into per host — programmatically with `voice: true`, or in
+markup with the `voice` attribute (the loader form is `data-voice="true"`). With the opt-in the
+composer gains a mic button (`data-bp-action="composer-voice"`): interim results are announced in a
+`role="status"` live region, and the **final transcript is appended to the body textarea** and saved
+only by the human's save action — there is no auto-save (FR-21.3). `Esc`, closing the composer,
+`disable()` and `destroy()` all stop recognition, and a second activation toggles it off; teardown is
+idempotent (FR-21.4).
+
+The feature is detected through `SpeechRecognition || webkitSpeechRecognition`, so no button appears
+and nothing throws on a platform without it (FR-21.2). When a host explicitly requests `voice` on
+such a platform, the reason is reported through `element.issues` instead of failing silently. A host
+that wants to stay offline, or use its own recogniser, injects an engine through `voiceEngine` /
+`voice-engine="myApp.whisperEngine"` — a global path to a factory that must resolve to a function
+(FR-21.6); the core stays dependency-free.
+
+**Privacy (FR-21.5):** only the final transcript text is kept — no audio is stored and the core makes
+no network request of its own. Chromium's Web Speech API may itself send audio to a browser service,
+which is outside the library's control; the host opts in deliberately.
 
 ## 8. Theming
 
@@ -233,6 +256,10 @@ init({ theme: { font: "inherit", "font-size": "inherit" } });
 * Notes are artefacts of a review, not a data store: assume they may contain internal wording.
   Keep the policy "no personal data in notes", purge after the round, and prefer local mode when
   in doubt.
+* **Dictation is opt-in and text-only (FR-21).** Only the transcript text from the composer is kept;
+  no audio is stored and the core makes no request of its own. When the browser's own Web Speech API
+  is used, Chromium may send audio to a browser service — a host that must avoid that injects its own
+  engine through `voiceEngine` (FR-21.6).
 * The layer is invisible in print and in host exports.
 
 ## 10. Troubleshooting

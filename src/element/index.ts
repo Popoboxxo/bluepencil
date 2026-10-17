@@ -11,7 +11,8 @@
  *
  * Attributes (single source of truth: `src/embed/attributes.ts`): enabled, adapter, endpoint,
  *   headers, headers-from, token, token-header, token-scheme, language, identity, session,
- *   environment, show-done, theme, theme-accent, theme-surface, route, route-from, gate, mount.
+ *   environment, show-done, theme, theme-accent, theme-surface, route, route-from, gate, mount,
+ *   voice, voice-engine.
  * Events:  bp-enabled, bp-disabled, bp-notes-changed, bp-export, bp-error
  * API:     blueprint, issues, exportNotes(), destroy()
  *
@@ -37,10 +38,13 @@ import {
   readRoute,
   readStore,
   readTheme,
+  readVoice,
+  readVoiceEngine,
   resolveGlobalPath,
   type GlobalResolver,
 } from "../embed/attributes";
 import { createBlueprint, type Blueprint, type BlueprintConfig } from "../index";
+import { resolveVoiceEngine } from "../ui/voice";
 import { VERSION } from "../version";
 
 const OBSERVED = ALL_ATTRIBUTES;
@@ -218,6 +222,8 @@ export class BluepencilNotesElement extends HTMLElement {
     const keyboard = readKeymap(this);
     const docking = readDock(this);
     const appInfo = readAppInfo(this);
+    const voice = readVoice(this);
+    const voiceEngine = readVoiceEngine(this, resolve);
     this.#collect([
       ...headers.issues,
       ...theme.issues,
@@ -229,7 +235,14 @@ export class BluepencilNotesElement extends HTMLElement {
       ...registered.issues,
       ...keyboard.issues,
       ...docking.issues,
+      ...voice.issues,
+      ...voiceEngine.issues,
     ]);
+    // FR-21.2: an explicit `voice` the platform cannot honour is never silent — the host sees it in
+    // `element.issues` (and as a `bp-error`) instead of a mic button that does nothing.
+    if (voice.voice === true && resolveVoiceEngine(globalScope(), voiceEngine.voiceEngine) === null) {
+      this.#collect(["voice is enabled but this browser has no SpeechRecognition"]);
+    }
 
     const mountAttr = readAttribute(this, "mount");
     const root = this.getRootNode() as Document | ShadowRoot;
@@ -260,6 +273,8 @@ export class BluepencilNotesElement extends HTMLElement {
       ...(registered.annotateSelectors === undefined ? {} : { annotateSelectors: registered.annotateSelectors }),
       ...(keyboard.keymap === undefined ? {} : { keymap: keyboard.keymap }),
       ...(docking.dock === undefined ? {} : { dock: docking.dock }),
+      ...(voice.voice === undefined ? {} : { voice: voice.voice }),
+      ...(voiceEngine.voiceEngine === undefined ? {} : { voiceEngine: voiceEngine.voiceEngine }),
       ...(appInfo.app === undefined ? {} : { app: appInfo.app }),
       ...(appInfo.app?.buildRef === undefined ? {} : { buildRef: appInfo.app.buildRef }),
       ...(appInfo.exportedBy === undefined ? {} : { exportedBy: appInfo.exportedBy }),

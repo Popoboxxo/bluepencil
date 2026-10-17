@@ -82,6 +82,12 @@ export const de: Messages = {
   "composer.error.empty": "Bitte zuerst etwas schreiben.",
   "composer.error.vanished": "Das Element ist verschwunden – die Notiz wurde nicht gespeichert.",
   "composer.error.save": "Die Notiz konnte nicht gespeichert werden.",
+  "composer.voice.start": "Diktat starten",
+  "composer.voice.stop": "Diktat beenden",
+  "composer.voice.listening": "Hört zu …",
+  "composer.voice.error": "Diktat fehlgeschlagen.",
+  "composer.voice.permission": "Der Mikrofonzugriff wurde abgelehnt.",
+  "composer.voice.unsupported": "Diktat wird in diesem Browser nicht unterstützt.",
 
   /* -- panel --------------------------------------------------------------- */
   "panel.title": "Notizen",

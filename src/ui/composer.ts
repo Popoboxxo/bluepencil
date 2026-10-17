@@ -15,6 +15,7 @@
 import type { Anchor, CapturedContext, NoteIntent, NoteSeverity, NoteType } from "../core/model";
 import { applyTranslations, type Translate } from "../i18n";
 import type { MessageKey } from "../i18n/en";
+import { createVoice, resolveVoiceEngine, type Voice, type VoiceEngineFactory, type VoiceErrorKind } from "./voice";
 
 /** What the layer hands over when a click opened the composer. */
 export interface ComposerTarget {
@@ -50,6 +51,12 @@ export interface ComposerOptions {
   onSave: (input: ComposerSaveInput) => ComposerSaveResult | Promise<ComposerSaveResult>;
   onCancel?: () => void;
   onError?: (err: unknown) => void;
+  /** Dictation opt-in (FR-21.1): false/absent means no mic button and no listener. */
+  voice?: () => boolean;
+  /** Host-injected recogniser factory (FR-21.6); wins over the browser Web Speech API. */
+  voiceEngine?: VoiceEngineFactory;
+  /** Current composer/layer language tag (e.g. "de"), used as the engine `lang` (FR-21.3). */
+  language?: () => string;
 }
 
 export interface Composer {
@@ -95,6 +102,14 @@ const COMPOSER_TITLE_KEYS: Record<NoteType, MessageKey> = {
   bug: "composer.title.bug",
 };
 
+/** FR-21.8: the inline alert key per engine error kind. */
+const VOICE_ERROR_KEYS: Record<VoiceErrorKind, MessageKey> = {
+  permission: "composer.voice.permission",
+  unsupported: "composer.voice.unsupported",
+  "no-speech": "composer.voice.error",
+  error: "composer.voice.error",
+};
+
 export function createComposer(options: ComposerOptions): Composer {
   const doc = options.document;
   const idPrefix = `bp-${options.instanceId}-composer`;
@@ -105,6 +120,12 @@ export function createComposer(options: ComposerOptions): Composer {
   let selectedIntent: NoteIntent = "implement";
   let selectedSeverity: NoteSeverity | null = null;
   let previousActive: Element | null = null;
+  /** Dictation remains off (no UI at all) unless the host opted in and an engine resolves (FR-21.1). */
+  const voiceEnabled = options.voice?.() === true && resolveVoiceEngine(globalThis, options.voiceEngine) !== null;
+  /** Created on the first mic toggle, released by `close()` so a restart gets a fresh engine. */
+  let voice: Voice | null = null;
+  let voiceButton: HTMLButtonElement | null = null;
+  let voiceStatus: HTMLParagraphElement | null = null;
 
   const element = createEl(doc, "div", "bp-composer");
   element.id = `bp-${options.instanceId}-composer`;
@@ -186,6 +207,21 @@ export function createComposer(options: ComposerOptions): Composer {
   bodyInput.setAttribute("data-bp-i18n-placeholder", "composer.bodyPlaceholder");
   bodyInput.rows = 3;
 
+  // FR-21.1/21.2: without an opt-in (or without a usable engine) there is no mic button and no live
+  // region at all — neither a listener nor a permission prompt can exist for a host that stayed out.
+  if (voiceEnabled) {
+    voiceButton = textNode(doc, "button", "bp-btn bp-voice", "composer.voice.start") as HTMLButtonElement;
+    voiceButton.setAttribute("type", "button");
+    voiceButton.setAttribute("data-bp-action", "composer-voice");
+    voiceButton.setAttribute("aria-pressed", "false");
+
+    voiceStatus = createEl(doc, "p", "bp-voice-status");
+    voiceStatus.setAttribute("data-bp-part", "composer-voice-status");
+    voiceStatus.setAttribute("aria-live", "polite");
+    voiceStatus.setAttribute("role", "status");
+    voiceStatus.hidden = true;
+  }
+
   const quoteLine = createEl(doc, "p", "bp-note-meta");
   quoteLine.setAttribute("data-bp-part", "composer-quote");
   quoteLine.hidden = true;
@@ -212,7 +248,7 @@ export function createComposer(options: ComposerOptions): Composer {
   saveButton.setAttribute("data-bp-action", "composer-save");
   footer.append(saveHint, errorLine, saveButton);
 
-  element.append(
+  const children: HTMLElement[] = [
     header,
     targetLine,
     typeRow,
@@ -221,11 +257,11 @@ export function createComposer(options: ComposerOptions): Composer {
     feedbackNote,
     bodyLabel,
     bodyInput,
-    quoteLine,
-    anchorLine,
-    captured,
-    footer,
-  );
+  ];
+  if (voiceButton !== null) children.push(voiceButton);
+  if (voiceStatus !== null) children.push(voiceStatus);
+  children.push(quoteLine, anchorLine, captured, footer);
+  element.append(...children);
 
   /* -- rendering ----------------------------------------------------------- */
 
@@ -286,6 +322,15 @@ export function createComposer(options: ComposerOptions): Composer {
     captured.hidden = false;
   }
 
+  /** FR-21.8: reflect the listening state on the mic button; the label key follows it. */
+  function renderVoice(): void {
+    if (voiceButton === null) return;
+    const listening = voice?.isListening() === true;
+    voiceButton.setAttribute("aria-pressed", listening ? "true" : "false");
+    voiceButton.setAttribute("data-bp-i18n", listening ? "composer.voice.stop" : "composer.voice.start");
+    voiceButton.classList.toggle("is-listening", listening);
+  }
+
   function renderForm(): void {
     title.setAttribute("data-bp-i18n", COMPOSER_TITLE_KEYS[selectedType]);
     textTypeButton.setAttribute("aria-pressed", selectedType === "text" ? "true" : "false");
@@ -304,6 +349,8 @@ export function createComposer(options: ComposerOptions): Composer {
       button.classList.toggle("is-active", selectedSeverity === value);
     }
     feedbackNote.hidden = !options.feedbackOnly();
+    // The label key has to be set before the walk rewrites the button text (FR-21.7/21.8).
+    renderVoice();
     applyTranslations(element, options.t);
   }
 
@@ -347,6 +394,7 @@ export function createComposer(options: ComposerOptions): Composer {
     else if (action === "composer-severity-blocker") selectSeverity("blocker");
     else if (action === "composer-severity-major") selectSeverity("major");
     else if (action === "composer-severity-minor") selectSeverity("minor");
+    else if (action === "composer-voice") toggleVoice();
     else return false;
     return true;
   }
@@ -368,9 +416,79 @@ export function createComposer(options: ComposerOptions): Composer {
     renderForm();
   }
 
+  /* -- voice dictation (FR-21) -------------------------------------------- */
+
+  /**
+   * Lazily builds the controller on the first mic toggle. Never reached unless the host opted in and
+   * an engine resolves (FR-21.1/21.2), so a host that stayed out owns no listener and no engine.
+   */
+  function ensureVoice(): Voice | null {
+    if (!voiceEnabled) return null;
+    if (voice !== null) return voice;
+    const engine = resolveVoiceEngine(globalThis, options.voiceEngine);
+    if (engine === null) return null;
+    voice = createVoice({
+      language: options.language?.() ?? "en",
+      engine,
+      // FR-21.3: interim results live only in the status region; they are never appended.
+      onInterim: (text) => {
+        if (voiceStatus === null) return;
+        voiceStatus.hidden = false;
+        voiceStatus.textContent = `${options.t("composer.voice.listening")} ${text}`.trim();
+      },
+      // FR-21.3: append the final transcript and put the caret at the end — the human still saves.
+      onAppend: (text) => {
+        const current = bodyInput.value;
+        bodyInput.value = current === "" ? text : `${current} ${text}`;
+        const end = bodyInput.value.length;
+        try {
+          bodyInput.focus({ preventScroll: true });
+          bodyInput.setSelectionRange(end, end);
+        } catch {
+          // Focus/selection is best-effort: a readonly or detached textarea must not break dictation.
+        }
+      },
+      onListeningChange: () => {
+        renderVoice();
+        applyTranslations(element, options.t);
+      },
+      // FR-21.8: an error is shown inline; the controller has already returned to the stopped state.
+      onError: (kind) => {
+        reportError(VOICE_ERROR_KEYS[kind]);
+      },
+    });
+    return voice;
+  }
+
+  function toggleVoice(): void {
+    const controller = ensureVoice();
+    if (controller === null) return;
+    controller.toggle();
+  }
+
+  /** Stops and releases dictation; idempotent, called from `close()` (FR-21.4). */
+  function stopVoice(): void {
+    const controller = voice;
+    voice = null;
+    if (controller !== null) {
+      controller.stop();
+      controller.destroy();
+    }
+    if (voiceButton !== null) {
+      voiceButton.setAttribute("aria-pressed", "false");
+      voiceButton.classList.remove("is-listening");
+    }
+    if (voiceStatus !== null) {
+      voiceStatus.textContent = "";
+      voiceStatus.hidden = true;
+    }
+  }
+
   /* -- public API --------------------------------------------------------- */
 
   function close(): void {
+    // FR-21.4: Esc, the cancel action and `disable()` all land here — dictation stops with the form.
+    stopVoice();
     if (!open) return;
     open = false;
     element.hidden = true;

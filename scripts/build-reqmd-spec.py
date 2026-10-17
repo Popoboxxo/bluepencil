@@ -172,6 +172,7 @@ DOCS = [
     ("14-live-systems", "live-systems", "Functional requirements: live systems and exchange", "functional-requirements", "FR-", FR, "n", 14),
     ("15-headless", "headless", "Functional requirements: headless data library and CLI", "functional-requirements", "FR-", FR, "n", 15),
     ("16-mcp", "mcp", "Functional requirements: MCP interface", "functional-requirements", "FR-", FR, "n", 16),
+    ("21-voice", "voice", "Functional requirements: voice dictation", "functional-requirements", "FR-", FR, "n", 21),
     ("99-non-functional", None, "Non-functional requirements", "non-functional", "NFR-", NFR, "y", 0),
 ]
 
@@ -214,6 +215,8 @@ VERIFY = {
     "FR-15.1": "Test", "FR-15.2": "Test", "FR-15.3": "Test", "FR-15.4": "Test", "FR-15.5": "Test",
     "FR-16.1": "Test", "FR-16.2": "Test", "FR-16.3": "Test", "FR-16.4": "Test",
     "FR-16.5": "Test", "FR-16.6": "Demonstration", "FR-16.7": "Test",
+    "FR-21.1": "Test", "FR-21.2": "Test", "FR-21.3": "Test", "FR-21.4": "Test",
+    "FR-21.5": "Test", "FR-21.6": "Test", "FR-21.7": "Test", "FR-21.8": "Test",
     "NFR-1": "Test", "NFR-2": "Test", "NFR-3": "Test", "NFR-4": "Test", "NFR-5": "Inspection",
     "NFR-6": "Test", "NFR-7": "Test", "NFR-8": "Test", "NFR-9": "Test", "NFR-10": "Test",
     "NFR-11": "Test", "NFR-12": "Inspection", "NFR-13": "Test", "NFR-14": "Inspection",

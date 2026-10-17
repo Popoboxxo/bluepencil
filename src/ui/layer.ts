@@ -46,6 +46,7 @@ import { createComposer, type Composer, type ComposerSaveInput, type ComposerSav
 import { createLegend } from "./legend";
 import { keyIdentifier, resolveKeymap, type KeymapOverrides } from "./keymap";
 import { createPresentation, type PresentationHandle } from "./present";
+import type { VoiceEngineFactory } from "./voice";
 import {
   createPanel,
   createSettings,
@@ -83,6 +84,10 @@ export interface LayerOptions {
   markerStrategy?: "overlay" | "sibling";
   defaultShowDone?: boolean;
   buildRef?: string;
+  /** Dictation opt-in (FR-21.1): false/absent means no mic button and no recognition listener. */
+  voice?: boolean;
+  /** Host-injected recogniser factory (FR-21.6); wins over the browser Web Speech API. */
+  voiceEngine?: VoiceEngineFactory;
   /** Name/build of the embedding app, stamped into an exported bundle (issue #21). */
   app?: { name: string; buildRef?: string };
   /** Exporter recorded in an exported bundle (issue #21); default `"unknown"`. */
@@ -717,6 +722,11 @@ export function createLayer(options: LayerOptions): LayerHandle {
       onSave: (input) => saveNote(input),
       onCancel: () => applyUiState(),
       onError: reportError,
+      voice: () => options.voice === true,
+      ...(options.voiceEngine === undefined ? {} : { voiceEngine: options.voiceEngine }),
+      // Same source as the layer chrome (`normalizeLanguage(options.language)` above): an engine that
+      // listened in a different language than the UI shows would dictate the wrong words.
+      language: () => settings.language,
     });
 
     settingsPopover = createSettings({
