@@ -83,7 +83,7 @@ A text selection inside the clicked element is stored as the note's quote
 
 *Acceptance criteria:* Select three words, note stores exactly that text
 
-## FR-1.6 Keyboard equivalents for every core action (C, D, L, F, B, ?, Esc, J/K, digits)
+## FR-1.6 Keyboard equivalents for every core action (C, D, I, N, L, F, B, ?, Esc, J/K, digits)
 
 ```attr
 prio: P1
@@ -95,9 +95,9 @@ version: 1
 requires-trace-from: []
 ```
 
-Keyboard equivalents for every core action (C, D, L, F, B, ?, Esc, J/K, digits)
+Keyboard equivalents for every core action (C, D, I, N, L, F, B, ?, Esc, J/K, digits)
 
-*Acceptance criteria:* All actions reachable without a mouse
+*Acceptance criteria:* All actions reachable without a mouse, including bug (`I`) and feature (`N`)
 
 ## FR-1.7 A shortcut legend is reachable from the UI and by keyboard
 
@@ -194,3 +194,51 @@ requires-trace-from: []
 Extensible target resolution: a host registers selectors (or a resolver function) for text and design annotation, and a component the layer does not know is still an annotatable block instead of silently inert
 
 *Acceptance criteria:* `annotate-selectors=".card, .tile"` makes the nearest match the anchor in both modes; `can-annotate` lets the host veto per element; a component whose text lives in children opens the composer; links inside stay operable
+
+## FR-1.13 Bug capture mode: a bug is always captured with the design semantics (state/context), ev…
+
+```attr
+prio: P1
+origin: G
+milestone: "M2"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+Bug capture mode: a bug is always captured with the design semantics (state/context), even when the clicked element is a text element; the severity is visible while composing; the default intent is implement and feedback-only overrides it
+
+*Acceptance criteria:* Clicking a text element in bug mode opens the composer with `type: bug`, a non-null captured context, the severity switch visible; with feedback-only on the new note starts as `intent=feedback`, otherwise `implement`
+
+## FR-1.14 Feature capture mode (hybrid): a feature note uses text capture with the selection quote…
+
+```attr
+prio: P1
+origin: G
+milestone: "M2"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+Feature capture mode (hybrid): a feature note uses text capture with the selection quote when a text target can be found by the existing text-target resolution, and a design snapshot otherwise; the priority is visible while composing
+
+*Acceptance criteria:* Clicking a heading/paragraph in feature mode stores a quote and no context; clicking a non-text container stores a context and no quote; both produce `type=feature`; `priority` is offered
+
+## FR-1.15 Alt+click on interactive elements: while a capture mode is active, Alt+click on an inter…
+
+```attr
+prio: P0
+origin: G
+milestone: "M2"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+Alt+click on interactive elements: while a capture mode is active, Alt+click on an interactive element (button, link, form field, interactive ARIA role) opens the composer in all four modes; a normal click keeps the host behaviour, and the layer calls preventDefault() so a link does not navigate
+
+*Acceptance criteria:* With text/design/bug/feature active, Alt+click on a button/link/input opens the composer for that element and suppresses navigation; a normal click still activates the host control; Alt+click with no active mode does nothing

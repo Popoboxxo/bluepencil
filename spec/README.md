@@ -90,5 +90,5 @@ is the one worth engineering against.
 
 ## Coverage today
 
-147 requirements (126 functional, 21 non-functional), all `status: approved`, all with a
-verification method. Priority split: 93 P0, 45 P1, 9 P2.
+153 requirements (132 functional, 21 non-functional), all `status: approved`, all with a
+verification method. Priority split: 95 P0, 48 P1, 10 P2.

@@ -5,11 +5,14 @@
  */
 
 import type { MessageKey } from "../i18n/en";
+import type { CaptureMode } from "./modes";
 
 /** Stable identifiers — the names a host uses in `keymap` overrides. */
 export type ShortcutId =
   | "mode.text"
   | "mode.design"
+  | "mode.bug"
+  | "mode.feature"
   | "panel"
   | "feedback-only"
   | "bar"
@@ -51,6 +54,8 @@ export interface Shortcut {
   readonly shift?: boolean;
   readonly label: MessageKey;
   readonly group: MessageKey;
+  /** The capture mode this shortcut toggles (FR-4.10), so the legend can omit unavailable rows. */
+  readonly mode?: CaptureMode;
 }
 
 /** Group headings, shared by every legend row so the overlay needs no table of its own. */
@@ -66,14 +71,30 @@ export const SHORTCUT_GROUPS = Object.freeze({
 export const SHORTCUTS: readonly Shortcut[] = Object.freeze([
   {
     id: "mode.text",
+    mode: "text",
     keys: ["c"],
     label: "legend.key.text",
     group: SHORTCUT_GROUPS.capture,
   },
   {
     id: "mode.design",
+    mode: "design",
     keys: ["d"],
     label: "legend.key.design",
+    group: SHORTCUT_GROUPS.capture,
+  },
+  {
+    id: "mode.bug",
+    mode: "bug",
+    keys: ["i"],
+    label: "legend.key.bug",
+    group: SHORTCUT_GROUPS.capture,
+  },
+  {
+    id: "mode.feature",
+    mode: "feature",
+    keys: ["n"],
+    label: "legend.key.feature",
     group: SHORTCUT_GROUPS.capture,
   },
   {
@@ -326,9 +347,20 @@ export interface LegendGroup {
  * Derives the legend from the registry (FR-1.11). Overrides are applied, so a remapped key shows up
  * in the help text immediately — the legend can never describe a keymap the layer does not have.
  */
-export function legendGroups(overrides?: KeymapOverrides): readonly LegendGroup[] {
+export function legendGroups(
+  overrides?: KeymapOverrides,
+  availableModes?: readonly CaptureMode[],
+): readonly LegendGroup[] {
   const groups: LegendGroup[] = [];
   for (const shortcut of SHORTCUTS) {
+    // Additive: without a mode list every row is kept, exactly as before (FR-1.11).
+    if (
+      shortcut.mode !== undefined &&
+      availableModes !== undefined &&
+      !availableModes.includes(shortcut.mode)
+    ) {
+      continue;
+    }
     const overridden = asKeys(overrides?.[shortcut.id]);
     const display =
       shortcut.display ??
@@ -343,5 +375,6 @@ export function legendGroups(overrides?: KeymapOverrides): readonly LegendGroup[
       groups[groups.length - 1] = { title: existing.title, rows: [...existing.rows, row] };
     }
   }
-  return groups;
+  // A group whose every row was filtered out says nothing — omit it instead of leaving a heading.
+  return groups.filter((group) => group.rows.length > 0);
 }

@@ -15,7 +15,7 @@ version: 1
 requires-trace-from: []
 ```
 
-MCP server exposing the note set — tools: list_notes, get_note, create_note, reply, set_status, set_intent, export_bundle, import_bundle
+MCP server exposing the note set — tools: list_notes, get_note, create_note, reply, set_status, set_intent, export_bundle, import_bundle; the note enums include feature and priority
 
 *Acceptance criteria:* An MCP client can list open notes, answer one and mark it done, using the same model and validators as the UI
 

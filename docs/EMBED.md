@@ -88,6 +88,7 @@ equivalent (`data-*`). The loader mirrors every element attribute
 | `annotate-selectors` | – | Comma-separated CSS selectors the host declares as annotation targets (FR-1.12): the nearest match in the click path becomes the target, so the anchor is the component and not the text node inside it. Applies in text *and* design mode; a selector the DOM rejects is reported through `element.issues`. |
 | `dock` | `"top"` | The edge the strip and its handle dock to (FR-12.13): `"top"` or `"bottom"`. The mode hint moves to the opposite edge, so a docked layer cannot collide with itself. |
 | `keymap` | – | Remap the layer's shortcuts: `"bar=g, panel=p"` (FR-12.11). A conflict, an unknown id or a key that cannot be remapped (the `1…9` range, the composer-scoped save) is reported through `element.issues` — never resolved silently. The help legend shows the effective keys. |
+| `modes` | absent → all four | The host's capture-mode ceiling (FR-4.10): `text`, `design`, `bug`, `feature`, in any comma-separated order, e.g. `modes="text,design,bug"`. `modes="none"` mounts a read-only layer (list, filters, legend and settings still work). Unknown values are reported through `element.issues`; if no valid mode remains the layer fails closed to read-only rather than widening the ceiling. Loader form `data-modes="…"`. |
 | `voice` | – | Opt-in for composer dictation (FR-21.1). Presence-based, like a boolean HTML attribute: `voice="true"` (or a bare `voice`) shows the mic button, `voice="false"` keeps it off, and an absent attribute means there is **no** dictation UI, no recognition listener and no permission prompt. Loader form `data-voice="true"`. **Privacy (FR-21.5):** only the final transcript text is ever kept — no audio is stored and the core makes no network request; Chromium's Web Speech API may itself send audio to a browser service, which is outside the library's control. |
 | `voice-engine` | – | Global path to a factory returning a recogniser engine (FR-21.6), e.g. `"myApp.whisperEngine"`. When set it wins over the browser Web Speech API, so an offline host needs no browser service. It must resolve to a function; anything else is reported through `element.issues`. Loader form `data-voice-engine="…"`. |
 
@@ -397,6 +398,7 @@ log afterwards.
 | Where | How |
 |---|---|
 | On the element | `<bluepencil-notes data-bp-version="0.1.0">` — written on connect, so devtools answers the question on the page itself |
+| In the layer settings | a static `Version` row reading `bluepencil <VERSION>` (`dev` when running from source) |
 | On the loader API | `window.bluepencilAttach.version` — the manifest's version when there is a manifest, otherwise the version of the build that was actually loaded (it used to report `unknown`) |
 | On the mounting | `attach-version="…"` set by the loader, plus `event.detail.version` of `bp-attach-ready` / `bp-attach-updated` |
 | On the hub | `GET {base}/health` and `node dist/server.js --version` |

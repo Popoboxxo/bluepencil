@@ -31,7 +31,7 @@ version: 1
 requires-trace-from: []
 ```
 
-bluepencil/cli — bluepencil inspect \| validate \| merge \| export \| import with --file, --mode, --dry-run, --json
+bluepencil/cli — bluepencil inspect \| validate \| merge \| export \| import with --file, --mode, --dry-run, --json; accepts the same note enums, including --type feature and --priority high\|medium\|low
 
 *Acceptance criteria:* Commands usable in a shell pipeline; exit codes meaningful for CI
 

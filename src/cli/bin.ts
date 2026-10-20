@@ -37,11 +37,13 @@ import {
   DEFAULT_ENVIRONMENT,
   ENVIRONMENTS,
   NOTE_INTENTS,
+  NOTE_PRIORITIES,
   NOTE_STATUSES,
   NOTE_TYPES,
   SCHEMA_VERSION,
   isEnvironment,
   isNoteIntent,
+  isNotePriority,
   isNoteStatus,
   isNoteType,
   systemClock,
@@ -218,7 +220,7 @@ function parseFormat(flags: Record<string, FlagValue>): "md" | "json" {
   fail(`--format must be md or json (got ${JSON.stringify(String(raw))})`);
 }
 
-/** The `--status/--intent/--type/--route` subset of the shared filter semantics (FR-15.3). */
+/** The `--status/--intent/--type/--priority/--route` subset of the shared filter semantics (FR-15.3). */
 function parseNoteFilter(flags: Record<string, FlagValue>): NoteFilter {
   const filter: NoteFilter = {};
   const status = flags.status;
@@ -241,6 +243,13 @@ function parseNoteFilter(flags: Record<string, FlagValue>): NoteFilter {
       fail(`--type must be one of ${NOTE_TYPES.join(", ")} (got ${JSON.stringify(String(type))})`);
     }
     filter.type = type;
+  }
+  const priority = flags.priority;
+  if (priority !== undefined) {
+    if (!isNotePriority(priority)) {
+      fail(`--priority must be one of ${NOTE_PRIORITIES.join(", ")} (got ${JSON.stringify(String(priority))})`);
+    }
+    filter.priority = priority;
   }
   const route = flags.route;
   if (route !== undefined) {
@@ -403,7 +412,7 @@ Usage:
       [--allow-env-mismatch] [--environment dev|staging|live]
   bluepencil export <input> [--format md|json] [--out <file>] [--include-done[=true|false]]
       [--status open|done|needs_decision] [--intent implement|feedback]
-      [--type text|design|bug] [--route <route>]
+      [--type text|design|bug|feature] [--priority high|medium|low] [--route <route>]
   bluepencil import <incoming> <target>        import a set into a target set (alias of merge --out target)
       [--mode ...] [--dry-run] [--json] [--on-conflict ...] [--allow-env-mismatch]
   bluepencil notes <file>                      print the notes of a file as JSON

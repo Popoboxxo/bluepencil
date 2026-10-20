@@ -56,6 +56,7 @@ interface ExportStrings {
   readonly none: string;
   readonly type: string;
   readonly severity: string;
+  readonly priority: string;
   readonly intent: string;
   readonly status: string;
   readonly source: string;
@@ -98,6 +99,7 @@ const STRINGS: Record<Language, ExportStrings> = {
     none: "none",
     type: "Type",
     severity: "Severity",
+    priority: "Priority",
     intent: "Intent",
     status: "Status",
     source: "Source",
@@ -135,6 +137,7 @@ const STRINGS: Record<Language, ExportStrings> = {
     none: "keine",
     type: "Typ",
     severity: "Schweregrad",
+    priority: "Priorität",
     intent: "Absicht",
     status: "Status",
     source: "Quelle",
@@ -284,6 +287,10 @@ function renderNote(note: Note, s: ExportStrings, headingLevel: number): string[
   // FR-3.6: a bug's severity travels with the note; every other type carries none.
   if (note.severity !== undefined) {
     lines.push(bullet(s.severity, note.severity));
+  }
+  // FR-3.7: so does a feature's priority; it renders right after severity.
+  if (note.priority !== undefined) {
+    lines.push(bullet(s.priority, note.priority));
   }
   lines.push(bullet(s.intent, note.intent));
   lines.push(bullet(s.status, note.status));

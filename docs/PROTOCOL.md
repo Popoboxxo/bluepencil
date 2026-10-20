@@ -9,8 +9,9 @@
 
 | Field | Values | Meaning |
 |---|---|---|
-| `type` | `text`, `design`, `bug` | What the note is about: content/wording, appearance/layout or a defect report |
+| `type` | `text`, `design`, `bug`, `feature` | What the note is about: content/wording, appearance/layout, a defect report or a requested capability/change |
 | `severity` | `blocker`, `major`, `minor` | How urgent a bug is; optional, meaningful only for `type=bug`, omitted otherwise (FR-3.6) |
+| `priority` | `high`, `medium`, `low` | How important a feature request is; optional, meaningful only for `type=feature`, omitted otherwise (FR-3.7) |
 | `intent` | `implement`, `feedback` | What should happen with the note |
 | `status` | `open`, `done`, `needs_decision` | Where the note stands right now |
 | `author_type` | `human`, `agent` | Who wrote a message in the thread |
@@ -27,6 +28,12 @@ bump). The degrade rule on import mirrors the unknown-`type` → `text` fallback
 On the import and write paths a `severity` on a note whose `type` is not `bug` is dropped as well;
 `validateNote`/`assertNote` instead reject such a note as an error.
 
+`priority` follows the same orthogonal, optional and additive rule as `severity`: it is meaningful
+only for `type=feature` and omitted for every other type, an unknown priority is dropped on import
+and treated as absent, and a priority on another type is dropped on the import/write paths while
+strict validation rejects it. No `schemaVersion` bump is involved — old readers degrade a `feature`
+note to `text` and drop the priority, new readers import old data unchanged.
+
 ## 2. The four states an agent must distinguish
 
 | Situation | Signal | Agent behaviour |
@@ -35,6 +42,10 @@ On the import and write paths a `severity` on a note whose `type` is not `bug` i
 | Opinion requested | `intent=feedback` | Write an assessment, alternative(s) or risk note as `kind=feedback`. **Change nothing.** Leave the status alone. |
 | Question pending | `status=needs_decision` | Wait. Do not implement. If the human answers (`kind=decision`, status returns to `open`), implement accordingly. |
 | Unclear | none of the above helps | Ask — see §3. |
+
+A `feature` note is implemented like any other `implement` note: `type` describes what the note is
+about, while `intent` and `status` decide what to do with it. `priority` is grading information for
+the human's planning; it never changes the status rules or the ordering of the work.
 
 ## 3. How to ask for a decision
 

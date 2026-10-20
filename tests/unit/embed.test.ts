@@ -28,6 +28,7 @@ import {
   readHeaders,
   readKeymap,
   readJsonAttribute,
+  readModes,
   readRoute,
   readStore,
   readTheme,
@@ -270,6 +271,53 @@ describe("embed attributes — loader options", () => {
     expect(options.attributes).toEqual({});
     expect(ALL_ATTRIBUTES).toContain("endpoint");
   });
+
+  it("forwards the modes ceiling to the element like any other element attribute", () => {
+    expect(ALL_ATTRIBUTES).toContain("modes");
+    expect(parseLoaderOptions({ modes: "text,design" }).attributes.modes).toBe("text,design");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* host capture-mode ceiling (FR-4.10)                                        */
+/* -------------------------------------------------------------------------- */
+
+describe("embed attributes — host mode ceiling", () => {
+  it("leaves the ceiling open when the attribute is absent or empty", () => {
+    expect(readModes(source({}))).toEqual({ issues: [] });
+    expect(readModes(source({ modes: "" }))).toEqual({ issues: [] });
+  });
+
+  it("accepts the explicit read-only value", () => {
+    expect(readModes(source({ modes: "none" }))).toEqual({ modes: "none", issues: [] });
+    expect(readModes(source({ modes: "  none  " }))).toEqual({ modes: "none", issues: [] });
+  });
+
+  it("reads a comma-separated list in the host's order", () => {
+    expect(readModes(source({ modes: "text, design,bug" }))).toEqual({
+      modes: ["text", "design", "bug"],
+      issues: [],
+    });
+  });
+
+  it("drops duplicates and empty entries while keeping the first occurrence", () => {
+    expect(readModes(source({ modes: "design, text,,design" }))).toEqual({
+      modes: ["design", "text"],
+      issues: [],
+    });
+  });
+
+  it("keeps the valid entries and reports each unknown one", () => {
+    const result = readModes(source({ modes: "text,video,bug" }));
+    expect(result.modes).toEqual(["text", "bug"]);
+    expect(result.issues).toEqual(['modes "video" is not one of text, design, bug, feature']);
+  });
+
+  it("fails closed when no value is a known mode — a typo never widens the ceiling", () => {
+    const result = readModes(source({ modes: "txet" }));
+    expect(result.modes).toBe("none");
+    expect(result.issues).toEqual(['modes "txet" is not one of text, design, bug, feature']);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -357,6 +405,31 @@ describe("runtime update contract — manifest and versions", () => {
 describe("element — the attach surface", () => {
   it("observes every documented attribute", () => {
     expect([...BluepencilNotesElement.observedAttributes]).toEqual([...ALL_ATTRIBUTES]);
+    expect([...BluepencilNotesElement.observedAttributes]).toContain("modes");
+  });
+
+  it("passes the modes ceiling into the layer's bar", () => {
+    mount({ adapter: "memory", modes: "text,bug" });
+    const hidden = (action: string) =>
+      document.querySelector(`[data-bp-action="${action}"]`)?.hasAttribute("hidden") ?? null;
+    // The two modes the host offered stay available, the other two disappear from the bar.
+    expect(hidden("mode-text")).toBe(false);
+    expect(hidden("mode-bug")).toBe(false);
+    expect(hidden("mode-design")).toBe(true);
+    expect(hidden("mode-feature")).toBe(true);
+  });
+
+  it("fails closed on an unrecognised modes value and reports it", () => {
+    const element = mount({ adapter: "memory", modes: "txet" });
+    expect(element.issues.join(" | ")).toContain(
+      'modes "txet" is not one of text, design, bug, feature',
+    );
+    const hidden = (action: string) =>
+      document.querySelector(`[data-bp-action="${action}"]`)?.hasAttribute("hidden") ?? null;
+    // No mode survived the typo, so the layer is read-only rather than offering all four.
+    for (const mode of ["mode-text", "mode-design", "mode-bug", "mode-feature"]) {
+      expect(hidden(mode)).toBe(true);
+    }
   });
 
   it("builds an HTTP store from endpoint, headers and token", async () => {

@@ -109,7 +109,7 @@ describe("validateNote", () => {
 
   it("rejects wrong enum values", () => {
     expect(validateNote({ ...validNote, type: "sketch" }).join("|")).toContain(
-      "note.type must be one of text, design, bug",
+      "note.type must be one of text, design, bug, feature",
     );
     expect(validateNote({ ...validNote, intent: "maybe" }).join("|")).toContain("note.intent must be one of implement, feedback");
     expect(validateNote({ ...validNote, status: "review" }).join("|")).toContain(
@@ -417,7 +417,7 @@ describe("bundle I/O (FR-14.2/14.5/14.9)", () => {
     expect(summary.notes).toBe(3);
     expect(summary.byStatus).toEqual({ open: 2, done: 1, needs_decision: 0 });
     expect(summary.byIntent).toEqual({ implement: 2, feedback: 1 });
-    expect(summary.byType).toEqual({ text: 2, design: 1, bug: 0 });
+    expect(summary.byType).toEqual({ text: 2, design: 1, bug: 0, feature: 0 });
     expect(summary.routes).toEqual(["/a", "/b"]);
     expect(summary.environments).toEqual(["dev"]);
     expect(summary.sessions).toEqual([{ ref: "s-1", label: "s-1", createdAt: T }]);

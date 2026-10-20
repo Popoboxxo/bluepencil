@@ -49,7 +49,7 @@ requires-trace-from: []
 
 Core bundle small enough to embed casually (target ≤ 33 kB min+gzip, excluding adapters)
 
-*Acceptance criteria:* Build report shows size; CI fails on regression beyond budget. Raised from 30 kB to 31 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13), measured at 30.5 kB. Raised again to 33 kB for the transient container reveal feature (issue #20) and app/build-ref/exportedBy (issue #21), measured at 31.9 kB — a decision, recorded here so it cannot look like drift. Raised to 100 kB core / 45 kB custom element for the presentation mode (FR-20), measured at 35.2 kB core and 40.9 kB element gzip (IIFE 38.5 kB of 40 kB); the presenter surface could not fit under the old ceilings, so the numbers moved openly. Raised the IIFE budget to 45 kB for voice dictation (FR-21), measured at 37.7 kB core / 41.3 kB IIFE / 44.0 kB element gzip — the pre-change IIFE sat at 39.9 kB of 40 kB (0.1 kB headroom), so any feature overflowed it
+*Acceptance criteria:* Build report shows size; CI fails on regression beyond budget. Raised from 30 kB to 31 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13), measured at 30.5 kB. Raised again to 33 kB for the transient container reveal feature (issue #20) and app/build-ref/exportedBy (issue #21), measured at 31.9 kB — a decision, recorded here so it cannot look like drift. Raised to 100 kB core / 45 kB custom element for the presentation mode (FR-20), measured at 35.2 kB core and 40.9 kB element gzip (IIFE 38.5 kB of 40 kB); the presenter surface could not fit under the old ceilings, so the numbers moved openly. Raised the IIFE budget to 45 kB for voice dictation (FR-21), measured at 37.7 kB core / 41.3 kB IIFE / 44.0 kB element gzip — the pre-change IIFE sat at 39.9 kB of 40 kB (0.1 kB headroom), so any feature overflowed it. Raised the custom-element budget from 45 kB to 48 kB for the capture presets (FR-1.13/1.14), feature priority (FR-3.7), mode visibility (FR-4.10) and the version line (FR-4.9), measured at 46.9 kB gzip (IIFE 44.1 kB of 45 kB, core 40.5 kB of 100 kB) — the new surface carried the element past the old ceiling, so the number moved openly as a recorded decision.
 
 ## NFR-4 No runtime dependencies (peer deps only for framework wrappers)
 
@@ -131,7 +131,7 @@ Data survives reload and crash (adapter-dependent); no silent data loss
 
 *Acceptance criteria:* Reload after 20 notes keeps all 20; interrupted write leaves the previous state intact
 
-## NFR-9 Schema stability: additive changes within a major version; documented migration
+## NFR-9 Schema stability: additive changes within a major version; documented migration. Additiv…
 
 ```attr
 prio: P0
@@ -143,7 +143,7 @@ version: 1
 requires-trace-from: []
 ```
 
-Schema stability: additive changes within a major version; documented migration
+Schema stability: additive changes within a major version; documented migration. Additive optional fields (e.g. severity, priority, feature) extend the current version without a schemaVersion bump; old readers degrade unknown types to text and drop unknown optional fields; new readers import old data unchanged
 
 *Acceptance criteria:* Old export imports into a newer build
 

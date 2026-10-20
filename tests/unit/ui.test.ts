@@ -20,8 +20,10 @@ import type { MessageKey } from "../../src/i18n/en";
 import { applyTranslations, createTranslator, translate, type Messages } from "../../src/i18n";
 import { createLayer, type LayerHandle, type LayerOptions } from "../../src/ui/layer";
 import { SHORTCUTS, legendGroups } from "../../src/ui/keymap";
+import { CAPTURE_MODES } from "../../src/ui/modes";
 import { noteCounters } from "../../src/ui/panel";
 import { STYLES } from "../../src/ui/styles";
+import { VERSION } from "../../src/version";
 
 /* -------------------------------------------------------------------------- */
 /* test doubles and helpers                                                    */
@@ -244,6 +246,7 @@ async function addNote(store: Store, draft: Partial<NoteDraft> = {}): Promise<No
     ...(draft.status !== undefined ? { status: draft.status } : {}),
     ...(draft.intent !== undefined ? { intent: draft.intent } : {}),
     ...(draft.severity !== undefined ? { severity: draft.severity } : {}),
+    ...(draft.priority !== undefined ? { priority: draft.priority } : {}),
     ...(draft.now !== undefined ? { now: draft.now } : {}),
     ...(draft.environment !== undefined ? { environment: draft.environment } : {}),
   });
@@ -1762,6 +1765,18 @@ describe("multi-instance and i18n", () => {
       .map(([key]) => key);
     expect(empty, `labels without text: ${empty.join(", ")}`).toEqual([]);
 
+    // The short bar labels are deliberately identical in both languages ("Bug", "Feature", …);
+    // every other label must be a real translation.
+    const identicalByDesign = new Set<MessageKey>([
+      "bar.mode.text",
+      "bar.mode.design",
+      "bar.mode.bug",
+      "bar.mode.feature",
+      // The type vocabulary is intentionally identical for a feature ("Feature" in both tables).
+      "panel.type.feature",
+      "settings.version",
+    ]);
+
     for (const [key, text] of labelsEn) {
       const translated = labelsDe.get(key) ?? "";
       expect(text).not.toBe("");
@@ -1769,7 +1784,9 @@ describe("multi-instance and i18n", () => {
       // no raw keys and a real translation on both sides
       expect(text).not.toBe(key);
       expect(translated).not.toBe(key);
-      expect(translated).not.toBe(text);
+      if (!identicalByDesign.has(key as MessageKey)) {
+        expect(translated, `untranslated label: ${key}`).not.toBe(text);
+      }
       if (!en[key as MessageKey].includes("{")) {
         expect(text).toBe(en[key as MessageKey]);
         expect(translated).toBe(de[key as MessageKey]);
@@ -2150,5 +2167,425 @@ describe("layer — bundle metadata on export (issue #21)", () => {
     }
 
     handle.disable();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* capture modes, feature priority and the version line                        */
+/* (FR-1.13/1.14/1.15, FR-4.9/4.10, FR-12.6)                                    */
+/* -------------------------------------------------------------------------- */
+
+describe("capture modes and presets", () => {
+  it("renders one bar button per preset, in table order, with the short labels", () => {
+    const handle = startLayer(makeStore());
+
+    const actions = Array.from(
+      document.querySelectorAll('[data-bp-part="bar"] [data-bp-action^="mode-"]'),
+    ).map((button) => button.getAttribute("data-bp-action"));
+    expect(actions).toEqual(CAPTURE_MODES.map((mode) => `mode-${mode}`));
+
+    for (const mode of CAPTURE_MODES) {
+      const button = barButton(`mode-${mode}`);
+      expect(button.hidden, mode).toBe(false);
+      expect(button.textContent, mode).toBe(en[`bar.mode.${mode}` as MessageKey]);
+    }
+
+    handle.disable();
+  });
+
+  it("activates bug with `i` and feature with `n`, leaving the old keys working", () => {
+    const handle = startLayer(makeStore());
+
+    pressKey("i");
+    expect(mode()).toBe("bug");
+    expect(query('[data-bp-part="mode-hint-text"]').getAttribute("data-bp-i18n")).toBe("mode.bug.hint");
+
+    pressKey("n");
+    expect(mode()).toBe("feature");
+    expect(query('[data-bp-part="mode-hint-text"]').getAttribute("data-bp-i18n")).toBe("mode.feature.hint");
+
+    // The existing shortcuts are untouched: `c` still means text, `Escape` still leaves a mode.
+    pressKey("c");
+    expect(mode()).toBe("text");
+    pressKey("Escape");
+    expect(mode()).toBe("off");
+
+    handle.disable();
+  });
+
+  it("captures a bug with design semantics even on a text element (FR-1.13)", async () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="p1">faulty text</p></main>`;
+    const paragraph = byId("host").querySelector("p");
+    if (paragraph === null) throw new Error("fixture missing");
+
+    const store = makeStore();
+    const handle = startLayer(store);
+    pressKey("i");
+    click(paragraph);
+
+    expect(composer().hidden).toBe(false);
+    expect(query('[data-bp-part="composer-title"]').getAttribute("data-bp-i18n")).toBe("composer.title.bug");
+
+    const severityRow = query('[data-bp-action="composer-severity-blocker"]').parentElement;
+    const priorityRow = query('[data-bp-action="composer-priority-high"]').parentElement;
+    expect(severityRow?.hidden).toBe(false);
+    expect(priorityRow?.hidden).toBe(true);
+    expect(query('[data-bp-part="composer-captured"]').hidden).toBe(false);
+
+    await saveComposer("The label overlaps the value.");
+
+    const note = store.notes()[0];
+    expect(note?.type).toBe("bug");
+    // FR-1.13: the bug carries the captured state, not a wording quote.
+    expect(note?.context).not.toBeNull();
+    expect(note?.anchor.quote).toBeUndefined();
+
+    handle.disable();
+  });
+
+  it("captures a feature with a quote on text and a context on a plain element (FR-1.14)", async () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="p1">Hello world of notes</p></main>`;
+    const paragraph = byId("host").querySelector("p");
+    if (paragraph === null || paragraph.firstChild === null) throw new Error("fixture missing");
+    selectText(paragraph.firstChild, 0, 5);
+
+    const store = makeStore();
+    const handle = startLayer(store);
+    pressKey("n");
+    click(paragraph);
+    await saveComposer("Please add a summary here.");
+
+    const feature = store.notes()[0];
+    expect(feature?.type).toBe("feature");
+    expect(feature?.anchor.quote).toBe("Hello");
+    expect(feature?.context).toBeNull();
+    handle.disable();
+
+    // The same mode on an element without text falls back to design semantics.
+    document.body.innerHTML = `<main id="host"><div id="plain" data-bluepencil="plain"></div></main>`;
+    const plain = byId("host").querySelector("#plain");
+    if (plain === null) throw new Error("fixture missing");
+
+    const secondStore = makeStore();
+    const second = startLayer(secondStore);
+    pressKey("n");
+    click(plain);
+    await saveComposer("Add an onboarding step here.");
+
+    const designFeature = secondStore.notes()[0];
+    expect(designFeature?.type).toBe("feature");
+    expect(designFeature?.context).not.toBeNull();
+    expect(designFeature?.anchor.quote).toBeUndefined();
+    second.disable();
+  });
+
+  it("ignores text from outside the clicked subtree in feature mode (FR-1.14)", async () => {
+    // Regression: the parity harness caught a text-free leaf (`div` inside a `main` that carries
+    // text elsewhere) captured as a text note anchored to `<main>`. Feature mode must judge the
+    // clicked subtree only, so the leaf gets design semantics and the container is not picked.
+    document.body.innerHTML = [
+      `<main id="host">`,
+      `<p data-bluepencil="p1">filler text outside the leaf</p>`,
+      `<div id="empty" data-bluepencil="empty"></div>`,
+      `</main>`,
+    ].join("");
+    const empty = byId("empty");
+
+    const store = makeStore();
+    const handle = startLayer(store);
+    pressKey("n");
+    click(empty);
+    await saveComposer("Add an onboarding step here.");
+
+    const feature = store.notes()[0];
+    expect(feature?.type).toBe("feature");
+    expect(feature?.context).not.toBeNull();
+    expect(feature?.context?.tag).toBe("div");
+    expect(feature?.anchor.quote).toBeUndefined();
+    expect(feature?.anchor.hook).toBe("empty");
+    handle.disable();
+
+    // A genuinely textual element still takes the wording branch: no context, selection quoted.
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="p2">Hello world of notes</p></main>`;
+    const paragraph = byId("host").querySelector("p");
+    if (paragraph === null || paragraph.firstChild === null) throw new Error("fixture missing");
+    selectText(paragraph.firstChild, 0, 5);
+
+    const textStore = makeStore();
+    const textHandle = startLayer(textStore);
+    pressKey("n");
+    click(paragraph);
+    await saveComposer("Please add a summary here.");
+
+    const textFeature = textStore.notes()[0];
+    expect(textFeature?.type).toBe("feature");
+    expect(textFeature?.context).toBeNull();
+    expect(textFeature?.anchor.quote).toBe("Hello");
+    expect(textFeature?.anchor.hook).toBe("p2");
+    textHandle.disable();
+  });
+
+  it("shows the priority row only for a feature and stores the chosen priority (FR-3.7)", async () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="p1">text</p></main>`;
+    const paragraph = byId("host").querySelector("p");
+    if (paragraph === null) throw new Error("fixture missing");
+
+    const store = makeStore();
+    const handle = startLayer(store);
+    pressKey("n");
+    click(paragraph);
+
+    const priorityRow = query('[data-bp-action="composer-priority-high"]').parentElement;
+    expect(priorityRow?.hidden).toBe(false);
+
+    // A bug shows severity, never priority; leaving the feature clears the chosen value.
+    click(query('[data-bp-action="composer-type-bug"]'));
+    expect(priorityRow?.hidden).toBe(true);
+    click(query('[data-bp-action="composer-type-feature"]'));
+    click(query('[data-bp-action="composer-priority-high"]'));
+    expect(query('[data-bp-action="composer-priority-high"]').getAttribute("aria-pressed")).toBe("true");
+
+    await saveComposer("Let reviewers export a filtered view.");
+
+    const note = store.notes()[0];
+    expect(note?.type).toBe("feature");
+    expect(note?.priority).toBe("high");
+    expect(note?.severity).toBeUndefined();
+
+    handle.disable();
+  });
+
+  it("captures an interactive element on Alt+click but leaves a normal click to the host (FR-1.15)", async () => {
+    document.body.innerHTML = [
+      `<main id="host">`,
+      `<p data-bluepencil="p1">Run <button id="btn" data-bluepencil="btn">Action</button> now</p>`,
+      `</main>`,
+    ].join("");
+    const button = byId("btn");
+    const hostClicks: string[] = [];
+    button.addEventListener("click", () => hostClicks.push("button"));
+
+    const store = makeStore();
+    const handle = startLayer(store);
+    pressKey("c");
+
+    // Alt+click is the documented exception: the button is annotated and its own action cancelled.
+    const altClick = new MouseEvent("click", { bubbles: true, cancelable: true, altKey: true });
+    button.dispatchEvent(altClick);
+    expect(altClick.defaultPrevented).toBe(true);
+    expect(composer().hidden).toBe(false);
+
+    await saveComposer("This button needs a clearer label.");
+    const note = store.notes()[0];
+    expect(note?.anchor.hook).toBe("btn");
+    expect(hostClicks).toEqual([]);
+
+    // A normal click keeps the pass-through behaviour (FR-1.9): the host handler runs.
+    click(button);
+    expect(hostClicks).toEqual(["button"]);
+    expect(composer().hidden).toBe(true);
+    expect(store.notes()).toHaveLength(1);
+
+    // Alt+click while idle is not ours at all (FR-12.6).
+    pressKey("Escape");
+    expect(mode()).toBe("off");
+    const idleAltClick = new MouseEvent("click", { bubbles: true, cancelable: true, altKey: true });
+    button.dispatchEvent(idleAltClick);
+    expect(idleAltClick.defaultPrevented).toBe(false);
+    expect(composer().hidden).toBe(true);
+    expect(store.notes()).toHaveLength(1);
+
+    handle.disable();
+  });
+
+  it("badges, filters and edits feature priority in the panel (FR-3.7, FR-4.10)", async () => {
+    const store = makeStore();
+    await addNote(store, { body: "priority feature", anchor: { hook: "f1" }, type: "feature", priority: "high" });
+    await addNote(store, { body: "unset feature", anchor: { hook: "f2" }, type: "feature" });
+    await addNote(store, { body: "graded bug", anchor: { hook: "b1" }, type: "bug", severity: "major" });
+    const handle = startLayer(store);
+
+    pressKey("l");
+    expect(noteEntries()).toHaveLength(3);
+
+    const priorityFilter = query<HTMLSelectElement>('[data-bp-filter="priority"]');
+    expect(Array.from(priorityFilter.options).map((option) => option.value)).toEqual([
+      "all",
+      "high",
+      "medium",
+      "low",
+      "none",
+    ]);
+
+    const featureEntry = noteEntries().find((entry) => entry.textContent?.includes("priority feature"));
+    const typeBadge = featureEntry?.querySelector('[data-bp-i18n="panel.type.feature"]');
+    expect(typeBadge?.classList.contains("bp-badge--feature")).toBe(true);
+    const priorityBadge = featureEntry?.querySelector('[data-bp-part="badge-priority"]');
+    expect(priorityBadge?.textContent).toBe(en["panel.priority.high"]);
+    expect(priorityBadge?.classList.contains("bp-badge--priority-high")).toBe(true);
+
+    // A concrete priority matches exactly; `none` covers ungraded features and non-features.
+    priorityFilter.value = "high";
+    priorityFilter.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(noteEntries()).toHaveLength(1);
+    expect(noteEntries()[0]?.textContent).toContain("priority feature");
+    priorityFilter.value = "none";
+    priorityFilter.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(noteEntries()).toHaveLength(2);
+
+    // Reset restores the filter and all entries.
+    priorityFilter.value = "all";
+    priorityFilter.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(noteEntries()).toHaveLength(3);
+
+    // The category is immutable: there is no type dropdown anywhere in an entry.
+    expect(document.querySelectorAll('[data-bp-note-field="type"]').length).toBe(0);
+
+    const priorityEntry = noteEntries().find((entry) => entry.textContent?.includes("priority feature"));
+    const prioritySelect = priorityEntry?.querySelector<HTMLSelectElement>('[data-bp-note-field="priority"]');
+    if (!prioritySelect) throw new Error("feature entry has no priority dropdown");
+    expect(prioritySelect.value).toBe("high");
+    prioritySelect.value = "none";
+    prioritySelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    const cleared = store.notes().find((note) => note.body === "priority feature");
+    expect(cleared?.priority).toBeUndefined();
+    expect(Object.keys(cleared ?? {})).not.toContain("priority");
+
+    const bugEntry = noteEntries().find((entry) => entry.textContent?.includes("graded bug"));
+    const severitySelect = bugEntry?.querySelector<HTMLSelectElement>('[data-bp-note-field="severity"]');
+    if (!severitySelect) throw new Error("bug entry has no severity dropdown");
+    expect(severitySelect.value).toBe("major");
+    severitySelect.value = "none";
+    severitySelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    const bug = store.notes().find((note) => note.body === "graded bug");
+    expect(bug?.severity).toBeUndefined();
+    expect(Object.keys(bug ?? {})).not.toContain("severity");
+
+    handle.disable();
+  });
+
+  it("hides a disabled mode everywhere and resets the active mode to off (FR-4.10)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="p1">text</p></main>`;
+    const installed = installStorage();
+    try {
+      const handle = startLayer(makeStore());
+      pressKey("i");
+      expect(mode()).toBe("bug");
+
+      click(barButton("settings"));
+      const bugToggle = query<HTMLInputElement>('[data-bp-setting="mode-bug"]');
+      expect(bugToggle.checked).toBe(true);
+      bugToggle.checked = false;
+      bugToggle.dispatchEvent(new Event("change", { bubbles: true }));
+
+      // The active mode became unavailable: the root falls back to off.
+      expect(mode()).toBe("off");
+      expect(barButton("mode-bug").hidden).toBe(true);
+
+      // `i` is inert and the host keeps the key.
+      const inert = new KeyboardEvent("keydown", { key: "i", bubbles: true, cancelable: true });
+      document.body.dispatchEvent(inert);
+      expect(mode()).toBe("off");
+      expect(inert.defaultPrevented).toBe(false);
+
+      // The legend omits the row for the unavailable mode.
+      pressKey("?");
+      expect(legendEl().hidden).toBe(false);
+      expect(legendEl().querySelector('[data-bp-i18n="legend.key.bug"]')).toBeNull();
+      expect(legendEl().querySelector('[data-bp-i18n="legend.key.feature"]')).not.toBeNull();
+
+      handle.disable();
+
+      // Preferences survive a reload through the readStoredSettings path.
+      const second = startLayer(makeStore());
+      expect(barButton("mode-bug").hidden).toBe(true);
+      expect(barButton("mode-feature").hidden).toBe(false);
+      second.disable();
+    } finally {
+      installed.restore();
+    }
+  });
+
+  it("respects the host ceiling and mounts a read-only layer with modes: \"none\" (FR-4.10)", () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="p1">text</p></main>`;
+    const limited = startLayer(makeStore(), { modes: ["text", "bug"] });
+    expect(barButton("mode-text").hidden).toBe(false);
+    expect(barButton("mode-bug").hidden).toBe(false);
+    expect(barButton("mode-design").hidden).toBe(true);
+    expect(barButton("mode-feature").hidden).toBe(true);
+
+    click(barButton("settings"));
+    for (const [mode, exposed] of [
+      ["text", true],
+      ["design", false],
+      ["bug", true],
+      ["feature", false],
+    ] as const) {
+      const input = query<HTMLInputElement>(`[data-bp-setting="mode-${mode}"]`);
+      expect(input.closest(".bp-popover-row")?.hasAttribute("hidden"), mode).toBe(!exposed);
+    }
+    limited.disable();
+
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="p1">text</p></main>`;
+    const readOnly = startLayer(makeStore(), { modes: "none" });
+    for (const mode of CAPTURE_MODES) {
+      expect(barButton(`mode-${mode}`).hidden, mode).toBe(true);
+    }
+    expect(barButton("feedback-only").hidden).toBe(true);
+
+    // Review-only still works: list, settings and legend keep their controls.
+    click(barButton("panel"));
+    expect(panelEl().hidden).toBe(false);
+    click(barButton("settings"));
+    expect(query('[data-bp-part="settings"]').hidden).toBe(false);
+    expect(query('[data-bp-part="settings-read-only"]').hidden).toBe(false);
+    click(barButton("legend"));
+    expect(legendEl().hidden).toBe(false);
+
+    readOnly.disable();
+  });
+
+  it("treats a user who unchecked every offered mode as read-only (FR-4.10)", async () => {
+    document.body.innerHTML = `<main id="host"><p data-bluepencil="p1">text</p></main>`;
+    const handle = startLayer(makeStore());
+
+    click(barButton("settings"));
+    for (const mode of CAPTURE_MODES) {
+      const input = query<HTMLInputElement>(`[data-bp-setting="mode-${mode}"]`);
+      expect(input.checked, mode).toBe(true);
+      input.checked = false;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    await flush();
+
+    // No mode is left, so the feedback-only surface disappears and the read-only hint takes over.
+    expect(barButton("feedback-only").hidden).toBe(true);
+    expect(query('[data-bp-part="settings-read-only"]').hidden).toBe(false);
+
+    // The `f` shortcut is inert too, and the host keeps the key.
+    const inert = new KeyboardEvent("keydown", { key: "f", bubbles: true, cancelable: true });
+    document.dispatchEvent(inert);
+    expect(inert.defaultPrevented).toBe(false);
+    expect(barButton("feedback-only").getAttribute("aria-pressed")).toBe("false");
+
+    handle.disable();
+  });
+
+  it("stamps the version on the root and shows it in the settings (FR-4.9)", () => {
+    const handle = startLayer(makeStore());
+    expect(root().getAttribute("data-bp-version")).toBe(VERSION);
+
+    click(barButton("settings"));
+    const line = query('[data-bp-part="settings-version"]');
+    expect(line.textContent).toContain(en["settings.version"]);
+    expect(line.textContent).toContain(`bluepencil ${VERSION}`);
+
+    handle.disable();
+  });
+
+  it("keeps the English and German key sets identical", () => {
+    expect(Object.keys(de).sort()).toEqual(Object.keys(en).sort());
   });
 });

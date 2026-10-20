@@ -14,6 +14,7 @@ import {
   ENVIRONMENTS,
   MESSAGE_KINDS,
   NOTE_INTENTS,
+  NOTE_PRIORITIES,
   NOTE_SEVERITIES,
   NOTE_STATUSES,
   NOTE_TYPES,
@@ -118,7 +119,7 @@ function pickLiteral<T extends string>(value: unknown, allowed: readonly T[], fa
  *
  * A value outside `allowed` is treated as absent instead of an error, exactly like an unknown
  * `type` degrades to `text` — a newer writer's vocabulary must never make an older reader refuse
- * the whole document. This is what `severity` uses on import.
+ * the whole document. This is what `severity` and `priority` use on import.
  */
 function pickOptionalLiteral<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
   if (typeof value === "string") {
@@ -245,6 +246,8 @@ function upgradeNote(value: unknown, defaults: NoteDefaults, path: string): Note
   const type = pickLiteral(doc.type, NOTE_TYPES, "text");
   // FR-3.6: an unknown severity degrades to "absent"; a severity on a non-bug note is dropped too.
   const severity = type === "bug" ? pickOptionalLiteral(doc.severity, NOTE_SEVERITIES) : undefined;
+  // FR-3.7: same degrade rule for priority, meaningful only for a feature note.
+  const priority = type === "feature" ? pickOptionalLiteral(doc.priority, NOTE_PRIORITIES) : undefined;
 
   const note: Note = {
     id: nonEmptyString(doc.id) ?? newId("n"),
@@ -254,6 +257,7 @@ function upgradeNote(value: unknown, defaults: NoteDefaults, path: string): Note
     ...(sessionRef !== undefined ? { sessionRef } : {}),
     type,
     ...(severity !== undefined ? { severity } : {}),
+    ...(priority !== undefined ? { priority } : {}),
     intent: pickLiteral(doc.intent, NOTE_INTENTS, "implement"),
     status: pickLiteral(doc.status, NOTE_STATUSES, "open"),
     body: typeof doc.body === "string" ? doc.body : "",

@@ -33,6 +33,7 @@ bluepencil/
 │  │  └─ http.ts           # REST client against the documented contract
 │  ├─ ui/
 │  │  ├─ layer.ts          # mount/unmount, bar, handle, settings popover
+│  │  ├─ modes.ts          # the single capture-preset table (FR-1.13/1.14)
 │  │  ├─ composer.ts       # note input (mode, checkbox "feedback only")
 │  │  ├─ panel.ts          # list, filters, thread, reply, orphan markers
 │  │  ├─ legend.ts         # shortcut overlay
@@ -128,8 +129,9 @@ functions, so an integration can render the notes in its own UI (FR-10.4).
 ```ts
 export const SCHEMA_VERSION = 1;
 
-export type NoteType = "text" | "design" | "bug";
+export type NoteType = "text" | "design" | "bug" | "feature";
 export type NoteIntent = "implement" | "feedback";                 // FR-5.1
+export type NotePriority = "high" | "medium" | "low";              // FR-3.7, only for feature
 export type NoteStatus = "open" | "done" | "needs_decision";       // FR-3.2
 export type AuthorType = "human" | "agent";
 export type MessageKind = "note" | "decision_request" | "decision" | "feedback" | "reply";
@@ -167,8 +169,9 @@ export interface Note {
   createdAt: string;
   updatedAt: string;
   sessionRef?: string;              // review round                     (FR-3.4)
-  type: NoteType;                   // text | design | bug
+  type: NoteType;                   // text | design | bug | feature
   severity?: NoteSeverity;          // blocker | major | minor, only for a bug (FR-3.6)
+  priority?: NotePriority;          // high | medium | low, only for a feature (FR-3.7)
   intent: NoteIntent;
   status: NoteStatus;
   body: string;
@@ -179,7 +182,9 @@ export interface Note {
 }
 ```
 
-`context` stays `null` for text notes unless the host asks for it.
+`context` stays `null` for text notes unless the host asks for it. `severity` and `priority` are
+additive fields: `SCHEMA_VERSION` stays `1` (NFR-9), and canonical serialization keeps their key
+order as `type, severity, priority` so a diff stays stable (NFR-17).
 
 ## 4. Store and adapters
 

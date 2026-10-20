@@ -13,6 +13,11 @@
  * `elementSha256` (the digest `scripts/verify-sync.mjs` checks the library artefact against) and the
  * `gitSha` provenance field, so a shipped extension can be traced back to its commit.
  *
+ * The same object is also written to `dist/build-info.js` as a classic script assigning a global. The
+ * JSON file is for tooling (smoke, verify-sync); the JS file is for the options page, which must read
+ * the provenance without any network API — the Webstore compliance scan refuses `fetch` in the
+ * extension's own sources, and a classic script needs no module loader and no request.
+ *
  * The build fails when the library bundle is missing rather than producing an extension that
  * installs and then does nothing: a green CI run has to mean a loadable extension.
  */
@@ -115,20 +120,28 @@ async function main() {
   await cp(join(here, "manifest.json"), join(out, "manifest.json"));
   await cp(ELEMENT_BUNDLE, join(out, "bluepencil.element.iife.js"));
 
-  // A build that produced no files is a broken build; catch it here rather than in a browser.
-  const produced = await readdir(out);
-  const required = ["manifest.json", "sw.js", "bridge.js", "bootstrap.js", "options.html", "options.js",
-    "detect.js", "bluepencil.element.iife.js"];
-  const missing = required.filter((name) => !produced.includes(name));
-  if (missing.length > 0) throw new Error(`build did not produce: ${missing.join(", ")}`);
-
   // The integrity marker lets the E2E suite assert that the extension is running exactly the
   // library bundle from this build, rather than something left over in a profile directory.
   const digest = createHash("sha256")
     .update(await readFile(join(out, "bluepencil.element.iife.js")))
     .digest("hex");
   const gitSha = readGitSha();
-  await writeFile(join(out, "build-info.json"), `${JSON.stringify({ version, elementSha256: digest, gitSha }, null, 2)}\n`);
+  // One object for both outputs, so the JSON (tooling) and the JS global (options page) cannot drift.
+  const buildInfo = { version, elementSha256: digest, gitSha };
+  await writeFile(join(out, "build-info.json"), `${JSON.stringify(buildInfo, null, 2)}\n`);
+  // Classic script, not a module: the options page reads the provenance from a plain global, with no
+  // same-origin fetch and no network API anywhere in the extension's own code.
+  await writeFile(
+    join(out, "build-info.js"),
+    `globalThis.BLUEPENCIL_BUILD_INFO = ${JSON.stringify(buildInfo)};\n`,
+  );
+
+  // A build that produced no files is a broken build; catch it here rather than in a browser.
+  const produced = await readdir(out);
+  const required = ["manifest.json", "sw.js", "bridge.js", "bootstrap.js", "options.html", "options.js",
+    "detect.js", "bluepencil.element.iife.js", "build-info.js"];
+  const missing = required.filter((name) => !produced.includes(name));
+  if (missing.length > 0) throw new Error(`build did not produce: ${missing.join(", ")}`);
 
   console.log(`[ext] built ${version} -> ${out}`);
   console.log(`[ext] element bundle sha256 ${digest.slice(0, 16)}…`);

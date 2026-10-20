@@ -18,6 +18,7 @@ import type {
   MessageKind,
   Note,
   NoteIntent,
+  NotePriority,
   NoteSeverity,
   NoteStatus,
   NoteType,
@@ -25,6 +26,8 @@ import type {
 import { sortForReview } from "../core/protocol";
 import { applyTranslations, type Translate } from "../i18n";
 import type { MessageKey } from "../i18n/en";
+import { VERSION } from "../version";
+import { CAPTURE_MODES, type CaptureMode } from "./modes";
 
 /* -------------------------------------------------------------------------- */
 /* vocabulary mapping (no literals in the markup)                              */
@@ -34,6 +37,7 @@ const TYPE_KEYS: Record<NoteType, MessageKey> = {
   text: "panel.type.text",
   design: "panel.type.design",
   bug: "panel.type.bug",
+  feature: "panel.type.feature",
 };
 
 const INTENT_KEYS: Record<NoteIntent, MessageKey> = {
@@ -53,6 +57,12 @@ const SEVERITY_KEYS: Record<NoteSeverity, MessageKey> = {
   minor: "panel.severity.minor",
 };
 
+const PRIORITY_KEYS: Record<NotePriority, MessageKey> = {
+  high: "panel.priority.high",
+  medium: "panel.priority.medium",
+  low: "panel.priority.low",
+};
+
 const AUTHOR_TYPE_KEYS: Record<AuthorType, MessageKey> = {
   human: "panel.author.human",
   agent: "panel.author.agent",
@@ -68,7 +78,7 @@ const MESSAGE_KIND_KEYS: Record<MessageKind, MessageKey> = {
 
 /** Statuses offered by the filter (FR-4.2); `done` implies revealing done notes. */
 const STATUS_FILTER_VALUES: readonly (NoteStatus | "all")[] = ["all", "open", "needs_decision", "done"];
-const TYPE_FILTER_VALUES: readonly (NoteType | "all")[] = ["all", "text", "design", "bug"];
+const TYPE_FILTER_VALUES: readonly (NoteType | "all")[] = ["all", "text", "design", "bug", "feature"];
 const INTENT_FILTER_VALUES: readonly (NoteIntent | "all")[] = ["all", "implement", "feedback"];
 /** FR-3.6: `none` matches every note without a severity (non-bugs and ungraded bugs). */
 const SEVERITY_FILTER_VALUES: readonly (NoteSeverity | "none" | "all")[] = [
@@ -78,12 +88,21 @@ const SEVERITY_FILTER_VALUES: readonly (NoteSeverity | "none" | "all")[] = [
   "minor",
   "none",
 ];
+/** FR-3.7: `none` matches every note without a priority (non-features and ungraded features). */
+const PRIORITY_FILTER_VALUES: readonly (NotePriority | "none" | "all")[] = [
+  "all",
+  "high",
+  "medium",
+  "low",
+  "none",
+];
 
 export interface PanelFilters {
   type: NoteType | "all";
   intent: NoteIntent | "all";
   status: NoteStatus | "all";
   severity: NoteSeverity | "none" | "all";
+  priority: NotePriority | "none" | "all";
 }
 
 export const DEFAULT_FILTERS: PanelFilters = {
@@ -91,6 +110,7 @@ export const DEFAULT_FILTERS: PanelFilters = {
   intent: "all",
   status: "all",
   severity: "all",
+  priority: "all",
 };
 
 /* -------------------------------------------------------------------------- */
@@ -133,6 +153,10 @@ export interface PanelActions {
   reply(note: Note, text: string): void;
   setIntent(note: Note, intent: NoteIntent): void;
   setStatus(note: Note, status: NoteStatus): void;
+  /** FR-3.6: set or clear (`null`) the severity of a bug. */
+  setSeverity(note: Note, severity: NoteSeverity | null): void;
+  /** FR-3.7: set or clear (`null`) the priority of a feature. */
+  setPriority(note: Note, priority: NotePriority | null): void;
   remove(note: Note): void;
   /** Scroll to the element and highlight it, or report that jumping is impossible (FR-4.7). */
   jump(note: Note, element: Element | null): void;
@@ -211,12 +235,47 @@ function buttonNode(doc: Document, className: string, key: MessageKey, action: s
   return node;
 }
 
+/**
+ * The compact per-note grading dropdown (FR-3.6/3.7, FR-4.10): a bug edits its severity, a feature
+ * its priority, right in the entry. The note type itself stays immutable — no dropdown offers it.
+ */
+function gradeSelect(
+  doc: Document,
+  field: "severity" | "priority",
+  labelKey: MessageKey,
+  values: readonly string[],
+  keys: Record<string, MessageKey>,
+  current: string,
+): HTMLElement {
+  const label = createEl(doc, "label", "bp-field bp-field--inline");
+  const select = createEl(doc, "select", "bp-select");
+  select.setAttribute("data-bp-note-field", field);
+  select.setAttribute("data-bp-i18n-aria", labelKey);
+  const none = createEl(doc, "option");
+  none.value = "none";
+  none.setAttribute("data-bp-i18n", "panel.filter.none");
+  select.append(none);
+  for (const value of values) {
+    const option = createEl(doc, "option");
+    option.value = value;
+    const key = keys[value];
+    if (key !== undefined) option.setAttribute("data-bp-i18n", key);
+    select.append(option);
+  }
+  select.value = current;
+  label.append(select);
+  return label;
+}
+
 function filterOptionKey(name: keyof PanelFilters, value: string): MessageKey {
   if (value === "all") return "panel.filter.all";
   if (name === "type") return TYPE_KEYS[value as NoteType];
   if (name === "intent") return INTENT_KEYS[value as NoteIntent];
   if (name === "severity") {
     return value === "none" ? "panel.filter.none" : SEVERITY_KEYS[value as NoteSeverity];
+  }
+  if (name === "priority") {
+    return value === "none" ? "panel.filter.none" : PRIORITY_KEYS[value as NotePriority];
   }
   return STATUS_KEYS[value as NoteStatus];
 }
@@ -225,6 +284,7 @@ function filterValues(name: keyof PanelFilters): readonly string[] {
   if (name === "type") return TYPE_FILTER_VALUES;
   if (name === "intent") return INTENT_FILTER_VALUES;
   if (name === "severity") return SEVERITY_FILTER_VALUES;
+  if (name === "priority") return PRIORITY_FILTER_VALUES;
   return STATUS_FILTER_VALUES;
 }
 
@@ -232,6 +292,7 @@ function filterLabelKey(name: keyof PanelFilters): MessageKey {
   if (name === "type") return "panel.filter.type";
   if (name === "intent") return "panel.filter.intent";
   if (name === "severity") return "panel.filter.severity";
+  if (name === "priority") return "panel.filter.priority";
   return "panel.filter.status";
 }
 
@@ -269,9 +330,10 @@ export function createPanel(options: PanelOptions): Panel {
     intent: createEl(doc, "select", "bp-select"),
     status: createEl(doc, "select", "bp-select"),
     severity: createEl(doc, "select", "bp-select"),
+    priority: createEl(doc, "select", "bp-select"),
   };
 
-  for (const name of ["type", "intent", "status", "severity"] as const) {
+  for (const name of ["type", "intent", "status", "severity", "priority"] as const) {
     const select = selects[name];
     select.setAttribute("data-bp-filter", name);
     select.setAttribute("data-bp-i18n-aria", filterLabelKey(name));
@@ -321,6 +383,11 @@ export function createPanel(options: PanelOptions): Panel {
       if (filters.severity !== "all") {
         const severity = note.severity ?? "none";
         if (severity !== filters.severity) return false;
+      }
+      // FR-3.7: the same `none` rule for features without a priority.
+      if (filters.priority !== "all") {
+        const priority = note.priority ?? "none";
+        if (priority !== filters.priority) return false;
       }
       return true;
     });
@@ -432,6 +499,7 @@ export function createPanel(options: PanelOptions): Panel {
 
     const typeBadge = createEl(doc, "span", "bp-badge");
     typeBadge.setAttribute("data-bp-i18n", TYPE_KEYS[note.type]);
+    if (note.type === "feature") typeBadge.classList.add("bp-badge--feature");
 
     head.append(statusBadge, typeBadge);
 
@@ -441,6 +509,14 @@ export function createPanel(options: PanelOptions): Panel {
       severityBadge.setAttribute("data-bp-part", "badge-severity");
       severityBadge.setAttribute("data-bp-i18n", SEVERITY_KEYS[note.severity]);
       head.append(severityBadge);
+    }
+
+    // FR-3.7: a feature's priority is its own badge, next to (never instead of) the type badge.
+    if (note.priority !== undefined) {
+      const priorityBadge = createEl(doc, "span", `bp-badge bp-badge--priority-${note.priority}`);
+      priorityBadge.setAttribute("data-bp-part", "badge-priority");
+      priorityBadge.setAttribute("data-bp-i18n", PRIORITY_KEYS[note.priority]);
+      head.append(priorityBadge);
     }
 
     if (note.intent === "feedback") {
@@ -493,6 +569,17 @@ export function createPanel(options: PanelOptions): Panel {
     const intentSwitch = buttonNode(doc, "bp-btn", "panel.action.switchIntent", "toggle-intent");
     actions.append(intentSwitch);
 
+    // FR-4.10: grading is editable in place; the category is not (it was chosen at capture time).
+    if (note.type === "bug") {
+      actions.append(
+        gradeSelect(doc, "severity", "panel.severity", Object.keys(SEVERITY_KEYS), SEVERITY_KEYS, note.severity ?? "none"),
+      );
+    } else if (note.type === "feature") {
+      actions.append(
+        gradeSelect(doc, "priority", "panel.priority", Object.keys(PRIORITY_KEYS), PRIORITY_KEYS, note.priority ?? "none"),
+      );
+    }
+
     if (note.status === "open" && note.intent === "implement") {
       actions.append(buttonNode(doc, "bp-btn", "panel.action.markDone", "mark-done"));
     } else if (note.status === "done") {
@@ -516,6 +603,7 @@ export function createPanel(options: PanelOptions): Panel {
     selects.intent.value = filters.intent;
     selects.status.value = filters.status;
     selects.severity.value = filters.severity;
+    selects.priority.value = filters.priority;
     doneToggle.setAttribute("data-bp-i18n", showDoneValue ? "panel.hideDone" : "panel.showDone");
     doneToggle.setAttribute("aria-pressed", showDoneValue ? "true" : "false");
     doneToggle.classList.toggle("is-active", showDoneValue);
@@ -587,6 +675,7 @@ export function createPanel(options: PanelOptions): Panel {
       else if (name === "intent") filters.intent = value as PanelFilters["intent"];
       else if (name === "status") filters.status = value as PanelFilters["status"];
       else if (name === "severity") filters.severity = value as PanelFilters["severity"];
+      else if (name === "priority") filters.priority = value as PanelFilters["priority"];
       render();
     },
     resetFilters(): void {
@@ -594,6 +683,7 @@ export function createPanel(options: PanelOptions): Panel {
       filters.intent = DEFAULT_FILTERS.intent;
       filters.status = DEFAULT_FILTERS.status;
       filters.severity = DEFAULT_FILTERS.severity;
+      filters.priority = DEFAULT_FILTERS.priority;
       render();
     },
     replyValue(note: Note): string {
@@ -646,6 +736,8 @@ export interface LayerSettings {
    * importing the layer's type, because the layer imports `DEFAULT_SETTINGS` from this module.
    */
   chromeLevel: "full" | "quiet" | "off";
+  /** Which capture modes the user enabled (FR-4.10); the host may expose fewer of them. */
+  modes: Record<CaptureMode, boolean>;
 }
 
 export const DEFAULT_SETTINGS: LayerSettings = {
@@ -655,6 +747,7 @@ export const DEFAULT_SETTINGS: LayerSettings = {
   language: "en",
   barCollapsed: false,
   chromeLevel: "full",
+  modes: { text: true, design: true, bug: true, feature: true },
 };
 
 export interface SettingsOptions {
@@ -664,6 +757,8 @@ export interface SettingsOptions {
   state: () => LayerSettings;
   onChange: (patch: Partial<LayerSettings>) => void;
   onReset: () => void;
+  /** Host ceiling (FR-4.10): the modes the embedding app actually offers. */
+  hostModes: () => readonly CaptureMode[];
 }
 
 export interface SettingsPopover {
@@ -737,11 +832,34 @@ export function createSettings(options: SettingsOptions): SettingsPopover {
   }
   languageField.append(languageLabel, languageSelect);
 
+  /* -- capture modes (FR-4.10) -------------------------------------------- */
+
+  const modesGroup = createEl(doc, "section", "bp-popover-group");
+  modesGroup.setAttribute("data-bp-part", "settings-modes");
+  const modesHeading = textNode(doc, "h3", "bp-popover-group-title", "settings.modes");
+  const modesHint = textNode(doc, "p", "bp-hint", "settings.modesHint");
+  const modeRows = CAPTURE_MODES.map((mode) => ({
+    mode,
+    ...switchRow(`mode-${mode}`, `settings.mode.${mode}` as MessageKey),
+  }));
+  const readOnlyHint = textNode(doc, "p", "bp-hint", "settings.readOnly");
+  readOnlyHint.setAttribute("data-bp-part", "settings-read-only");
+  modesGroup.append(modesHeading, modesHint, ...modeRows.map(({ row }) => row), readOnlyHint);
+
   const resetButton = buttonNode(doc, "bp-btn", "settings.reset", "settings-reset");
   const persistNote = textNode(doc, "p", "bp-hint", "settings.persistNote");
 
+  // FR-4.9: a static version line — the label is translated, the value is build metadata.
+  const versionRow = createEl(doc, "p", "bp-version");
+  versionRow.setAttribute("data-bp-part", "settings-version");
+  const versionLabel = textNode(doc, "span", "bp-hint", "settings.version");
+  const versionValue = createEl(doc, "span", "bp-version-value");
+  versionValue.textContent = `bluepencil ${VERSION}`;
+  versionRow.append(versionLabel, versionValue);
+
   element.append(
     header,
+    modesGroup,
     showDoneRow.row,
     feedbackRow.row,
     feedbackHint,
@@ -749,6 +867,7 @@ export function createSettings(options: SettingsOptions): SettingsPopover {
     languageField,
     resetButton,
     persistNote,
+    versionRow,
   );
 
   let openState = false;
@@ -756,10 +875,24 @@ export function createSettings(options: SettingsOptions): SettingsPopover {
 
   function render(): void {
     const state = options.state();
+    const hostModes = options.hostModes();
+    // FR-4.10: read-only is not only about the host ceiling — a user who unchecked every offered
+    // mode has no capture left either, so the user's stored booleans count as well.
+    const anyMode = hostModes.some((mode) => state.modes[mode] !== false);
+    for (const { mode, row, input } of modeRows) {
+      row.hidden = !hostModes.includes(mode);
+      input.checked = state.modes[mode] !== false;
+    }
+    // Read-only host (FR-4.10): no capture at all, but the review list stays fully usable.
+    modesHint.hidden = !anyMode;
+    readOnlyHint.hidden = anyMode;
+    feedbackRow.row.hidden = !anyMode;
+    feedbackHint.hidden = !anyMode;
     showDoneRow.input.checked = state.showDone;
     feedbackRow.input.checked = state.feedbackOnly;
     if (!authorDirty) authorInput.value = state.author;
     languageSelect.value = state.language;
+    versionValue.textContent = `bluepencil ${VERSION}`;
     applyTranslations(element, options.t);
   }
 

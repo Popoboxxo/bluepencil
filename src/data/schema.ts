@@ -15,6 +15,7 @@ import {
   ENVIRONMENTS,
   MESSAGE_KINDS,
   NOTE_INTENTS,
+  NOTE_PRIORITIES,
   NOTE_SEVERITIES,
   NOTE_STATUSES,
   NOTE_TYPES,
@@ -217,6 +218,13 @@ function noteIssues(note: JsonObject, path: string): string[] {
     issues.push(...enumIssues(`${path}.severity`, note.severity, NOTE_SEVERITIES));
     if (note.type !== "bug") {
       issues.push(`${path}.severity is only allowed when type is "bug" (got type ${describe(note.type)})`);
+    }
+  }
+  // FR-3.7: priority mirrors severity — optional, known value, and meaningful only for a feature.
+  if (note.priority !== undefined) {
+    issues.push(...enumIssues(`${path}.priority`, note.priority, NOTE_PRIORITIES));
+    if (note.type !== "feature") {
+      issues.push(`${path}.priority is only allowed when type is "feature" (got type ${describe(note.type)})`);
     }
   }
   issues.push(...enumIssues(`${path}.intent`, note.intent, NOTE_INTENTS));

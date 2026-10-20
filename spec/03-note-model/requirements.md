@@ -19,7 +19,7 @@ A note has: id, created_at, author (+author_type), type, intent, status, body, q
 
 *Acceptance criteria:* All fields present in the JSON export and validated
 
-## FR-3.2 type ∈ {text, design, bug}; intent ∈ {implement, feedback}; status ∈ {open, done, needs_…
+## FR-3.2 type ∈ {text, design, bug, feature}; intent ∈ {implement, feedback}; status ∈ {open, don…
 
 ```attr
 prio: P0
@@ -31,7 +31,7 @@ version: 1
 requires-trace-from: []
 ```
 
-type ∈ {text, design, bug}; intent ∈ {implement, feedback}; status ∈ {open, done, needs_decision}
+type ∈ {text, design, bug, feature}; intent ∈ {implement, feedback}; status ∈ {open, done, needs_decision}
 
 *Acceptance criteria:* Invalid values rejected by the API/adapter
 
@@ -98,3 +98,19 @@ requires-trace-from: []
 An optional severity ∈ {blocker, major, minor} may be set on a note; it is orthogonal to type/intent, meaningful only for type = bug, and omitted otherwise
 
 *Acceptance criteria:* A note without `severity` stays valid (old stores/bundles import unchanged, no `schemaVersion` bump); an unknown `severity` on import degrades safely (dropped, treated as absent), mirroring the unknown-`type`→`text` fallback
+
+## FR-3.7 An optional priority ∈ {high, medium, low} may be set on a note; it is orthogonal to typ…
+
+```attr
+prio: P1
+origin: G
+milestone: "M2"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+An optional priority ∈ {high, medium, low} may be set on a note; it is orthogonal to type/intent, meaningful only for type = feature, and omitted otherwise. It is an additive change without a schemaVersion bump: an older reader degrades feature to text and drops priority, a newer reader imports old data unchanged, and an unknown priority on import is dropped (treated as absent)
+
+*Acceptance criteria:* A note without `priority` stays valid; `priority` on a non-feature note is rejected by validation and dropped by coercion/migration; old stores and bundles import unchanged without a schema bump; an unknown value degrades to absent

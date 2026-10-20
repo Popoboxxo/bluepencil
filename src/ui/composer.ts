@@ -12,7 +12,14 @@
  *  - render every user value as **text** (FR-9.3): `textContent` only, no HTML anywhere.
  */
 
-import type { Anchor, CapturedContext, NoteIntent, NoteSeverity, NoteType } from "../core/model";
+import type {
+  Anchor,
+  CapturedContext,
+  NoteIntent,
+  NotePriority,
+  NoteSeverity,
+  NoteType,
+} from "../core/model";
 import { applyTranslations, type Translate } from "../i18n";
 import type { MessageKey } from "../i18n/en";
 import { createVoice, resolveVoiceEngine, type Voice, type VoiceEngineFactory, type VoiceErrorKind } from "./voice";
@@ -35,6 +42,8 @@ export interface ComposerSaveInput {
   intent: NoteIntent;
   /** FR-3.6: only set for `type: "bug"`; omitted for every other type. */
   severity?: NoteSeverity;
+  /** FR-3.7: only set for `type: "feature"`; omitted for every other type. */
+  priority?: NotePriority;
 }
 
 /** `{ ok: false }` means "the layer refused" — the composer stays open and shows `reasonKey`. */
@@ -95,11 +104,12 @@ function textNode(doc: Document, tag: keyof HTMLElementTagNameMap, className: st
   return node;
 }
 
-/** Composer heading per note category (FR-3.2); keeps the three-value switch exhaustive. */
+/** Composer heading per note category (FR-3.2); keeps the category switch exhaustive. */
 const COMPOSER_TITLE_KEYS: Record<NoteType, MessageKey> = {
   text: "composer.title.text",
   design: "composer.title.design",
   bug: "composer.title.bug",
+  feature: "composer.title.feature",
 };
 
 /** FR-21.8: the inline alert key per engine error kind. */
@@ -119,6 +129,7 @@ export function createComposer(options: ComposerOptions): Composer {
   let selectedType: NoteType = "text";
   let selectedIntent: NoteIntent = "implement";
   let selectedSeverity: NoteSeverity | null = null;
+  let selectedPriority: NotePriority | null = null;
   let previousActive: Element | null = null;
   /** Dictation remains off (no UI at all) unless the host opted in and an engine resolves (FR-21.1). */
   const voiceEnabled = options.voice?.() === true && resolveVoiceEngine(globalThis, options.voiceEngine) !== null;
@@ -157,11 +168,13 @@ export function createComposer(options: ComposerOptions): Composer {
   const textTypeButton = typeButton("text", "composer.type.text");
   const designTypeButton = typeButton("design", "composer.type.design");
   const bugTypeButton = typeButton("bug", "composer.type.bug");
+  const featureTypeButton = typeButton("feature", "composer.type.feature");
   typeRow.append(
     textNode(doc, "span", "bp-hint", "composer.typeLabel"),
     textTypeButton,
     designTypeButton,
     bugTypeButton,
+    featureTypeButton,
   );
 
   const intentRow = createEl(doc, "div", "bp-field");
@@ -193,6 +206,25 @@ export function createComposer(options: ComposerOptions): Composer {
   severityRow.append(
     textNode(doc, "span", "bp-hint", "composer.severityLabel"),
     ...severityButtons.map(([, button]) => button),
+  );
+
+  // FR-3.7: the priority switch mirrors severity — it is only shown for a feature request.
+  const priorityRow = createEl(doc, "div", "bp-field");
+  const priorityButton = (value: NotePriority, key: MessageKey): HTMLButtonElement => {
+    const node = textNode(doc, "button", "bp-btn", key);
+    node.setAttribute("type", "button");
+    node.setAttribute("data-bp-action", `composer-priority-${value}`);
+    node.setAttribute("aria-pressed", "false");
+    return node as HTMLButtonElement;
+  };
+  const priorityButtons: [NotePriority, HTMLButtonElement][] = [
+    ["high", priorityButton("high", "composer.priority.high")],
+    ["medium", priorityButton("medium", "composer.priority.medium")],
+    ["low", priorityButton("low", "composer.priority.low")],
+  ];
+  priorityRow.append(
+    textNode(doc, "span", "bp-hint", "composer.priorityLabel"),
+    ...priorityButtons.map(([, button]) => button),
   );
 
   const feedbackNote = textNode(doc, "p", "bp-hint", "composer.feedbackOnlyActive");
@@ -254,6 +286,7 @@ export function createComposer(options: ComposerOptions): Composer {
     typeRow,
     intentRow,
     severityRow,
+    priorityRow,
     feedbackNote,
     bodyLabel,
     bodyInput,
@@ -336,9 +369,11 @@ export function createComposer(options: ComposerOptions): Composer {
     textTypeButton.setAttribute("aria-pressed", selectedType === "text" ? "true" : "false");
     designTypeButton.setAttribute("aria-pressed", selectedType === "design" ? "true" : "false");
     bugTypeButton.setAttribute("aria-pressed", selectedType === "bug" ? "true" : "false");
+    featureTypeButton.setAttribute("aria-pressed", selectedType === "feature" ? "true" : "false");
     textTypeButton.classList.toggle("is-active", selectedType === "text");
     designTypeButton.classList.toggle("is-active", selectedType === "design");
     bugTypeButton.classList.toggle("is-active", selectedType === "bug");
+    featureTypeButton.classList.toggle("is-active", selectedType === "feature");
     implementButton.setAttribute("aria-pressed", selectedIntent === "implement" ? "true" : "false");
     feedbackButton.setAttribute("aria-pressed", selectedIntent === "feedback" ? "true" : "false");
     implementButton.classList.toggle("is-active", selectedIntent === "implement");
@@ -347,6 +382,11 @@ export function createComposer(options: ComposerOptions): Composer {
     for (const [value, button] of severityButtons) {
       button.setAttribute("aria-pressed", selectedSeverity === value ? "true" : "false");
       button.classList.toggle("is-active", selectedSeverity === value);
+    }
+    priorityRow.hidden = selectedType !== "feature";
+    for (const [value, button] of priorityButtons) {
+      button.setAttribute("aria-pressed", selectedPriority === value ? "true" : "false");
+      button.classList.toggle("is-active", selectedPriority === value);
     }
     feedbackNote.hidden = !options.feedbackOnly();
     // The label key has to be set before the walk rewrites the button text (FR-21.7/21.8).
@@ -389,11 +429,15 @@ export function createComposer(options: ComposerOptions): Composer {
     if (action === "composer-type-text") selectType("text");
     else if (action === "composer-type-design") selectType("design");
     else if (action === "composer-type-bug") selectType("bug");
+    else if (action === "composer-type-feature") selectType("feature");
     else if (action === "composer-intent-implement") selectIntent("implement");
     else if (action === "composer-intent-feedback") selectIntent("feedback");
     else if (action === "composer-severity-blocker") selectSeverity("blocker");
     else if (action === "composer-severity-major") selectSeverity("major");
     else if (action === "composer-severity-minor") selectSeverity("minor");
+    else if (action === "composer-priority-high") selectPriority("high");
+    else if (action === "composer-priority-medium") selectPriority("medium");
+    else if (action === "composer-priority-low") selectPriority("low");
     else if (action === "composer-voice") toggleVoice();
     else return false;
     return true;
@@ -401,8 +445,9 @@ export function createComposer(options: ComposerOptions): Composer {
 
   function selectType(value: NoteType): void {
     selectedType = value;
-    // FR-3.6: severity is meaningful only for a bug — leaving the bug topic clears the choice.
+    // FR-3.6/3.7: severity belongs to a bug, priority to a feature — leaving a topic clears its value.
     if (value !== "bug") selectedSeverity = null;
+    if (value !== "feature") selectedPriority = null;
     renderForm();
   }
 
@@ -413,6 +458,11 @@ export function createComposer(options: ComposerOptions): Composer {
 
   function selectSeverity(value: NoteSeverity): void {
     selectedSeverity = value;
+    renderForm();
+  }
+
+  function selectPriority(value: NotePriority): void {
+    selectedPriority = value;
     renderForm();
   }
 
@@ -496,6 +546,7 @@ export function createComposer(options: ComposerOptions): Composer {
     reportError(undefined);
     target = null;
     selectedSeverity = null;
+    selectedPriority = null;
     restoreFocus();
   }
 
@@ -512,6 +563,8 @@ export function createComposer(options: ComposerOptions): Composer {
       intent: selectedIntent,
       // FR-3.6: only a bug carries a severity; the field is omitted otherwise.
       ...(selectedType === "bug" && selectedSeverity !== null ? { severity: selectedSeverity } : {}),
+      // FR-3.7: only a feature carries a priority; the field is omitted otherwise.
+      ...(selectedType === "feature" && selectedPriority !== null ? { priority: selectedPriority } : {}),
     };
     let result: ComposerSaveResult | Promise<ComposerSaveResult>;
     try {
@@ -553,6 +606,7 @@ export function createComposer(options: ComposerOptions): Composer {
       selectedType = next.type;
       selectedIntent = options.feedbackOnly() ? "feedback" : "implement";
       selectedSeverity = null;
+      selectedPriority = null;
       bodyInput.value = "";
       reportError(undefined);
       renderTarget();

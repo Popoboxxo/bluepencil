@@ -15,6 +15,7 @@ import {
   isEnvironment,
   isMessageKind,
   isNoteIntent,
+  isNotePriority,
   isNoteSeverity,
   isNoteStatus,
   isNoteType,
@@ -27,6 +28,7 @@ import {
   type NoteDraft,
   type NoteFilter,
   type NotePatch,
+  type NotePriority,
   type NoteTiming,
 } from "./model";
 
@@ -122,6 +124,10 @@ export function matchesFilter(note: Note, filter?: NoteFilter): boolean {
   if (filter.severity !== undefined && note.severity !== filter.severity) {
     return false;
   }
+  // FR-3.7: an exact priority match; only feature notes ever carry one.
+  if (filter.priority !== undefined && note.priority !== filter.priority) {
+    return false;
+  }
   if (filter.intent !== undefined && note.intent !== filter.intent) {
     return false;
   }
@@ -184,8 +190,19 @@ export function applyPatch(note: Note, patch: AdapterPatch, now?: string): Note 
   if (patch.intent !== undefined && !isNoteIntent(patch.intent)) {
     issues.push("intent must be implement or feedback");
   }
-  if (patch.severity !== undefined && !isNoteSeverity(patch.severity)) {
+  if (
+    patch.severity !== undefined &&
+    patch.severity !== null &&
+    !isNoteSeverity(patch.severity)
+  ) {
     issues.push("severity must be blocker, major or minor");
+  }
+  if (
+    patch.priority !== undefined &&
+    patch.priority !== null &&
+    !isNotePriority(patch.priority)
+  ) {
+    issues.push("priority must be high, medium or low");
   }
   if (patch.body !== undefined && (typeof patch.body !== "string" || patch.body.trim() === "")) {
     issues.push("body must be a non-empty string");
@@ -207,13 +224,22 @@ export function applyPatch(note: Note, patch: AdapterPatch, now?: string): Note 
   if (patch.intent !== undefined) {
     next.intent = patch.intent;
   }
-  // FR-3.6: severity is meaningful only for a bug — a patch drops it on any other type.
+  // FR-3.6: severity is meaningful only for a bug — a patch drops it on any other type;
+  // `null` clears it explicitly.
   if (patch.severity !== undefined) {
-    if (next.type === "bug") {
+    if (patch.severity !== null && next.type === "bug") {
       next.severity = patch.severity;
     } else {
       // Absent, not undefined: keep the key off the object entirely (repo-wide invariant).
       delete next.severity;
+    }
+  }
+  // FR-3.7: priority follows the same rule for a feature note.
+  if (patch.priority !== undefined) {
+    if (patch.priority !== null && next.type === "feature") {
+      next.priority = patch.priority;
+    } else {
+      delete next.priority;
     }
   }
   if (patch.body !== undefined) {
@@ -263,6 +289,10 @@ export function coerceNote(value: unknown): Note | null {
   }
   const createdAt = typeof value.createdAt === "string" ? value.createdAt : systemClock.now();
   const type = isNoteType(value.type) ? value.type : "text";
+  // FR-3.7: an unknown priority degrades to absent, and a priority on a non-feature note is
+  // dropped rather than kept as a dangling value — exactly like severity.
+  const priority: NotePriority | undefined =
+    type === "feature" && isNotePriority(value.priority) ? value.priority : undefined;
   const note: Note = {
     id,
     schemaVersion: typeof value.schemaVersion === "number" ? value.schemaVersion : 1,
@@ -272,6 +302,7 @@ export function coerceNote(value: unknown): Note | null {
     // FR-3.6: an unknown severity degrades to absent (mirrors the unknown-type fallback to `text`),
     // and a severity on a non-bug note is dropped rather than kept as a dangling value.
     ...(type === "bug" && isNoteSeverity(value.severity) ? { severity: value.severity } : {}),
+    ...(priority !== undefined ? { priority } : {}),
     intent: isNoteIntent(value.intent) ? value.intent : "implement",
     status: isNoteStatus(value.status) ? value.status : "open",
     body: typeof value.body === "string" ? value.body : "",

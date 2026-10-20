@@ -83,6 +83,18 @@
   .disclosure ul { margin: .3rem 0 .6rem; padding-left: 1.15rem; }
   .disclosure li { margin: 0 0 .25rem; }
   .disclosure a { color: LinkText; }
+  /* Build provenance. Deliberately plain and always rendered (before any script runs): the page's
+     own version has to be readable even when `options.js` or the build-info.js global fails. */
+  .about {
+    border: 1px solid var(--bp-border); border-radius: 8px;
+    padding: .9rem 1.1rem; margin: 1.5rem 0 0;
+    background: Canvas; color: CanvasText;
+  }
+  .about h2 { font-size: 1rem; margin: 0 0 .55rem; }
+  .about dl { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; margin: 0; }
+  .about dt { color: var(--bp-muted); }
+  .about dd { margin: 0; }
+  .about code { font-size: .85em; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
@@ -231,6 +243,24 @@
     <span id="toggle-status" role="status" aria-live="polite"></span>
   </fieldset>
 
+  <!-- FR-4.9: the exact build this extension was assembled from. Filled by `showVersion()` from the
+       build-time global written to build-info.js; the placeholder text is what a reader sees if that
+       script cannot be loaded. -->
+  <section class="about" aria-labelledby="version-title">
+    <h2 id="version-title">Version</h2>
+    <dl>
+      <dt>bluepencil</dt>
+      <dd id="version-bluepencil">bluepencil …</dd>
+      <dt>Build</dt>
+      <dd id="version-build">…</dd>
+      <dt>Commit</dt>
+      <dd id="version-commit">…</dd>
+      <dt>Element SHA-256</dt>
+      <dd><code id="version-element">…</code></dd>
+    </dl>
+  </section>
+
+  <script src="./build-info.js"></script>
   <script type="module" src="./options.js"></script>
 </body>
 </html>

@@ -61,7 +61,26 @@
       <h2>Card target</h2>
       <p data-testid="parity-card-text">A block target for design notes and captured state.</p>
     </article>
+    <!--
+      Host behaviour probe (FR-1.9/1.15): a plain click on this button must stay the host's — in
+      every capture mode — while Alt+click is the layer's documented exception. The counter is the
+      page's own, so the parity case can prove the host listener really ran (or really did not).
+    -->
+    <button id="parity-button" data-testid="parity-button" type="button">Host action</button>
+    <!--
+      Design-only target (FR-1.14): deliberately no text content anywhere inside it, so a feature
+      capture on this leaf has nothing to quote and must fall back to a captured design context.
+    -->
+    <div id="parity-empty" data-testid="parity-empty" style="height: 48px; border: 1px dashed #d7dce2; border-radius: 10px;"></div>
   </main>
+  <script>
+    // Page-owned state, reset by the alt-click parity case before it clicks. Inline is safe here:
+    // the fixture is served by the harness with no CSP, and both strands get this exact document.
+    window.__parityClicks = 0;
+    document.getElementById("parity-button").addEventListener("click", function () {
+      window.__parityClicks += 1;
+    });
+  </script>
   <!--BP_PARITY_LOADER_SLOT-->
 </body>
 </html>

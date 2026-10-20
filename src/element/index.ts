@@ -12,7 +12,7 @@
  * Attributes (single source of truth: `src/embed/attributes.ts`): enabled, adapter, endpoint,
  *   headers, headers-from, token, token-header, token-scheme, language, identity, session,
  *   environment, show-done, theme, theme-accent, theme-surface, route, route-from, gate, mount,
- *   voice, voice-engine.
+ *   modes, voice, voice-engine.
  * Events:  bp-enabled, bp-disabled, bp-notes-changed, bp-export, bp-error
  * API:     blueprint, issues, exportNotes(), destroy()
  *
@@ -35,6 +35,7 @@ import {
   readGate,
   readHeaders,
   readKeymap,
+  readModes,
   readRoute,
   readStore,
   readTheme,
@@ -221,6 +222,7 @@ export class BluepencilNotesElement extends HTMLElement {
     const registered = readAnnotateSelectors(this);
     const keyboard = readKeymap(this);
     const docking = readDock(this);
+    const modes = readModes(this);
     const appInfo = readAppInfo(this);
     const voice = readVoice(this);
     const voiceEngine = readVoiceEngine(this, resolve);
@@ -235,6 +237,7 @@ export class BluepencilNotesElement extends HTMLElement {
       ...registered.issues,
       ...keyboard.issues,
       ...docking.issues,
+      ...modes.issues,
       ...voice.issues,
       ...voiceEngine.issues,
     ]);
@@ -273,6 +276,7 @@ export class BluepencilNotesElement extends HTMLElement {
       ...(registered.annotateSelectors === undefined ? {} : { annotateSelectors: registered.annotateSelectors }),
       ...(keyboard.keymap === undefined ? {} : { keymap: keyboard.keymap }),
       ...(docking.dock === undefined ? {} : { dock: docking.dock }),
+      ...(modes.modes === undefined ? {} : { modes: modes.modes }),
       ...(voice.voice === undefined ? {} : { voice: voice.voice }),
       ...(voiceEngine.voiceEngine === undefined ? {} : { voiceEngine: voiceEngine.voiceEngine }),
       ...(appInfo.app === undefined ? {} : { app: appInfo.app }),

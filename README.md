@@ -19,12 +19,14 @@ no "the second badge in the header".
 
 ![The review layer on the vanilla fixture: five notes from a review round, the bar with its counters, the marker on the annotated element and the note list](docs/images/fixture-review.png)
 
-**Status:** `0.7.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
+**Status:** `0.8.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
 `main`: the core model, anchoring (now including **transient container reveal**), capture, store and
 the four adapters (with a conformance suite); canonical, diffable bundles with
 `merge`/`upsert`/`replace-session` and migrations; Markdown/JSON export; the collaboration protocol;
-the review layer with i18n; the public API and the `<bluepencil-notes>` element; the CLI, the MCP
-server (read-only by default) and the **hub** — one command, static site and notes API on one port,
+the review layer with i18n and **four capture presets** (`text`, `design`, `bug`, `feature`), optional
+feature **priority**, per-mode visibility with a host ceiling (`modes`), Alt+click annotation of
+interactive elements and a visible version line; the public API and the `<bluepencil-notes>` element;
+the CLI, the MCP server (read-only by default) and the **hub** — one command, static site and notes API on one port,
 **MCP over HTTP** so an agent reaches the same notes the browser writes, per-device signed tokens
 (shared secret or token, per-environment and revocable), a `GET {base}/config` that describes the
 running process without a credential, and a container image (`docker compose up -d`) that generates
@@ -32,7 +34,7 @@ its own credential; a **Chromium MV3 extension** that mounts the
 layer in pages you do not build yourself, with its settings reaching the layer and its rounds kept in
 the extension's own storage; **opt-in composer dictation** (`voice`, off by default — a mic button
 that appends the browser's transcript without saving it); the vanilla fixture app with its seed
-bundle, 813 unit tests and the
+bundle, 864 unit tests and the
 browser legs of the embed, end-to-end, round-trip, bookmarklet, parity and extension smokes.
 
 Honest gaps: the E2E suite is hand-rolled over the CDP pipe rather than Playwright (NFR-4 says no
@@ -41,7 +43,7 @@ read at hub start), dictation leans on the browser's own Web Speech API (Chromiu
 Firefox support; Chromium may send audio to a browser service, so inject `voiceEngine` to stay
 offline), no import/merge surface in the UI, no bulk delete or retention control, i18n
 only `en`/`de`, and no npm publish — install from the tag
-(`npm i github:Popoboxxo/bluepencil#v0.7.0`; the `prepare` script builds `dist/` during install) or
+(`npm i github:Popoboxxo/bluepencil#v0.8.0`; the `prepare` script builds `dist/` during install) or
 use the release artefacts: loader, layer, package tarball, the MV3 browser extension, one
 `SHA256SUMS` over all of them, and the hub image on `ghcr.io/popoboxxo/bluepencil`
 ([docs/DOCKER.md](docs/DOCKER.md)). How a release is cut: [docs/RELEASING.md](docs/RELEASING.md).
@@ -152,6 +154,30 @@ Where the notes land is a separate switch, the adapter:
 An HTTP store is also what makes a round visible to the MCP server, and the contract is small on
 purpose — ten endpoints, listed in [docs/EMBED.md](docs/EMBED.md#4-the-store-contract), which is also
 where the attribute table, the loader API and the update manifest live.
+
+## Capture modes
+
+A capture mode says what a click *means*. The bar offers four, each with its own shortcut:
+
+| Mode | Key | What is captured |
+|---|---|---|
+| **Text** | `c` | text capture — the selection quote, no captured state |
+| **Design** | `d` | design snapshot — computed styles, box, theme, viewport |
+| **Bug** | `i` | design snapshot **plus severity** (`blocker`, `major`, `minor`); always design, even on a text element |
+| **Feature** | `n` | hybrid — text capture with a quote when a text target is found, otherwise a design snapshot; **plus priority** |
+
+`priority` is optional and meaningful only on a `feature` note (`high`, `medium`, `low`); it is
+omitted on every other type. A bug defaults to `intent=implement` like any work item, and the
+feedback-only toggle overrides that as usual.
+
+The host sets the ceiling: `init({ modes: ["text", "design", "bug"] })` or the element attribute
+`modes="text,design,bug"`. An absent `modes` means all four; `modes="none"` mounts a read-only layer
+that still shows the bar, list, filters, legend and settings but offers no capture. Inside that
+ceiling the user can switch each mode off in the settings popover — a disabled mode hides its button,
+inerts its shortcut and leaves existing notes untouched. Disabling the active mode falls back to
+`off`; with every mode off the layer is read-only. **Alt+click** on an interactive element (button,
+link, form field, interactive ARIA role) opens the composer in any active mode while a normal click
+stays the host's own behaviour; `[data-bp-ignore]` and `canAnnotate` still veto.
 
 ## The browser extension
 
