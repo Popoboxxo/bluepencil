@@ -131,7 +131,7 @@ Notes can be promoted deliberately between environments (dev → live, live → 
 
 *Acceptance criteria:* Promoted bundle keeps ids, threads and sources; environment tag is updated, history preserved
 
-## FR-14.9 Bundle size and content are inspectable before import (list of sessions, counts, environ…
+## FR-14.9 Bundle size and content are inspectable before import (list of sessions, counts includin…
 
 ```attr
 prio: P2
@@ -143,6 +143,6 @@ version: 1
 requires-trace-from: []
 ```
 
-Bundle size and content are inspectable before import (list of sessions, counts, environments)
+Bundle size and content are inspectable before import (list of sessions, counts including feature in byType, environments)
 
 *Acceptance criteria:* `inspect` prints a summary without writing anything

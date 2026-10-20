@@ -9,7 +9,7 @@
 > `N` = concrete product need (admin debug mode in an ALM system).
 >
 > **This file is the source of truth.** The machine-checkable projection lives in
-> [`spec/`](../spec/README.md) — 147 requirements as a [reqmd](https://reqmd.dev) tree,
+> [`spec/`](../spec/README.md) — 153 requirements as a [reqmd](https://reqmd.dev) tree,
 > regenerated with `npm run spec` and validated in CI with `reqmd check`. Edit the table
 > below, never the generated spec.
 
@@ -24,13 +24,16 @@
 | FR-1.3 | **Text mode:** clicking a text element (heading, paragraph, list item, table cell, label) opens a composer | P0 | M1 | P | Click on each listed element type opens the composer with the correct anchor |
 | FR-1.4 | **Design mode:** clicking *any* element opens a composer and captures its state | P0 | M1 | P | Click on element captures tag, classes, computed styles subset, box, scheme, viewport, build ref |
 | FR-1.5 | A text selection inside the clicked element is stored as the note's quote | P0 | M1 | P | Select three words, note stores exactly that text |
-| FR-1.6 | Keyboard equivalents for every core action (`C`, `D`, `L`, `F`, `B`, `?`, `Esc`, `J/K`, digits) | P1 | M1 | P | All actions reachable without a mouse |
+| FR-1.6 | Keyboard equivalents for every core action (`C`, `D`, `I`, `N`, `L`, `F`, `B`, `?`, `Esc`, `J/K`, digits) | P1 | M1 | P | All actions reachable without a mouse, including bug (`I`) and feature (`N`) |
 | FR-1.7 | A shortcut legend is reachable from the UI and by keyboard | P2 | M1 | P | Legend lists all shortcuts grouped, closes with `Esc`/backdrop |
 | FR-1.8 | The layer never changes the host layout (no reflow, no shifted elements) | P0 | M1 | P | Host content boxes identical with layer on/off (measured) |
 | FR-1.9 | Printing and host exports exclude the layer | P0 | M1 | P | `@media print` hides bar, handle, panel, composer, settings, markers |
 | FR-1.10 | Annotating works inside dialogs, drawers and overlays of the host | P1 | M2 | G | Note can be created on an element inside a modal |
 | FR-1.11 | **One shortcut registry**: shortcuts are registered once and the legend is generated from that registry — a divergence between help text and handler is a test failure | P0 | M2 | P | A remapped key updates the legend; a test walks every registered key and fails if the handler ignores it; the `0–6`-vs-nine-chapters bug cannot recur |
 | FR-1.12 | **Extensible target resolution**: a host registers selectors (or a resolver function) for text and design annotation, and a component the layer does not know is still an annotatable block instead of silently inert | P0 | M2 | P | `annotate-selectors=".card, .tile"` makes the nearest match the anchor in both modes; `can-annotate` lets the host veto per element; a component whose text lives in children opens the composer; links inside stay operable |
+| FR-1.13 | **Bug capture mode**: a bug is always captured with the design semantics (state/context), even when the clicked element is a text element; the severity is visible while composing; the default intent is `implement` and feedback-only overrides it | P1 | M2 | G | Clicking a text element in bug mode opens the composer with `type: bug`, a non-null captured context, the severity switch visible; with feedback-only on the new note starts as `intent=feedback`, otherwise `implement` |
+| FR-1.14 | **Feature capture mode (hybrid)**: a feature note uses text capture with the selection quote when a text target can be found by the existing text-target resolution, and a design snapshot otherwise; the priority is visible while composing | P1 | M2 | G | Clicking a heading/paragraph in feature mode stores a quote and no context; clicking a non-text container stores a context and no quote; both produce `type=feature`; `priority` is offered |
+| FR-1.15 | **Alt+click on interactive elements**: while a capture mode is active, Alt+click on an interactive element (button, link, form field, interactive ARIA role) opens the composer in all four modes; a normal click keeps the host behaviour, and the layer calls `preventDefault()` so a link does not navigate | P0 | M2 | G | With text/design/bug/feature active, Alt+click on a button/link/input opens the composer for that element and suppresses navigation; a normal click still activates the host control; Alt+click with no active mode does nothing |
 
 ## FR-2 Anchoring
 
@@ -49,11 +52,12 @@
 | ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
 |---|---|---|---|---|---|
 | FR-3.1 | A note has: `id`, `created_at`, author (+`author_type`), `type`, `intent`, `status`, `body`, `quote`, `anchor`, `context`, `route`, `session_ref` | P0 | M1 | P | All fields present in the JSON export and validated |
-| FR-3.2 | `type` ∈ {`text`, `design`, `bug`}; `intent` ∈ {`implement`, `feedback`}; `status` ∈ {`open`, `done`, `needs_decision`} | P0 | M1 | P | Invalid values rejected by the API/adapter |
+| FR-3.2 | `type` ∈ {`text`, `design`, `bug`, `feature`}; `intent` ∈ {`implement`, `feedback`}; `status` ∈ {`open`, `done`, `needs_decision`} | P0 | M1 | P | Invalid values rejected by the API/adapter |
 | FR-3.3 | Notes carry an append-only **thread** of messages with `author_type` (`human`/`agent`) and `kind` (`note`/`decision_request`/`decision`/`feedback`/`reply`) | P0 | M1 | P | Agent and human replies appear in order, each with author and timestamp |
 | FR-3.4 | Notes can be grouped into a **session** and exported/purged per session | P1 | M2 | G | Purge removes exactly the session's notes, count reported |
 | FR-3.5 | The schema is versioned and documented; migrations from older data are defined | P0 | M1 | G | A v1 file loads in a v2 build; migration is documented and tested |
 | FR-3.6 | An **optional** `severity` ∈ {`blocker`, `major`, `minor`} may be set on a note; it is orthogonal to `type`/`intent`, meaningful only for `type` = `bug`, and omitted otherwise | P1 | M2 | G | A note without `severity` stays valid (old stores/bundles import unchanged, no `schemaVersion` bump); an unknown `severity` on import degrades safely (dropped, treated as absent), mirroring the unknown-`type`→`text` fallback |
+| FR-3.7 | An **optional** `priority` ∈ {`high`, `medium`, `low`} may be set on a note; it is orthogonal to `type`/`intent`, meaningful only for `type` = `feature`, and omitted otherwise. It is an additive change without a `schemaVersion` bump: an older reader degrades `feature` to `text` and drops `priority`, a newer reader imports old data unchanged, and an unknown priority on import is dropped (treated as absent) | P1 | M2 | G | A note without `priority` stays valid; `priority` on a non-feature note is rejected by validation and dropped by coercion/migration; old stores and bundles import unchanged without a schema bump; an unknown value degrades to absent |
 
 > **Field names as implemented:** the note JSON uses camelCase — `createdAt`, `updatedAt`,
 > `authorType`, `sessionRef`, `schemaVersion`, `messages` (the thread) — and `quote` / `route` sit on
@@ -66,13 +70,15 @@
 | ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
 |---|---|---|---|---|---|
 | FR-4.1 | Annotated elements show a marker; multiple notes collapse into one marker with a count | P1 | M1 | P | Two notes on one element → one marker showing "2" |
-| FR-4.2 | A list panel shows all notes with filters for type, intent and status | P0 | M1 | P | Each filter combination yields the expected subset |
+| FR-4.2 | A list panel shows all notes with filters for type (incl. `feature`), intent, status, severity and priority (`all \| high \| medium \| low \| none`) | P0 | M1 | P | Each filter combination yields the expected subset |
 | FR-4.3 | **Done notes are hidden by default** — in the list *and* as markers | P0 | M1 | P | Fresh load: done notes invisible; counters exclude them |
 | FR-4.4 | Done notes can be revealed temporarily (one control) and permanently (settings) | P0 | M1 | P | Both paths show them immediately; the status filter follows the toggle |
-| FR-4.5 | A settings surface holds: show done notes, feedback-only mode, author name, reset to defaults | P1 | M1 | P | Values persist across reload; reset restores defaults |
+| FR-4.5 | A settings surface holds: show done notes, feedback-only mode, author name, capture-mode visibility and the running version, reset to defaults | P1 | M1 | P | Checkboxes, the version line and all values persist across reload; reset restores defaults |
 | FR-4.6 | Filtering/sorting puts `needs_decision` first, then feedback-requested, then the rest | P1 | M1 | G | Order verified with a mixed set |
 | FR-4.7 | Clicking a list entry scrolls to and highlights the element when resolvable | P1 | M1 | P | Element flashes and is scrolled into view |
 | FR-4.8 | Counters in the bar reflect total, open, decisions pending and feedback-only | P2 | M1 | P | After any change the numbers match the store |
+| FR-4.9 | The settings surface shows the running bluepencil version as a static line (`bluepencil <VERSION>`; `dev` when running from source), and the layer root carries `data-bp-version` | P2 | M2 | G | Opening settings shows the version; the layer root has `data-bp-version` equal to `VERSION`; a shipped build shows the release version, a source run shows `dev` |
+| FR-4.10 | **Mode visibility**: the user can switch each capture mode on/off in settings (all four on by default); the host sets an upper bound through the `modes` init option or the `data-bp-modes` element attribute (`modes="text,design,bug"`, `modes="none"`); a disabled mode's bar button and legend row disappear and its shortcut is inert, existing notes stay untouched; disabling the active mode falls back to `off`; all modes off is a read-only layer that keeps bar, list, filters, legend and settings and hides feedback-only | P0 | M2 | G | The user can uncheck a host-enabled mode and the button/legend/shortcut disappear after reload; a host list restricts the checkboxes; `modes="none"` and all-unchecked both render the read-only state; existing notes remain visible and editable; the active mode falls back to `off` when disabled |
 
 ## FR-5 Collaboration
 
@@ -161,7 +167,7 @@
 | FR-12.3 | **Mount scope**: `mount(target?)` mounts globally (`document`) or inside a given container; several instances coexist without cross-talk | P1 | M2 | N | Two instances with different adapters on one page keep separate note sets and UIs |
 | FR-12.4 | **Shadow DOM support**: click capture and anchoring work across shadow roots (`composedPath()`, `getRootNode()`); the stored path encodes the shadow boundary | P0 | M2 | N | Note created on an element inside a shadow root resolves after reload |
 | FR-12.5 | **Web-component packaging**: a custom-element build (`<bluepencil-notes>` or equivalent) plus attribute/event mapping, so the layer can be loaded as a resource in hosts like Home Assistant | P1 | M3 | N | Element loads from a single ES module resource, opens the panel, stores notes through the configured adapter |
-| FR-12.6 | **No host interference**: listeners work in the capture phase and never call `stopPropagation()` unless an annotation mode is active; interactive elements (`a[href]`, form fields, `[data-bp-ignore]`) are passed through even then; original behaviour is restored on teardown | P0 | M1 | N | Host's own click handlers fire normally with the layer enabled but idle; links and fields stay operable while a mode is active (FR-2.7) |
+| FR-12.6 | **No host interference**: listeners work in the capture phase and never call `stopPropagation()` unless an annotation mode is active; interactive elements (`a[href]`, form fields, `[data-bp-ignore]`) are passed through even then — **except** that Alt+click on an interactive element opens the composer while a capture mode is active (FR-1.15); `[data-bp-ignore]` and `canAnnotate` remain vetoes; original behaviour is restored on teardown | P0 | M1 | N | Host's own click handlers fire normally with the layer enabled but idle; links and fields stay operable while a mode is active (FR-2.7) |
 | FR-12.7 | **Documented host variety**: worked examples for at least a static page, a framework SPA, a micro-frontend/web-component host and a Home Assistant custom card | P1 | M3 | N | Each example in `examples/` runs and is covered by an E2E smoke test |
 | FR-12.8 | **Config-driven identity** (D3): `identity` accepts a hook, `"prompt"` or `"anonymous"`; unset falls back to `"prompt"` | P0 | M1 | N | All three modes verified in the fixture app |
 | NFR-20 | **No sideways scrolling inside the chrome**: nothing the layer draws ever creates a horizontal scrollbar, on any viewport | P0 | M2 | P | The browser leg measures `scrollWidth <= clientWidth` for every visible chrome surface across the six-viewport matrix |
@@ -201,7 +207,7 @@ sets must **travel** between environments through portable export/import.
 | FR-14.6 | In a live system the layer is admin-only and invisible to end users; import/export is an explicit, audited admin action | P0 | M2 | N | Non-admin sees nothing; every import writes an audit entry with counts and actor |
 | FR-14.7 | Import/export works in **all deployment modes**: bookmarklet (file download/upload), server (upload/download endpoint), CLI (offline) | P0 | M2 | N | Each mode verified in the fixture/example setups |
 | FR-14.8 | Notes can be **promoted** deliberately between environments (dev → live, live → dev) without losing anchors, threads or origin | P1 | M3 | N | Promoted bundle keeps ids, threads and sources; environment tag is updated, history preserved |
-| FR-14.9 | Bundle size and content are inspectable before import (list of sessions, counts, environments) | P2 | M3 | N | `inspect` prints a summary without writing anything |
+| FR-14.9 | Bundle size and content are inspectable before import (list of sessions, counts including `feature` in `byType`, environments) | P2 | M3 | N | `inspect` prints a summary without writing anything |
 
 ## FR-15 Headless data library and CLI  *(the "extra library" for reading/writing the data)*
 
@@ -211,7 +217,7 @@ need to read and write note sets without any UI.
 | ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
 |---|---|---|---|---|---|
 | FR-15.1 | `bluepencil/data` — headless API for note sets: parse, validate, filter, merge, canonicalise, migrate, export (no DOM access) | P0 | M2 | N | Runs in plain Node without a DOM shim; same validators as the UI |
-| FR-15.2 | `bluepencil/cli` — `bluepencil inspect \| validate \| merge \| export \| import` with `--file`, `--mode`, `--dry-run`, `--json` | P0 | M2 | N | Commands usable in a shell pipeline; exit codes meaningful for CI |
+| FR-15.2 | `bluepencil/cli` — `bluepencil inspect \| validate \| merge \| export \| import` with `--file`, `--mode`, `--dry-run`, `--json`; accepts the same note enums, including `--type feature` and `--priority high\|medium\|low` | P0 | M2 | N | Commands usable in a shell pipeline; exit codes meaningful for CI |
 | FR-15.3 | **Single source of truth**: UI, server, CLI and MCP use the same schema, validators and merge logic — no second implementation | P0 | M2 | N | A schema change breaks exactly one place; conformance tests shared |
 | FR-15.4 | Data and CLI packages are **DOM-free** and have no runtime dependencies | P0 | M2 | N | Node-only install works; `dependencies` empty |
 | FR-15.5 | The MCP tool group is a thin wrapper over this API (no separate logic) | P1 | M4 | N | MCP and CLI behave identically for the same input |
@@ -223,7 +229,7 @@ export. The MCP interface is therefore **not optional** (Daniel, 2026-09-14).
 
 | ID | Requirement | Prio | Ms | Origin | Acceptance criteria |
 |---|---|---|---|---|---|
-| FR-16.1 | MCP server exposing the note set — tools: `list_notes`, `get_note`, `create_note`, `reply`, `set_status`, `set_intent`, `export_bundle`, `import_bundle` | P0 | M4 | N | An MCP client can list open notes, answer one and mark it done, using the same model and validators as the UI |
+| FR-16.1 | MCP server exposing the note set — tools: `list_notes`, `get_note`, `create_note`, `reply`, `set_status`, `set_intent`, `export_bundle`, `import_bundle`; the note enums include `feature` and `priority` | P0 | M4 | N | An MCP client can list open notes, answer one and mark it done, using the same model and validators as the UI |
 | FR-16.2 | **Read-only by default**; write tools need an explicit opt-in per session | P0 | M4 | N | With default settings the client can read but every write tool returns a clear refusal |
 | FR-16.3 | A session is bound to **one app and one environment**; cross-environment access is refused (ties NFR-18) | P0 | M4 | N | A `dev`-bound session cannot list or write `live` notes |
 | FR-16.4 | Agent writes record `source=agent` plus the MCP client name and session id | P0 | M4 | N | Origin visible in export and UI; human writes stay distinguishable |
@@ -259,13 +265,13 @@ transcript and saves it through the existing flow.
 |---|---|---|---|---|
 | NFR-1 | **Zero footprint when disabled**: no DOM, no fetch, no listener, no timer — **both** when never enabled and after a runtime `disable()` | P0 | M1 | Bundle loaded but unused / after disable → no network requests, no nodes, no measurable CPU |
 | NFR-2 | No polling. Data is fetched on demand (open/refresh/write) | P0 | M1 | Idle page produces no repeated requests over 10 minutes |
-| NFR-3 | Core bundle small enough to embed casually (target ≤ 33 kB min+gzip, excluding adapters) | P1 | M1 | Build report shows size; CI fails on regression beyond budget. Raised from 30 kB to 31 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13), measured at 30.5 kB. Raised again to 33 kB for the transient container reveal feature (issue #20) and app/build-ref/exportedBy (issue #21), measured at 31.9 kB — a decision, recorded here so it cannot look like drift. Raised to 100 kB core / 45 kB custom element for the presentation mode (FR-20), measured at 35.2 kB core and 40.9 kB element gzip (IIFE 38.5 kB of 40 kB); the presenter surface could not fit under the old ceilings, so the numbers moved openly. Raised the IIFE budget to 45 kB for voice dictation (FR-21), measured at 37.7 kB core / 41.3 kB IIFE / 44.0 kB element gzip — the pre-change IIFE sat at 39.9 kB of 40 kB (0.1 kB headroom), so any feature overflowed it |
+| NFR-3 | Core bundle small enough to embed casually (target ≤ 33 kB min+gzip, excluding adapters) | P1 | M1 | Build report shows size; CI fails on regression beyond budget. Raised from 30 kB to 31 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13), measured at 30.5 kB. Raised again to 33 kB for the transient container reveal feature (issue #20) and app/build-ref/exportedBy (issue #21), measured at 31.9 kB — a decision, recorded here so it cannot look like drift. Raised to 100 kB core / 45 kB custom element for the presentation mode (FR-20), measured at 35.2 kB core and 40.9 kB element gzip (IIFE 38.5 kB of 40 kB); the presenter surface could not fit under the old ceilings, so the numbers moved openly. Raised the IIFE budget to 45 kB for voice dictation (FR-21), measured at 37.7 kB core / 41.3 kB IIFE / 44.0 kB element gzip — the pre-change IIFE sat at 39.9 kB of 40 kB (0.1 kB headroom), so any feature overflowed it. Raised the custom-element budget from 45 kB to 48 kB for the capture presets (FR-1.13/1.14), feature priority (FR-3.7), mode visibility (FR-4.10) and the version line (FR-4.9), measured at 46.9 kB gzip (IIFE 44.1 kB of 45 kB, core 40.5 kB of 100 kB) — the new surface carried the element past the old ceiling, so the number moved openly as a recorded decision. |
 | NFR-4 | No runtime dependencies (peer deps only for framework wrappers) | P0 | M1 | `dependencies` empty in the core package |
 | NFR-5 | Evergreen browsers (Chromium/Firefox/Safari current + previous); graceful degradation otherwise | P1 | M1 | Feature detection; layer self-disables with a console note instead of throwing |
 | NFR-6 | CSP-safe: no `eval`, no `new Function`, no inline script injection | P0 | M3 | Works on a page with `script-src 'self'` (bookmarklet documented with limits) |
 | NFR-7 | Local-first: nothing leaves the browser unless an endpoint is configured | P0 | M1 | Verified with network inspection |
 | NFR-8 | Data survives reload and crash (adapter-dependent); no silent data loss | P0 | M1 | Reload after 20 notes keeps all 20; interrupted write leaves the previous state intact |
-| NFR-9 | Schema stability: additive changes within a major version; documented migration | P0 | M1 | Old export imports into a newer build |
+| NFR-9 | Schema stability: additive changes within a major version; documented migration. Additive optional fields (e.g. `severity`, `priority`, `feature`) extend the current version without a `schemaVersion` bump; old readers degrade unknown types to `text` and drop unknown optional fields; new readers import old data unchanged | P0 | M1 | Old export imports into a newer build |
 | NFR-10 | Deterministic exports (stable ordering) so exports can be diffed/committed | P1 | M2 | Two exports of an unchanged store are byte-identical |
 | NFR-11 | Testability: unit tests for model/anchor/adapters; E2E against a fixture app in a real browser. Runs on the repository's dependency-free CDP harness (no Playwright package — NFR-4 forbids a test-framework dependency, the browser is driven over the DevTools pipe) | P0 | M1 | CI runs both; a fixture app in-repo exercises every FR group |
 | NFR-12 | Versioning: semver, changelog per release, one release per milestone | P1 | M1+ | Tag + changelog present per release |
@@ -285,7 +291,7 @@ transcript and saves it through the existing flow.
 | Origin | Meaning | Requirement groups |
 |---|---|---|
 | **P** (prototype) | Behaviour already proven in the reference implementation — must be preserved 1:1 | FR-1.2–1.5, 1.8–1.9, FR-2.1, 2.3, 2.7, FR-3.1–3.3, FR-4.1–4.7, FR-6.3–6.5, FR-7.1–7.2, 7.4, FR-8.1 |
-| **G** (gap) | Missing in the prototype — the reason a library exists at all | FR-1.1, 1.10, FR-2.2, 2.4–2.6, FR-3.4–3.6, FR-6.1–6.2, FR-7.3, FR-9.1, 9.4, FR-10.1–10.3, NFR-3, 6, 11, FR-21.x (all) |
+| **G** (gap) | Missing in the prototype — the reason a library exists at all | FR-1.1, 1.10, 1.13–1.15, FR-2.2, 2.4–2.6, FR-3.4–3.7, FR-4.9–4.10, FR-6.1–6.2, FR-7.3, FR-9.1, 9.4, FR-10.1–10.3, NFR-3, 6, 11, FR-21.x (all) |
 | **N** (product need) | Driven by the admin debug-mode requirement of a downstream ALM product | FR-5.x (all), FR-8.2–8.5, FR-9.2, FR-10.4, FR-6.6 |
 
 ## Decisions (resolved)

@@ -11,6 +11,8 @@
  *  - FR-13.3/13.5/13.6 source, debug context, file references
  *  - FR-14.1     environment tag
  *  - FR-3.5      schema version
+ *  - FR-3.6      optional bug severity
+ *  - FR-3.7      optional feature priority
  */
 
 /** Schema version carried by every note and every bundle (FR-3.5, NFR-9). */
@@ -24,10 +26,10 @@ export const DEFAULT_ENVIRONMENT: Environment = "dev";
 
 /**
  * Note category (FR-3.2): `text` = content/wording, `design` = appearance/layout, `bug` = a
- * defect report. The category is orthogonal to `intent` (implement|feedback) — a bug can still be
- * `implement` or `feedback`.
+ * defect report, `feature` = a missing capability or enhancement. The category is orthogonal to
+ * `intent` (implement|feedback) — a bug or a feature can still be `implement` or `feedback`.
  */
-export const NOTE_TYPES = ["text", "design", "bug"] as const;
+export const NOTE_TYPES = ["text", "design", "bug", "feature"] as const;
 export const NOTE_INTENTS = ["implement", "feedback"] as const;
 /**
  * Optional severity of a bug report (FR-3.6). Orthogonal to `type`/`intent` like the category is:
@@ -36,6 +38,12 @@ export const NOTE_INTENTS = ["implement", "feedback"] as const;
  * bundles import unchanged, no `schemaVersion` bump).
  */
 export const NOTE_SEVERITIES = ["blocker", "major", "minor"] as const;
+/**
+ * Optional priority of a feature request (FR-3.7). Same shape as `severity`: orthogonal to
+ * `type`/`intent`, meaningful only for `type: "feature"` and omitted for every other type. A note
+ * without it stays valid and old stores/bundles import unchanged (no `schemaVersion` bump).
+ */
+export const NOTE_PRIORITIES = ["high", "medium", "low"] as const;
 export const NOTE_STATUSES = ["open", "done", "needs_decision"] as const;
 export const AUTHOR_TYPES = ["human", "agent"] as const;
 export const MESSAGE_KINDS = [
@@ -47,12 +55,14 @@ export const MESSAGE_KINDS = [
 ] as const;
 export const ENVIRONMENTS = ["dev", "staging", "live"] as const;
 
-/** What a note is about: content/wording vs. appearance/layout (FR-3.2). */
+/** What a note is about: content/wording, appearance/layout, defect or feature (FR-3.2). */
 export type NoteType = (typeof NOTE_TYPES)[number];
 /** What should happen with the note. `feedback` means "assessment only" (FR-5.1). */
 export type NoteIntent = (typeof NOTE_INTENTS)[number];
 /** How urgent a bug report is (FR-3.6); meaningful only for `type: "bug"`. */
 export type NoteSeverity = (typeof NOTE_SEVERITIES)[number];
+/** How important a feature request is (FR-3.7); meaningful only for `type: "feature"`. */
+export type NotePriority = (typeof NOTE_PRIORITIES)[number];
 /** Where the note stands right now. `needs_decision` blocks implementation (FR-5.4). */
 export type NoteStatus = (typeof NOTE_STATUSES)[number];
 export type AuthorType = (typeof AUTHOR_TYPES)[number];
@@ -163,6 +173,8 @@ export interface Note {
   type: NoteType;
   /** How urgent a bug is (FR-3.6); present only when `type: "bug"`. */
   severity?: NoteSeverity;
+  /** How important a feature is (FR-3.7); present only when `type: "feature"`. */
+  priority?: NotePriority;
   intent: NoteIntent;
   status: NoteStatus;
   body: string;
@@ -212,6 +224,8 @@ export interface NoteDraft {
   intent?: NoteIntent;
   /** Only honoured when `type: "bug"`; silently omitted for every other type (FR-3.6). */
   severity?: NoteSeverity;
+  /** Only honoured when `type: "feature"`; silently omitted for every other type (FR-3.7). */
+  priority?: NotePriority;
   status?: NoteStatus;
   author?: string;
   authorType?: AuthorType;
@@ -232,8 +246,10 @@ export interface NoteDraft {
 export interface NotePatch {
   status?: NoteStatus;
   intent?: NoteIntent;
-  /** Sets or replaces the severity of a bug; omitted leaves it untouched (FR-3.6). */
-  severity?: NoteSeverity;
+  /** Sets or replaces the severity of a bug; `null` clears it, omitted leaves it untouched (FR-3.6). */
+  severity?: NoteSeverity | null;
+  /** Sets or replaces the priority of a feature; `null` clears it, omitted leaves it untouched (FR-3.7). */
+  priority?: NotePriority | null;
   body?: string;
   ticketRef?: string;
   environment?: Environment;
@@ -250,6 +266,8 @@ export interface NoteFilter {
   intent?: NoteIntent;
   type?: NoteType;
   severity?: NoteSeverity;
+  /** Exact priority filter (FR-3.7); only meaningful for feature notes. */
+  priority?: NotePriority;
   session?: string;
   /** ISO timestamp — only notes updated at/after this point. */
   since?: string;
@@ -355,6 +373,9 @@ export function createNote(draft: NoteDraft): Note {
   if (draft.severity !== undefined && !isNoteSeverity(draft.severity)) {
     issues.push(`severity must be one of ${NOTE_SEVERITIES.join(", ")}`);
   }
+  if (draft.priority !== undefined && !isNotePriority(draft.priority)) {
+    issues.push(`priority must be one of ${NOTE_PRIORITIES.join(", ")}`);
+  }
   if (draft.status !== undefined && !NOTE_STATUSES.includes(draft.status)) {
     issues.push(`status must be one of ${NOTE_STATUSES.join(", ")}`);
   }
@@ -376,8 +397,10 @@ export function createNote(draft: NoteDraft): Note {
     createdAt: ts,
     updatedAt: ts,
     type: draft.type,
-    // FR-3.6: severity is meaningful only for a bug — silently omitted for text/design notes.
+    // FR-3.6: severity is meaningful only for a bug — silently omitted for every other type.
     ...(draft.type === "bug" && draft.severity !== undefined ? { severity: draft.severity } : {}),
+    // FR-3.7: priority is meaningful only for a feature — same degrade rule as severity.
+    ...(draft.type === "feature" && draft.priority !== undefined ? { priority: draft.priority } : {}),
     intent: draft.intent ?? "implement",
     status: draft.status ?? "open",
     body: draft.body,
@@ -428,6 +451,10 @@ export function isNoteIntent(value: unknown): value is NoteIntent {
 
 export function isNoteSeverity(value: unknown): value is NoteSeverity {
   return typeof value === "string" && (NOTE_SEVERITIES as readonly string[]).includes(value);
+}
+
+export function isNotePriority(value: unknown): value is NotePriority {
+  return typeof value === "string" && (NOTE_PRIORITIES as readonly string[]).includes(value);
 }
 
 export function isNoteStatus(value: unknown): value is NoteStatus {

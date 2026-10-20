@@ -195,7 +195,7 @@ async function startHost() {
 
 async function checkArtefacts() {
   for (const required of ["manifest.json", "sw.js", "bridge.js", "detect.js", "options.html", "options.js",
-    "bluepencil.element.iife.js", "build-info.json"]) {
+    "bluepencil.element.iife.js", "build-info.json", "build-info.js"]) {
     try {
       await stat(join(extDist, required));
       ok(`build produced ${required}`, true);
@@ -1186,6 +1186,37 @@ async function checkInBrowser() {
       disclosure.present === true && /What Bluepencil stores/.test(disclosure.heading ?? "") &&
         disclosure.bullets >= 3 && /privacy/i.test(disclosure.policyLink ?? ""),
       JSON.stringify(disclosure));
+
+    // FR-4.9: the version block must name the build the user actually has. The values arrive from
+    // the classic build-info.js script loaded before options.js (a global, not a fetch). Poll for
+    // the filled value instead of reading the placeholder — and compare against the *built* manifest
+    // and build-info.json rather than against a literal in this test.
+    const builtInfo = JSON.parse(await readFile(join(extDist, "build-info.json"), "utf8"));
+    const builtManifest = JSON.parse(await readFile(join(extDist, "manifest.json"), "utf8"));
+    const versionFilled = await poll(
+      browser,
+      `document.getElementById("version-build")?.textContent === ${JSON.stringify(builtManifest.version)}`,
+      5000,
+    );
+    const versionBlock = JSON.parse(await browser.evaluate(`(() => {
+      const text = (id) => document.getElementById(id)?.textContent ?? null;
+      return JSON.stringify({
+        bluepencil: text("version-bluepencil"),
+        build: text("version-build"),
+        commit: text("version-commit"),
+        commitTitle: document.getElementById("version-commit")?.title ?? null,
+        element: text("version-element"),
+      });
+    })()`));
+    ok("the options page shows the bluepencil version",
+      versionFilled && versionBlock.bluepencil === `bluepencil ${builtManifest.version}`,
+      JSON.stringify(versionBlock));
+    ok("the options page shows build-info.json provenance",
+      versionBlock.build === builtInfo.version &&
+        versionBlock.element === builtInfo.elementSha256 &&
+        versionBlock.commit === (builtInfo.gitSha === null ? "unknown" : builtInfo.gitSha) &&
+        (builtInfo.gitSha === null || versionBlock.commitTitle === builtInfo.gitSha),
+      `${JSON.stringify(versionBlock)} vs ${JSON.stringify(builtInfo)}`);
 
     // Six hours out, in the JWT's own unit (seconds since the epoch). The signature is nonsense on
     // purpose: nothing on this page may look at it.

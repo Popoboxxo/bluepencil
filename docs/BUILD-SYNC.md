@@ -18,7 +18,7 @@ library all derive their version from it. The guards below pin both.
 | Identity gate | `npm run verify:sync` | local `verify` chain (after `build:ext`); CI `verify` job step **Extension/library sync gate** |
 | Version-bump gate | `npm run check-version-bump` | CI `bump` job (pull requests only, `fetch-depth: 0`) |
 | Watch auto-build | `scripts/build.mjs --watch` | the dev watch loop; no standalone script |
-| Provenance | (written by `npm run build:ext`) | `extension/dist/build-info.json` |
+| Provenance | (written by `npm run build:ext`) | `extension/dist/build-info.json` (tooling/`verify:sync`) and `build-info.js` (options page) |
 | Pre-push hook | `npm run build:ext && npm run verify:sync` | local git hook, opt-in (see below) |
 
 ### Identity gate — `npm run verify:sync`
@@ -66,6 +66,12 @@ extension silently stays a version behind, and `smoke:ext` would run against yes
 `npm run build:ext` writes `{ version, elementSha256, gitSha }`. `gitSha` is `git rev-parse HEAD`, so
 a shipped extension can be traced back to its commit. It is `null` when git is unavailable (no
 `.git`, a non-repo export) — a missing commit is a metadata gap, never a build failure.
+
+The same object is also written as `extension/dist/build-info.js`, a classic script that sets
+`globalThis.BLUEPENCIL_BUILD_INFO` and is loaded by `options.html` before the module script. That is
+why the options page reads the values as a global instead of fetching `build-info.json`: the
+extension's own code makes no network request, so the Webstore-compliance scan stays green without
+an exception. `verify:sync` still checks only the JSON file.
 
 ## Affected matrix
 

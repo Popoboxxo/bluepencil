@@ -402,11 +402,18 @@ export class Browser {
     return box;
   }
 
-  /** A real mouse click at the element's centre (not `node.click()` — the layer listens for pointer events). */
-  async click(selector, { button = "left" } = {}) {
+  /**
+   * A real mouse click at the element's centre (not `node.click()` — the layer listens for pointer events).
+   *
+   * `modifiers` is the CDP bitmask (Alt=1, Ctrl=2, Meta=4, Shift=8) and is forwarded verbatim to the
+   * pressed/released events, so a case can produce a genuine modifier click (e.g. Alt+click, FR-1.15)
+   * instead of a synthetic `MouseEvent` the layer would see differently. The default `0` is a plain
+   * click, exactly as before.
+   */
+  async click(selector, { button = "left", modifiers = 0 } = {}) {
     const { x, y } = await this.centreOf(selector);
-    const base = { x, y, button, clickCount: 1 };
-    await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, this.#session);
+    const base = { x, y, button, clickCount: 1, modifiers };
+    await this.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers }, this.#session);
     await this.send("Input.dispatchMouseEvent", { type: "mousePressed", ...base }, this.#session);
     await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...base }, this.#session);
   }

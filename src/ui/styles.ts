@@ -401,6 +401,16 @@ export const STYLES: string = `
   color: var(--bp-muted, #5a6072);
 }
 
+/* FR-4.10: the compact per-note grading dropdown lives in the entry action row. */
+.bp-field--inline {
+  display: inline-flex;
+  align-items: center;
+}
+
+.bp-note-actions .bp-select {
+  max-width: 9rem;
+}
+
 .bp-select,
 .bp-input,
 .bp-textarea {
@@ -523,6 +533,27 @@ export const STYLES: string = `
 }
 
 .bp-badge--minor {
+  border-color: var(--bp-muted, #5a6072);
+  color: var(--bp-muted, #5a6072);
+}
+
+/* FR-3.7: feature type badge and priority badges — same token palette as severity. */
+.bp-badge--feature {
+  border-color: var(--bp-accent, #2a63e8);
+  color: var(--bp-accent, #2a63e8);
+}
+
+.bp-badge--priority-high {
+  border-color: var(--bp-danger, #b3261e);
+  color: var(--bp-danger, #b3261e);
+}
+
+.bp-badge--priority-medium {
+  border-color: var(--bp-accent, #2a63e8);
+  color: var(--bp-accent, #2a63e8);
+}
+
+.bp-badge--priority-low {
   border-color: var(--bp-muted, #5a6072);
   color: var(--bp-muted, #5a6072);
 }
@@ -699,6 +730,39 @@ export const STYLES: string = `
   gap: calc(${SPACE} * 0.25);
   color: var(--bp-muted, #5a6072);
   font-size: calc(var(--bp-font-size, 13px) * 0.85);
+}
+
+/* FR-4.10: capture-mode group and the static version line. */
+.bp-popover-group {
+  display: flex;
+  flex-direction: column;
+  gap: calc(${SPACE} * 0.25);
+  padding-top: ${half};
+  border-top: 1px solid var(--bp-line, #d7dae2);
+}
+
+.bp-popover-group-title {
+  margin: 0;
+  color: var(--bp-ink, #14161c);
+  font-size: calc(var(--bp-font-size, 13px) * 0.85);
+  font-weight: 700;
+}
+
+.bp-version {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: ${half};
+  margin: 0;
+  padding-top: ${half};
+  border-top: 1px solid var(--bp-line, #d7dae2);
+  color: var(--bp-muted, #5a6072);
+  font-size: calc(var(--bp-font-size, 13px) * 0.8);
+}
+
+.bp-version-value {
+  color: var(--bp-ink, #14161c);
+  font-variant-numeric: tabular-nums;
 }
 
 /* -- legend (FR-1.7) ------------------------------------------------------ */

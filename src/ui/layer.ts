@@ -37,7 +37,17 @@ import {
 import { captureContext, selectionQuote } from "../core/capture";
 import { toJson } from "../core/export/json";
 import { toMarkdown } from "../core/export/markdown";
-import type { Anchor, CapturedContext, Environment, MessageKind, Note, NoteStatus } from "../core/model";
+import type {
+  Anchor,
+  CapturedContext,
+  Environment,
+  MessageKind,
+  Note,
+  NotePriority,
+  NoteSeverity,
+  NoteStatus,
+} from "../core/model";
+import { isNotePriority, isNoteSeverity } from "../core/model";
 import { answerDecision } from "../core/protocol";
 import type { Store } from "../core/store";
 import { applyTranslations, createTranslator, normalizeLanguage, type Translate } from "../i18n";
@@ -45,8 +55,16 @@ import type { MessageKey } from "../i18n/en";
 import { createComposer, type Composer, type ComposerSaveInput, type ComposerSaveResult, type ComposerTarget } from "./composer";
 import { createLegend } from "./legend";
 import { keyIdentifier, resolveKeymap, type KeymapOverrides } from "./keymap";
+import {
+  CAPTURE_MODES,
+  CAPTURE_PRESETS,
+  isCaptureMode,
+  type CaptureMode,
+  type CaptureSemantics,
+} from "./modes";
 import { createPresentation, type PresentationHandle } from "./present";
 import type { VoiceEngineFactory } from "./voice";
+import { VERSION } from "../version";
 import {
   createPanel,
   createSettings,
@@ -73,6 +91,11 @@ export interface LayerOptions {
   canAnnotate?: (el: Element) => boolean;
   /** Registered target selectors (FR-1.12): the nearest match in the click path becomes the target. */
   annotateSelectors?: readonly string[];
+  /**
+   * Host ceiling for capture modes (FR-4.10): the modes this host offers. `"none"` mounts a
+   * read-only layer (list, exports, legend and settings stay available, nothing can be captured).
+   */
+  modes?: readonly CaptureMode[] | "none";
   /** Shortcut overrides (FR-12.11); conflicts and non-remappable keys are reported (FR-12.11). */
   keymap?: KeymapOverrides;
   /** Initial chrome level (FR-12.9); the user's choice is persisted on top of it. */
@@ -125,8 +148,15 @@ export interface LayerHandle {
   hydrated(): Promise<void>;
 }
 
-/** Annotation modes (FR-1.3 text / FR-1.4 design). */
-type Mode = "off" | "text" | "design";
+/** Annotation modes (FR-1.3 text / FR-1.4 design / FR-1.13 bug / FR-1.14 feature). */
+type Mode = "off" | CaptureMode;
+
+/** Bar slots that carry pressed state — one per capture mode plus the toggles. */
+type BarSlot = `mode-${CaptureMode}` | "panel" | "feedback-only" | "show-done";
+
+function modeSlot(mode: CaptureMode): BarSlot {
+  return `mode-${mode}`;
+}
 
 /**
  * How much chrome the layer shows: `full` = bar + handle, `quiet` = handle only, `off` = neither.
@@ -311,6 +341,17 @@ const PASS_THROUGH_ROLES = new Set([
   "spinbutton",
 ]);
 
+/** The interactive elements Alt+click may annotate (FR-1.15). */
+const ALT_CLICK_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT", "OPTION", "OPTGROUP", "BUTTON", "SUMMARY"]);
+
+function isInteractiveElement(el: Element): boolean {
+  if (el.tagName === "A") return el.hasAttribute("href");
+  if (ALT_CLICK_TAGS.has(el.tagName)) return true;
+  if (el.hasAttribute("contenteditable")) return true;
+  const role = el.getAttribute("role");
+  return role !== null && PASS_THROUGH_ROLES.has(role);
+}
+
 function isElement(node: unknown): node is Element {
   return (
     typeof node === "object" &&
@@ -366,6 +407,17 @@ function readStoredSettings(view: Window | undefined): Partial<LayerSettings> {
     if (source.chromeLevel === "full" || source.chromeLevel === "quiet" || source.chromeLevel === "off") {
       result.chromeLevel = source.chromeLevel;
     }
+    // FR-4.10: a partial/corrupt modes object degrades to the defaults per mode instead of
+    // discarding the whole preference.
+    if (typeof source.modes === "object" && source.modes !== null) {
+      const modes = { ...DEFAULT_SETTINGS.modes };
+      const storedModes = source.modes as Record<string, unknown>;
+      for (const mode of CAPTURE_MODES) {
+        const value = storedModes[mode];
+        if (typeof value === "boolean") modes[mode] = value;
+      }
+      result.modes = modes;
+    }
     return result;
   } catch (error) {
     // Private mode / disabled storage must degrade, never break (NFR-5).
@@ -381,6 +433,21 @@ function chromeFromUrl(view: Window | undefined): ChromeLevel | null {
   const search = view?.location?.search ?? "";
   const match = /[?&]bp-chrome=(quiet|full|off)(&|$)/.exec(search);
   return match === null ? null : (match[1] as ChromeLevel);
+}
+
+/**
+ * The host ceiling (FR-4.10), normalised once: absent means every mode, `"none"` means none,
+ * and an explicit list is filtered against the known modes and deduplicated. An embed attribute
+ * can carry anything, so an unknown value is dropped here instead of reaching the bar.
+ */
+function normaliseHostModes(value: readonly CaptureMode[] | "none" | undefined): CaptureMode[] {
+  if (value === "none") return [];
+  if (value === undefined) return [...CAPTURE_MODES];
+  const result: CaptureMode[] = [];
+  for (const entry of value) {
+    if (isCaptureMode(entry) && !result.includes(entry)) result.push(entry);
+  }
+  return result;
 }
 
 export function createLayer(options: LayerOptions): LayerHandle {
@@ -414,6 +481,9 @@ export function createLayer(options: LayerOptions): LayerHandle {
   // persisted choice survives a reload (FR-4.5).
   settings.language = normalizeLanguage(options.language ?? settings.language);
 
+  /** Host ceiling (FR-4.10), fixed for the lifetime of the instance. */
+  const hostModes = normaliseHostModes(options.modes);
+
   let translator = createTranslator(settings.language);
   /** Stable translator handed to the components — a language switch only swaps `translator`. */
   const t: Translate = (key, vars) => translator.t(key, vars);
@@ -432,6 +502,20 @@ export function createLayer(options: LayerOptions): LayerHandle {
   /** Store hydration of the last `enable()`; awaited by `hydrated()` (never rejects). */
   let hydration: Promise<void> = Promise.resolve();
 
+  /** Modes the host offers and the user kept enabled (FR-4.10). */
+  function availableModes(): CaptureMode[] {
+    return hostModes.filter((mode) => settings.modes[mode] !== false);
+  }
+
+  function modeAvailable(mode: CaptureMode): boolean {
+    return hostModes.includes(mode) && settings.modes[mode] !== false;
+  }
+
+  /** False in a read-only host (`modes: "none"`) — the feedback-only toggle has nothing to act on. */
+  function anyModeAvailable(): boolean {
+    return availableModes().length > 0;
+  }
+
   /** Nodes belonging to this instance (all inside `root`). */
   let root: HTMLElement | null = null;
   let bar: HTMLElement | null = null;
@@ -444,7 +528,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
   let liveRegion: HTMLElement | null = null;
   let barCollapseButton: HTMLButtonElement | null = null;
   const counterValues: Partial<Record<keyof ReturnType<typeof noteCounters>, HTMLElement>> = {};
-  const pressedButtons: Partial<Record<"mode-text" | "mode-design" | "panel" | "feedback-only" | "show-done", HTMLButtonElement>> = {};
+  const pressedButtons: Partial<Record<BarSlot, HTMLButtonElement>> = {};
 
   let panel: Panel | null = null;
   let composer: Composer | null = null;
@@ -573,6 +657,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     node.setAttribute("data-bp-part", "root");
     node.setAttribute("data-bp-instance", instanceId);
     node.setAttribute("data-bp-mode", "off");
+    node.setAttribute("data-bp-version", VERSION);
     node.setAttribute("data-bp-i18n-aria", "a11y.layerLabel");
     node.setAttribute("lang", settings.language);
     // Host theme tokens (FR-10.3): applied as custom properties on the layer root only.
@@ -617,11 +702,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     barTitle.setAttribute("data-bp-i18n", "bar.title");
     bar.append(barTitle);
 
-    const barButton = (
-      action: string,
-      key: MessageKey,
-      slot?: "mode-text" | "mode-design" | "panel" | "feedback-only" | "show-done",
-    ): HTMLButtonElement => {
+    const barButton = (action: string, key: MessageKey, slot?: BarSlot): HTMLButtonElement => {
       const button = doc.createElement("button");
       button.type = "button";
       button.className = "bp-btn";
@@ -634,8 +715,12 @@ export function createLayer(options: LayerOptions): LayerHandle {
       return button;
     };
 
-    bar.append(barButton("mode-text", "bar.mode.text", "mode-text"));
-    bar.append(barButton("mode-design", "bar.mode.design", "mode-design"));
+    // One button per preset, in the table's order — adding a mode never means new bar code.
+    for (const captureMode of CAPTURE_MODES) {
+      bar.append(
+        barButton(`mode-${captureMode}`, `bar.mode.${captureMode}` as MessageKey, modeSlot(captureMode)),
+      );
+    }
     bar.append(barButton("panel", "bar.panel", "panel"));
 
     const counters = doc.createElement("div");
@@ -736,6 +821,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
       state: () => settings,
       onChange: (patch) => applySettingsPatch(patch),
       onReset: () => resetSettings(),
+      hostModes: () => hostModes,
     });
 
     legend = createLegend({
@@ -743,6 +829,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
       t,
       instanceId,
       keymap: options.keymap,
+      modes: () => availableModes(),
       onClose: () => applyUiState(),
     });
 
@@ -933,9 +1020,8 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
   /* -- UI state ----------------------------------------------------------- */
 
-  function pressedFor(slot: "mode-text" | "mode-design" | "panel" | "feedback-only" | "show-done"): boolean {
-    if (slot === "mode-text") return mode === "text";
-    if (slot === "mode-design") return mode === "design";
+  function pressedFor(slot: BarSlot): boolean {
+    if (slot.startsWith("mode-")) return mode === slot.slice("mode-".length);
     if (slot === "panel") return panel?.isOpen() ?? false;
     if (slot === "feedback-only") return settings.feedbackOnly;
     return settings.showDone;
@@ -943,6 +1029,9 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
   function applyUiState(): void {
     if (!enabled || !root) return;
+    // FR-4.10: a mode that became unavailable (host ceiling or a settings change) cannot stay
+    // active — falling back to "off" is the only state the bar can still show honestly.
+    if (mode !== "off" && !modeAvailable(mode)) mode = "off";
     root.setAttribute("data-bp-mode", mode);
     root.setAttribute("data-bp-instance", instanceId);
     // Chrome level (FR-12.9): full keeps the bar/handle pair as before, quiet leaves only the
@@ -955,7 +1044,16 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (barCollapseButton) {
       barCollapseButton.setAttribute("data-bp-i18n", settings.barCollapsed ? "bar.expand" : "bar.collapse");
     }
-    for (const slot of ["mode-text", "mode-design", "panel", "feedback-only", "show-done"] as const) {
+    for (const captureMode of CAPTURE_MODES) {
+      const button = pressedButtons[modeSlot(captureMode)];
+      if (!button) continue;
+      // Unavailable modes disappear instead of looking clickable but inert (FR-4.10).
+      button.hidden = !modeAvailable(captureMode);
+      const pressed = mode === captureMode;
+      button.setAttribute("aria-pressed", pressed ? "true" : "false");
+      button.classList.toggle("is-active", pressed);
+    }
+    for (const slot of ["panel", "feedback-only", "show-done"] as const) {
       const button = pressedButtons[slot];
       if (button) {
         const pressed = pressedFor(slot);
@@ -963,9 +1061,12 @@ export function createLayer(options: LayerOptions): LayerHandle {
         button.classList.toggle("is-active", pressed);
       }
     }
+    // A read-only host offers no capture at all; the feedback-only toggle would be meaningless.
+    const feedbackButton = pressedButtons["feedback-only"];
+    if (feedbackButton) feedbackButton.hidden = !anyModeAvailable();
     if (modeHint) modeHint.hidden = mode === "off";
     if (modeHintText && mode !== "off") {
-      modeHintText.setAttribute("data-bp-i18n", mode === "design" ? "mode.design.hint" : "mode.text.hint");
+      modeHintText.setAttribute("data-bp-i18n", `mode.${mode}.hint` as MessageKey);
     }
     settingsPopover?.render();
     renderAll();
@@ -974,6 +1075,12 @@ export function createLayer(options: LayerOptions): LayerHandle {
   function setMode(next: Mode): void {
     mode = next;
     applyUiState();
+  }
+
+  /** Toggle a capture mode; unavailable modes are a no-op (FR-4.10) — the button/key is inert. */
+  function toggleMode(next: CaptureMode): void {
+    if (!modeAvailable(next)) return;
+    setMode(mode === next ? "off" : next);
   }
 
   function setBarCollapsed(value: boolean): void {
@@ -1023,6 +1130,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (patch.author !== undefined) settings.author = patch.author;
     if (patch.barCollapsed !== undefined) settings.barCollapsed = patch.barCollapsed;
     if (patch.chromeLevel !== undefined) settings.chromeLevel = patch.chromeLevel;
+    if (patch.modes !== undefined) settings.modes = { ...settings.modes, ...patch.modes };
     if (patch.language !== undefined) {
       const next = normalizeLanguage(patch.language);
       languageChanged = next !== settings.language;
@@ -1042,6 +1150,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     settings.feedbackOnly = DEFAULT_SETTINGS.feedbackOnly;
     settings.author = DEFAULT_SETTINGS.author;
     settings.barCollapsed = DEFAULT_SETTINGS.barCollapsed;
+    settings.modes = { ...DEFAULT_SETTINGS.modes };
     settings.language = normalizeLanguage(options.language);
     translator = createTranslator(settings.language);
     panel?.resetFilters();
@@ -1097,7 +1206,11 @@ export function createLayer(options: LayerOptions): LayerHandle {
       return { ok: false, reasonKey: "composer.error.vanished" };
     }
 
-    const context = input.type === "design" ? (target.context ?? captureSafely(element)) : null;
+    // Design semantics carry the captured state (a bug is captured that way too, FR-1.13); a text
+    // quote deliberately carries none. `target.context` is what the capture mode resolved.
+    const context =
+      target.context ??
+      (input.type === "design" || input.type === "bug" ? captureSafely(element) : null);
     try {
       await options.store.create({
         type: input.type,
@@ -1106,6 +1219,8 @@ export function createLayer(options: LayerOptions): LayerHandle {
         intent: input.intent,
         // FR-3.6: only a bug carries a severity; `createNote` drops it for any other type.
         ...(input.severity !== undefined ? { severity: input.severity } : {}),
+        // FR-3.7: only a feature carries a priority; `createNote` drops it for any other type.
+        ...(input.priority !== undefined ? { priority: input.priority } : {}),
         author: authorName(),
         authorType: "human",
         source: "ui:human",
@@ -1142,6 +1257,12 @@ export function createLayer(options: LayerOptions): LayerHandle {
       },
       setStatus: (note, status: NoteStatus) => {
         void mutate(() => options.store.setStatus(note.id, status), note);
+      },
+      setSeverity: (note, severity: NoteSeverity | null) => {
+        void mutate(() => options.store.update(note.id, { severity }), note);
+      },
+      setPriority: (note, priority: NotePriority | null) => {
+        void mutate(() => options.store.update(note.id, { priority }), note);
       },
       remove: (note) => {
         void mutate(() => options.store.remove(note.id), note);
@@ -1336,13 +1457,21 @@ export function createLayer(options: LayerOptions): LayerHandle {
     return null;
   }
 
-  function findTextTarget(elements: readonly Element[]): Element | null {
+  /**
+   * Resolve the text target along the path (FR-1.3).
+   *
+   * `strict` skips the Issue #3 ancestry fallback: the hybrid preset (FR-1.14) must decide from the
+   * clicked subtree alone, because an ancestor's text may come from a sibling outside it. Without
+   * `strict` the fallback stays intact for the text and design presets.
+   */
+  function findTextTarget(elements: readonly Element[], strict = false): Element | null {
     const deepest = elements[0];
     for (const node of elements) {
       if (node.tagName === "BODY" || node.tagName === "HTML") break;
       if (TEXT_TAGS.has(node.tagName)) return node;
       if (node === deepest && hasDirectText(node)) return node;
     }
+    if (strict) return null;
     // Issue #3: a component whose text lives in children used to end here as `null` — the click did
     // nothing and the component looked inert. The nearest element that *holds* text is still a
     // sensible block; a host that wants a different unit registers `annotateSelectors`.
@@ -1374,6 +1503,35 @@ export function createLayer(options: LayerOptions): LayerHandle {
     }
   }
 
+  /** Resolve the element and the payload a normal (non-Alt) click captures for one preset. */
+  function resolveCapture(
+    captureMode: CaptureMode,
+    elements: readonly Element[],
+    registered: Element | null,
+  ): { picked: Element; semantics: CaptureSemantics } | null {
+    const preset = CAPTURE_PRESETS[captureMode];
+    const target = elements[0];
+    if (!target) return null;
+    if (preset.capture === "text") {
+      const picked = registered ?? findTextTarget(elements);
+      return picked === null ? null : { picked, semantics: "text" };
+    }
+    if (preset.capture === "design") {
+      return { picked: registered ?? target, semantics: "design" };
+    }
+    // Hybrid (FR-1.14): a registered component is the unit, but only a genuinely textual one gets
+    // a quote; otherwise — and without a registered component — fall back to the strict text
+    // heuristic (clicked subtree only, no ancestor whose text comes from elsewhere), then to the
+    // clicked element with design semantics.
+    if (registered !== null) {
+      const textual = TEXT_TAGS.has(registered.tagName) || hasDirectText(registered);
+      return { picked: registered, semantics: textual ? "text" : "design" };
+    }
+    const textTarget = findTextTarget(elements, true);
+    if (textTarget !== null) return { picked: textTarget, semantics: "text" };
+    return { picked: target, semantics: "design" };
+  }
+
   function onDocumentClick(event: Event): void {
     if (!enabled || !root) return;
     const path = composedPath(event);
@@ -1391,17 +1549,33 @@ export function createLayer(options: LayerOptions): LayerHandle {
     const elements = path.filter(isElement);
     const target = elements[0];
     if (!target) return;
+
+    // FR-1.15 / FR-12.6: Alt+click is the documented exception that reaches an interactive host
+    // element. `[data-bp-ignore]` and `canAnnotate` stay vetoes — a host can still opt out.
+    const altClick = (event as MouseEvent).altKey === true;
+    const interactive = elements.find(isInteractiveElement);
+    if (altClick && interactive !== undefined) {
+      if (elements.some((element) => element.hasAttribute("data-bp-ignore"))) return;
+      const picked = findRegisteredTarget(elements) ?? interactive;
+      if (!canAnnotate(interactive) || !canAnnotate(picked)) return;
+      // The host click is explicitly replaced by the capture, including its default action.
+      event.preventDefault();
+      event.stopPropagation();
+      openComposerFor(picked, mode);
+      return;
+    }
+
     // FR-1.9: links, form fields, [data-bp-ignore], editable regions stay operable in every mode.
     if (elements.some((element) => isPassThroughElement(element))) return;
     if (!canAnnotate(target)) return;
 
-    // A registered component wins over the built-in heuristic in both modes (FR-1.12).
-    const picked = findRegisteredTarget(elements) ?? (mode === "design" ? target : findTextTarget(elements));
-    if (picked === null || !canAnnotate(picked)) return;
+    // A registered component wins over the built-in heuristic in every mode (FR-1.12).
+    const resolved = resolveCapture(mode, elements, findRegisteredTarget(elements));
+    if (resolved === null || !canAnnotate(resolved.picked)) return;
 
     // Only while a mode is active do we swallow the click for the host.
     event.stopPropagation();
-    openComposerFor(picked, mode === "design" ? "design" : "text");
+    openComposerFor(resolved.picked, mode, resolved.semantics);
   }
 
   /**
@@ -1427,10 +1601,16 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
     switch (action) {
       case "mode-text":
-        setMode(mode === "text" ? "off" : "text");
+        toggleMode("text");
         return;
       case "mode-design":
-        setMode(mode === "design" ? "off" : "design");
+        toggleMode("design");
+        return;
+      case "mode-bug":
+        toggleMode("bug");
+        return;
+      case "mode-feature":
+        toggleMode("feature");
         return;
       case "panel":
         panel?.toggle();
@@ -1541,12 +1721,31 @@ export function createLayer(options: LayerOptions): LayerHandle {
     const target = event.target;
     if (!isElement(target)) return;
 
+    // FR-4.10: in-place grading of an existing note (severity for a bug, priority for a feature).
+    const noteField = target.getAttribute("data-bp-note-field");
+    if (noteField === "severity" || noteField === "priority") {
+      const holder = target.closest("[data-bp-note-id]");
+      const id = holder?.getAttribute("data-bp-note-id") ?? null;
+      const note = id === null ? null : (options.store.notes().find((entry) => entry.id === id) ?? null);
+      if (note === null) return;
+      const raw = (target as HTMLSelectElement).value;
+      if (noteField === "severity") {
+        const severity = isNoteSeverity(raw) ? raw : null;
+        panelActions().setSeverity(note, severity);
+      } else {
+        const priority = isNotePriority(raw) ? raw : null;
+        panelActions().setPriority(note, priority);
+      }
+      return;
+    }
+
     const filterName = target.getAttribute("data-bp-filter");
     if (
       filterName === "type" ||
       filterName === "intent" ||
       filterName === "status" ||
-      filterName === "severity"
+      filterName === "severity" ||
+      filterName === "priority"
     ) {
       panel?.setFilter(filterName, (target as HTMLSelectElement).value);
       renderMarkers();
@@ -1564,6 +1763,14 @@ export function createLayer(options: LayerOptions): LayerHandle {
       applySettingsPatch({ author: (target as HTMLInputElement).value });
     } else if (setting === "language") {
       applySettingsPatch({ language: (target as HTMLSelectElement).value });
+    } else if (setting !== null && setting.startsWith("mode-")) {
+      const captureMode = setting.slice("mode-".length);
+      if (isCaptureMode(captureMode)) {
+        // The full record, so a stale partial patch can never half-change the ceiling checks.
+        applySettingsPatch({
+          modes: { ...settings.modes, [captureMode]: (target as HTMLInputElement).checked },
+        });
+      }
     }
   }
 
@@ -1626,16 +1833,44 @@ export function createLayer(options: LayerOptions): LayerHandle {
     } else {
       switch (shortcut.id) {
         case "mode.text":
-          setMode(mode === "text" ? "off" : "text");
+          if (!modeAvailable("text")) {
+            handled = false;
+            break;
+          }
+          toggleMode("text");
           break;
         case "mode.design":
-          setMode(mode === "design" ? "off" : "design");
+          if (!modeAvailable("design")) {
+            handled = false;
+            break;
+          }
+          toggleMode("design");
+          break;
+        case "mode.bug":
+          if (!modeAvailable("bug")) {
+            handled = false;
+            break;
+          }
+          toggleMode("bug");
+          break;
+        case "mode.feature":
+          if (!modeAvailable("feature")) {
+            handled = false;
+            break;
+          }
+          toggleMode("feature");
           break;
         case "panel":
           panel?.toggle();
           applyUiState();
           break;
         case "feedback-only":
+          // The bar button is hidden when no mode is available; the shortcut must be just as inert
+          // and leave the key to the host (FR-4.10, FR-12.6).
+          if (!anyModeAvailable()) {
+            handled = false;
+            break;
+          }
           setFeedbackOnly(!settings.feedbackOnly);
           break;
         case "bar":
@@ -1783,9 +2018,20 @@ export function createLayer(options: LayerOptions): LayerHandle {
     }
   }
 
-  function openComposerFor(element: Element, type: "text" | "design"): void {
+  /**
+   * Open the composer for one mode. `type` always comes from the preset table (FR-1.3/1.4/1.13/1.14);
+   * `captureOverride` only decides the `hybrid` case (a feature on text vs. on design).
+   */
+  function openComposerFor(
+    element: Element,
+    captureMode: CaptureMode,
+    captureOverride?: CaptureSemantics,
+  ): void {
+    const preset = CAPTURE_PRESETS[captureMode];
+    const semantics: CaptureSemantics =
+      preset.capture === "hybrid" ? (captureOverride ?? "design") : preset.capture;
     const route = safeRoute(element);
-    const quote = type === "text" ? safeSelectionQuote() : undefined;
+    const quote = semantics === "text" ? safeSelectionQuote() : undefined;
     let anchor: Anchor;
     let label: string;
     try {
@@ -1799,9 +2045,9 @@ export function createLayer(options: LayerOptions): LayerHandle {
       reportError(error);
       return;
     }
-    const context = type === "design" ? captureSafely(element) : null;
+    const context = semantics === "design" ? captureSafely(element) : null;
     const target: ComposerTarget = {
-      type,
+      type: preset.type,
       anchor,
       ...(quote !== undefined ? { quote } : {}),
       context,

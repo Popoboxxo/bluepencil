@@ -15,6 +15,7 @@
  */
 import { isEnvironment, type Environment } from "../core/model";
 import { resolveKeymap, type KeymapOverrides } from "../ui/keymap";
+import { CAPTURE_MODES, isCaptureMode, type CaptureMode } from "../ui/modes";
 import type { VoiceEngineFactory } from "../ui/voice";
 
 /** Attributes that existed before FR-17 — kept unchanged for existing hosts. */
@@ -47,6 +48,7 @@ export const EMBED_ATTRIBUTES = [
   "can-annotate",
   "annotate-selectors",
   "keymap",
+  "modes",
   "dock",
   "app",
   "build-ref",
@@ -356,6 +358,43 @@ export function readDock(source: AttributeSource): { dock?: "top" | "bottom"; is
   if (raw === undefined) return { issues: [] };
   if (raw === "top" || raw === "bottom") return { dock: raw, issues: [] };
   return { issues: [`dock must be "top" or "bottom" (got ${JSON.stringify(raw)})`] };
+}
+
+/**
+ * `modes="text,design,bug"` (or `modes="none"`) — the host's capture-mode ceiling (FR-4.10).
+ *
+ * A host that only supports some kinds of feedback must not offer the rest: a design note on a page
+ * that cannot act on design is noise. An absent attribute means "all modes" (the historical
+ * behaviour); `"none"` mounts a read-only layer whose list and exports still work.
+ *
+ * Fail closed: if the attribute contains no recognisable mode at all (a typo, the wrong separator),
+ * the result is `"none"`, never "all". A typo must not widen the ceiling the host tried to set;
+ * each unknown value is reported through `element.issues` so it is not silently swallowed either.
+ */
+export function readModes(source: AttributeSource): {
+  modes?: readonly CaptureMode[] | "none";
+  issues: string[];
+} {
+  const raw = readAttribute(source, "modes");
+  if (raw === undefined) return { issues: [] };
+
+  const trimmed = raw.trim();
+  if (trimmed === "") return { issues: [] };
+  if (trimmed === "none") return { modes: "none", issues: [] };
+
+  const issues: string[] = [];
+  const valid: CaptureMode[] = [];
+  for (const candidate of trimmed.split(",")) {
+    const value = candidate.trim();
+    if (value === "") continue;
+    if (!isCaptureMode(value)) {
+      issues.push(`modes "${value}" is not one of ${CAPTURE_MODES.join(", ")}`);
+      continue;
+    }
+    if (!valid.includes(value)) valid.push(value);
+  }
+  if (valid.length === 0) return { modes: "none", issues };
+  return { modes: Object.freeze(valid), issues };
 }
 
 /**

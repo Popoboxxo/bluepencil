@@ -9,6 +9,7 @@
 
 import { applyTranslations, type Translate } from "../i18n";
 import { legendGroups, type KeymapOverrides, type LegendGroup, type LegendRow } from "./keymap";
+import type { CaptureMode } from "./modes";
 
 export type { LegendGroup, LegendRow };
 
@@ -19,6 +20,8 @@ export interface LegendOptions {
   instanceId: string;
   /** Shortcut overrides — the legend shows the *effective* keys (FR-1.11). */
   keymap?: KeymapOverrides;
+  /** Modes the layer currently offers (FR-4.10); their rows are omitted when unavailable. */
+  modes?: () => readonly CaptureMode[];
   /** Called after the overlay closed (used to return focus, FR-11.2). */
   onClose?: () => void;
 }
@@ -77,7 +80,7 @@ export function createLegend(options: LegendOptions): Legend {
   /** Build the grouped shortcut rows from the static table above. */
   function render(): void {
     body.textContent = "";
-    for (const group of legendGroups(options.keymap)) {
+    for (const group of legendGroups(options.keymap, options.modes?.())) {
       const groupElement = doc.createElement("section");
       groupElement.className = "bp-legend-group";
       groupElement.setAttribute("data-bp-part", "legend-group");

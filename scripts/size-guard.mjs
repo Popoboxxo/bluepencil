@@ -31,6 +31,11 @@
  * IIFE at 41.3 kB. 45 kB aligns it with the custom-element budget and leaves ~3.7 kB headroom, so
  * real drift stays visible. Measured after the raise: core 37.7 kB, IIFE 41.3 kB, element 44.0 kB.
  *
+ * Raised the custom element from 45 kB to 48 kB for the capture presets (FR-1.13/1.14), feature
+ * priority (FR-3.7), mode visibility (FR-4.10) and the version line (FR-4.9): measured 46.9 kB gzip,
+ * i.e. 1.9 kB over the old ceiling. The IIFE stays at 44.1 kB of 45 kB. 48 kB leaves ~1.1 kB
+ * headroom, so real drift is still visible on the same number.
+ *
  * Exits non-zero on any violation so CI can fail.
  */
 import { gzipSync } from "node:zlib";
@@ -68,9 +73,12 @@ const checks = [
     // Raised from 40 kB to 45 kB for the presentation mode (FR-20): the custom element bundles the
     // adapters and both locales on top of the layer, so it carries the presenter panel and the talk
     // timer as well. Measured before the raise: 40.9 kB gzip against the old 40 kB ceiling.
-    // 45 kB leaves ~4 kB headroom, so the guard still catches drift instead of tracking it.
+    // Raised from 45 kB to 48 kB for the capture presets (FR-1.13/1.14), feature priority (FR-3.7),
+    // mode visibility (FR-4.10) and the version line (FR-4.9): measured 46.9 kB gzip, 1.9 kB over
+    // the old ceiling. 48 kB leaves ~1.1 kB headroom, so the guard still catches drift instead of
+    // tracking it.
     file: join(root, "dist/bluepencil.element.js"),
-    budget: 45 * KB,
+    budget: 48 * KB,
     label: "custom element incl. adapters + en/de",
   },
 ];

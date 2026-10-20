@@ -19,6 +19,7 @@ import {
   type Message,
   type Note,
   type NoteIntent,
+  type NotePriority,
   type NoteSeverity,
   type NoteStatus,
   type NoteType,
@@ -40,6 +41,7 @@ function makeNote(input: {
   updatedAt?: string;
   type?: NoteType;
   severity?: NoteSeverity;
+  priority?: NotePriority;
   intent?: NoteIntent;
   status?: NoteStatus;
   sessionRef?: string;
@@ -52,6 +54,7 @@ function makeNote(input: {
     id: input.id,
     type: input.type ?? "text",
     severity: input.severity,
+    priority: input.priority,
     body: input.body,
     anchor: { hook: input.id },
     intent: input.intent ?? "implement",
@@ -237,6 +240,84 @@ describe("argument validation (F12b)", () => {
     });
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain("severity must be one of blocker, major, minor");
+  });
+});
+
+describe("feature type and priority (FR-3.2/FR-3.7, FR-16.1)", () => {
+  it("creates a feature note with its priority and persists both fields", async () => {
+    const session = await openSession();
+    const result = await call(session.context, "create_note", {
+      type: "feature",
+      body: "dark mode for the panel",
+      hook: "settings",
+      priority: "high",
+    });
+    expect(result.isError).toBe(false);
+    const created = result.value<{ created: Note }>().created;
+    expect(created.type).toBe("feature");
+    expect(created.priority).toBe("high");
+
+    const loaded = await call(session.context, "get_note", { id: created.id });
+    expect(loaded.value<Note>().priority).toBe("high");
+
+    const stored = persistedNotes(session)[0];
+    expect(stored?.type).toBe("feature");
+    expect(stored?.priority).toBe("high");
+  });
+
+  it("takes priority on a text note and lets the model drop it", async () => {
+    const session = await openSession();
+    const result = await call(session.context, "create_note", {
+      type: "text",
+      body: "wording is off",
+      hook: "headline",
+      priority: "high",
+    });
+    expect(result.isError).toBe(false);
+    const created = result.value<{ created: Note }>().created;
+    expect(created.type).toBe("text");
+    expect(created.priority).toBeUndefined();
+    expect("priority" in created).toBe(false);
+    expect("priority" in (persistedNotes(session)[0] as Note)).toBe(false);
+  });
+
+  it("refuses an unknown priority before anything is written", async () => {
+    const session = await openSession();
+    const result = await call(session.context, "create_note", {
+      type: "feature",
+      body: "x",
+      hook: "settings",
+      priority: "urgent",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("priority must be one of high, medium, low");
+    expect(session.file.text).toBeNull();
+  });
+
+  it("filters list_notes by priority and excludes an ungraded feature", async () => {
+    const high = makeNote({ id: "n-high", body: "high", environment: "dev", type: "feature", priority: "high" });
+    const low = makeNote({ id: "n-low", body: "low", environment: "dev", type: "feature", priority: "low" });
+    const ungraded = makeNote({ id: "n-ungraded", body: "no priority", environment: "dev", type: "feature" });
+    const plain = makeNote({ id: "n-plain", body: "text", environment: "dev" });
+    const session = await openSession({ seed: [high, low, ungraded, plain] });
+
+    const filtered = await call(session.context, "list_notes", { priority: "high", include_done: true });
+    expect(filtered.isError).toBe(false);
+    const ids = filtered.value<{ notes: Array<{ id: string }> }>().notes.map((note) => note.id);
+    expect(ids).toEqual(["n-high"]);
+    expect(ids).not.toContain("n-ungraded");
+
+    const invalid = await call(session.context, "list_notes", { priority: "urgent" });
+    expect(invalid.isError).toBe(true);
+    expect(invalid.text).toContain("priority must be one of high, medium, low");
+  });
+
+  it("detects a priority that was persisted differently (F7)", () => {
+    const expected = makeNote({ id: "n-f", body: "x", environment: "dev", type: "feature", priority: "high" });
+    const persisted = makeNote({ id: "n-f", body: "x", environment: "dev", type: "feature", priority: "low" });
+    expect(compareNoteSets([expected], [persisted])).toEqual([
+      "note n-f was persisted differently (priority)",
+    ]);
   });
 });
 

@@ -280,3 +280,63 @@ full attribute table, the manifest-driven runtime update API, the store
 contract endpoint table, the gate recipe, and troubleshooting, see:
 
 **[EMBED.md](EMBED.md)**
+
+## 12. Capture modes and note types (FR-1.13/1.14/4.10)
+
+A capture mode decides what a click means and which payload the composer carries:
+
+| Mode | Key | Note `type` | Capture |
+|---|---|---|---|
+| Text | `c` | `text` | selection quote |
+| Design | `d` | `design` | design snapshot (computed styles, box, theme, viewport) |
+| Bug | `i` | `bug` | design snapshot, always — even on a text element — plus `severity` |
+| Feature | `n` | `feature` | hybrid: text with a quote when a text target is found, otherwise a design snapshot; plus `priority` |
+
+`priority` (`high`, `medium`, `low`) is optional and only exists on a `feature` note. `severity`
+(`blocker`, `major`, `minor`) likewise only exists on a `bug`. Both are additive: `schemaVersion`
+stays `1`, and an older reader degrades a `feature` note to `text` and drops the field.
+
+### Host ceiling and read-only
+
+The host sets the upper bound of what it wants to collect, either at `init()` or through the
+element's `modes` attribute:
+
+```ts
+init({
+  adapter: "localStorage",
+  modes: ["text", "design", "bug"],   // no feature capture on this page
+});
+```
+
+```html
+<bluepencil-notes modes="text,design,bug" …></bluepencil-notes>
+<!-- loader form: data-modes="text,design,bug" -->
+```
+
+An absent `modes` means all four. `modes="none"` mounts a **read-only** layer: the bar, note list,
+filters, legend and settings stay available, but there is no capture and the feedback-only control is
+hidden. Inside the host ceiling the reviewer can switch individual modes off in the settings popover;
+a disabled mode hides its bar button, leaves its shortcut inert and is omitted from the legend.
+Disabling the currently active mode falls back to `off`, and turning every mode off produces the same
+read-only state. Existing notes are never removed by a mode change.
+
+### Alt+click on interactive elements
+
+While a capture mode is active, **Alt+click** opens the composer for a button, link, form field or
+element with an interactive ARIA role. A normal click is left to the host, so navigation and form
+behaviour are unchanged; `preventDefault()` stops the host action when the composer opens.
+`[data-bp-ignore]` and a host `canAnnotate` veto still apply (FR-1.15, FR-12.6).
+
+### Grading in the panel
+
+The panel shows a type badge and, where present, a severity (bug) or priority (feature) badge.
+Severity and priority are editable inline as compact dropdowns that include `none` (clearing the
+field through `NotePatch.severity` / `NotePatch.priority` set to `null`). The note type itself is
+immutable after capture; the filters cover `all` plus every type and every grading value, with
+`none` matching notes that carry no severity or priority.
+
+### Version
+
+The settings popover carries a static `Version` row reading `bluepencil <VERSION>` (`dev` when
+running straight from source), and the layer root exposes the same value as `data-bp-version`. See
+[EMBED.md §4](EMBED.md#which-version-is-running-fr-19) for every surface that reports the version.

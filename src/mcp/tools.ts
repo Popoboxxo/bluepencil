@@ -39,6 +39,7 @@ import {
   BluepencilValidationError,
   MESSAGE_KINDS,
   NOTE_INTENTS,
+  NOTE_PRIORITIES,
   NOTE_SEVERITIES,
   NOTE_STATUSES,
   NOTE_TYPES,
@@ -185,6 +186,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         status: { type: "string", enum: [...NOTE_STATUSES] },
         intent: { type: "string", enum: [...NOTE_INTENTS] },
         type: { type: "string", enum: [...NOTE_TYPES] },
+        priority: { type: "string", enum: [...NOTE_PRIORITIES] },
         route: { type: "string" },
         session: { type: "string" },
         include_done: { type: "boolean", default: false },
@@ -215,6 +217,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         type: { type: "string", enum: [...NOTE_TYPES], default: "text" },
         intent: { type: "string", enum: [...NOTE_INTENTS], default: "implement" },
         severity: { type: "string", enum: [...NOTE_SEVERITIES] },
+        priority: { type: "string", enum: [...NOTE_PRIORITIES] },
         hook: { type: "string" },
         selector: { type: "string" },
         quote: { type: "string" },
@@ -383,6 +386,8 @@ function toFilter(context: ToolContext, args: Record<string, unknown>): { filter
   if (intent.issue) return { issue: intent.issue };
   const type = readEnumArgument(args.type, NOTE_TYPES, "type");
   if (type.issue) return { issue: type.issue };
+  const priority = readEnumArgument(args.priority, NOTE_PRIORITIES, "priority");
+  if (priority.issue) return { issue: priority.issue };
 
   return {
     filter: {
@@ -390,6 +395,7 @@ function toFilter(context: ToolContext, args: Record<string, unknown>): { filter
       ...(status.value !== undefined ? { status: status.value } : {}),
       ...(intent.value !== undefined ? { intent: intent.value } : {}),
       ...(type.value !== undefined ? { type: type.value } : {}),
+      ...(priority.value !== undefined ? { priority: priority.value } : {}),
       ...(typeof args.route === "string" ? { route: args.route } : {}),
       ...(typeof args.session === "string" ? { session: args.session } : {}),
     },
@@ -457,6 +463,7 @@ const COMPARED_FIELDS = [
   "environment",
   "ticketRef",
   "severity",
+  "priority",
   "debug",
 ] as const;
 
@@ -662,6 +669,12 @@ export async function callTool(
       if (severity.issue) {
         return errorResponse(severity.issue);
       }
+      // FR-3.7: the value is checked here, the rule "only on a feature" is the model's — an agent
+      // may pass it with any type, and the model silently omits it where it is meaningless.
+      const priority = readEnumArgument(args.priority, NOTE_PRIORITIES, "priority");
+      if (priority.issue) {
+        return errorResponse(priority.issue);
+      }
       const body = String(args.body ?? "").trim();
       if (body === "") {
         return errorResponse("body must not be empty");
@@ -682,6 +695,7 @@ export async function callTool(
           anchor,
           intent: intent.value ?? "implement",
           ...(severity.value !== undefined ? { severity: severity.value } : {}),
+          ...(priority.value !== undefined ? { priority: priority.value } : {}),
           author: agentAuthor(context),
           authorType: "agent",
           source: "agent",

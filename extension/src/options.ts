@@ -244,4 +244,55 @@ function wireToggle(id: string, enabled: boolean): void {
 wireToggle("turn-on", true);
 wireToggle("turn-off", false);
 
+/** What `extension/build.mjs` writes to `dist/build-info.js` as a build-time global. */
+interface BuildInfo {
+  version: string;
+  gitSha: string | null;
+  elementSha256: string;
+}
+
+const VERSION_FIELDS = ["version-bluepencil", "version-build", "version-commit", "version-element"] as const;
+
+/** Writes plain text (never HTML) and, when given, the full value as a hover title. */
+function setVersionField(id: string, text: string, title?: string): void {
+  const node = document.getElementById(id);
+  if (node === null) return;
+  node.textContent = text;
+  if (title === undefined) node.removeAttribute("title");
+  else node.setAttribute("title", title);
+}
+
+/**
+ * Shows the exact build this page belongs to (FR-4.9).
+ *
+ * The values come from `globalThis.BLUEPENCIL_BUILD_INFO`, written by the build to `build-info.js`
+ * and loaded as a classic script before this module. No same-origin `fetch`, no network API, no
+ * inline script and no `eval` — nothing the Webstore compliance scan or the extension CSP would
+ * have to allow. A missing or malformed global is stated as "unavailable" rather than left blank or
+ * thrown: the settings form has to keep working either way, so this never throws.
+ */
+function showVersion(): void {
+  const info = (globalThis as unknown as Record<string, unknown>)["BLUEPENCIL_BUILD_INFO"];
+  if (typeof info !== "object" || info === null) {
+    for (const id of VERSION_FIELDS) setVersionField(id, "unavailable");
+    return;
+  }
+  const record = info as Partial<Record<keyof BuildInfo, unknown>>;
+  if (typeof record.version !== "string" || typeof record.elementSha256 !== "string") {
+    for (const id of VERSION_FIELDS) setVersionField(id, "unavailable");
+    return;
+  }
+  const version = record.version;
+  const elementSha256 = record.elementSha256;
+  const gitSha = typeof record.gitSha === "string" ? record.gitSha : "unknown";
+  setVersionField("version-bluepencil", `bluepencil ${version}`);
+  setVersionField("version-build", version);
+  // The full SHA, with itself as the title: a truncated hash cannot be matched against a commit,
+  // and the title keeps the row narrow without hiding the value.
+  setVersionField("version-commit", gitSha, gitSha === "unknown" ? undefined : gitSha);
+  setVersionField("version-element", elementSha256, elementSha256);
+}
+
 void load();
+// Independent of the settings load: a missing build-info global must never block the form.
+void showVersion();

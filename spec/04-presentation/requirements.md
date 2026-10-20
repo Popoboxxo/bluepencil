@@ -19,7 +19,7 @@ Annotated elements show a marker; multiple notes collapse into one marker with a
 
 *Acceptance criteria:* Two notes on one element → one marker showing "2"
 
-## FR-4.2 A list panel shows all notes with filters for type, intent and status
+## FR-4.2 A list panel shows all notes with filters for type (incl. feature), intent, status, seve…
 
 ```attr
 prio: P0
@@ -31,7 +31,7 @@ version: 1
 requires-trace-from: []
 ```
 
-A list panel shows all notes with filters for type, intent and status
+A list panel shows all notes with filters for type (incl. feature), intent, status, severity and priority (all \| high \| medium \| low \| none)
 
 *Acceptance criteria:* Each filter combination yields the expected subset
 
@@ -67,7 +67,7 @@ Done notes can be revealed temporarily (one control) and permanently (settings)
 
 *Acceptance criteria:* Both paths show them immediately; the status filter follows the toggle
 
-## FR-4.5 A settings surface holds: show done notes, feedback-only mode, author name, reset to def…
+## FR-4.5 A settings surface holds: show done notes, feedback-only mode, author name, capture-mode…
 
 ```attr
 prio: P1
@@ -79,9 +79,9 @@ version: 1
 requires-trace-from: []
 ```
 
-A settings surface holds: show done notes, feedback-only mode, author name, reset to defaults
+A settings surface holds: show done notes, feedback-only mode, author name, capture-mode visibility and the running version, reset to defaults
 
-*Acceptance criteria:* Values persist across reload; reset restores defaults
+*Acceptance criteria:* Checkboxes, the version line and all values persist across reload; reset restores defaults
 
 ## FR-4.6 Filtering/sorting puts needs_decision first, then feedback-requested, then the rest
 
@@ -130,3 +130,35 @@ requires-trace-from: []
 Counters in the bar reflect total, open, decisions pending and feedback-only
 
 *Acceptance criteria:* After any change the numbers match the store
+
+## FR-4.9 The settings surface shows the running bluepencil version as a static line (bluepencil <…
+
+```attr
+prio: P2
+origin: G
+milestone: "M2"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+The settings surface shows the running bluepencil version as a static line (bluepencil <VERSION>; dev when running from source), and the layer root carries data-bp-version
+
+*Acceptance criteria:* Opening settings shows the version; the layer root has `data-bp-version` equal to `VERSION`; a shipped build shows the release version, a source run shows `dev`
+
+## FR-4.10 Mode visibility: the user can switch each capture mode on/off in settings (all four on b…
+
+```attr
+prio: P0
+origin: G
+milestone: "M2"
+status: approved
+verify: Test
+version: 1
+requires-trace-from: []
+```
+
+Mode visibility: the user can switch each capture mode on/off in settings (all four on by default); the host sets an upper bound through the modes init option or the data-bp-modes element attribute (modes="text,design,bug", modes="none"); a disabled mode's bar button and legend row disappear and its shortcut is inert, existing notes stay untouched; disabling the active mode falls back to off; all modes off is a read-only layer that keeps bar, list, filters, legend and settings and hides feedback-only
+
+*Acceptance criteria:* The user can uncheck a host-enabled mode and the button/legend/shortcut disappear after reload; a host list restricts the checkboxes; `modes="none"` and all-unchecked both render the read-only state; existing notes remain visible and editable; the active mode falls back to `off` when disabled

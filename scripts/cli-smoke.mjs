@@ -32,7 +32,7 @@ const DONE_MARKER = "SMOKE-DONE-MARKER must be hidden by --include-done=false";
 const KEEP_MARKER = "SMOKE-INCOMING-CONTENT applied by --on-conflict keep-incoming";
 
 /** The shortest shape that passes `validateNote` — one factory for every fixture. */
-function note(id, body, status, environment) {
+function note(id, body, status, environment, extra = {}) {
   return {
     id,
     schemaVersion: 1,
@@ -49,6 +49,7 @@ function note(id, body, status, environment) {
     messages: [],
     source: "ui:human",
     environment,
+    ...extra,
   };
 }
 
@@ -88,6 +89,7 @@ const files = {
   truncated: join(WORKSPACE, "truncated.json"),
   newer: join(WORKSPACE, "newer.json"),
   badEnum: join(WORKSPACE, "bad-enum.json"),
+  feature: join(WORKSPACE, "feature.json"),
   selfOut: join(WORKSPACE, "self-out.json"),
   dir: join(WORKSPACE, "a-directory"),
 };
@@ -106,6 +108,10 @@ function setUpWorkspace() {
   writeJson(files.live, bundle(liveNotes(), "live"));
   writeJson(files.add, bundle([note("n-add-001", "smoke added note", "open", "dev")], "dev"));
   writeJson(files.newer, { ...dev, schemaVersion: 99 });
+  writeJson(files.feature, bundle([
+    note("n-feat-001", "smoke feature note", "open", "dev", { type: "feature", priority: "high" }),
+    note("n-plain-001", "smoke plain note", "open", "dev"),
+  ], "dev"));
   writeJson(files.badEnum, {
     ...dev,
     notes: dev.notes.map((entry, index) => (index === 0 ? { ...entry, intent: "bogus-intent" } : entry)),
@@ -318,6 +324,28 @@ function cases() {
       const mdAll = run(["export", files.target, "--format", "md"]);
       assertExit(mdAll, 0, "export md (default)");
       assert(mdAll.stdout.includes(DONE_MARKER), "the default export must still contain done notes");
+    },
+
+    "feature type and priority (FR-15.2)": () => {
+      const inspect = run(["inspect", files.feature, "--json"]);
+      assertExit(inspect, 0, "inspect feature");
+      const summary = parseJson(inspect.stdout, "inspect feature")[0];
+      assert(summary.notes === 2, `inspect feature: expected 2 notes, got ${summary.notes}`);
+      assert(summary.byType.feature === 1, `inspect feature: expected byType.feature === 1, got ${JSON.stringify(summary.byType)}`);
+      assert(summary.byType.text === 1, `inspect feature: expected byType.text === 1, got ${JSON.stringify(summary.byType)}`);
+
+      const exported = run(["export", files.feature, "--type", "feature", "--priority", "high", "--format", "json"]);
+      assertExit(exported, 0, "export --type feature --priority high");
+      const selected = parseJson(exported.stdout, "export --type feature --priority high");
+      assert(selected.notes.length === 1, `export: expected 1 note, got ${selected.notes.length}`);
+      const kept = selected.notes[0];
+      assert(kept.id === "n-feat-001", `export: wrong note survived (${kept.id})`);
+      assert(kept.type === "feature" && kept.priority === "high", `export: the note lost type/priority (${JSON.stringify({ type: kept.type, priority: kept.priority })})`);
+
+      const invalid = run(["export", files.feature, "--priority", "urgent"]);
+      assertExit(invalid, 1, "export --priority urgent");
+      assertOneLineError(invalid, "export --priority urgent");
+      assert(invalid.stderr.includes("--priority"), `export --priority urgent: stderr does not name the option (${JSON.stringify(invalid.stderr.trim())})`);
     },
 
     "invalid option values -> exit 1": () => {

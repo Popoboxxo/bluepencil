@@ -95,7 +95,7 @@ version: 1
 requires-trace-from: []
 ```
 
-No host interference: listeners work in the capture phase and never call stopPropagation() unless an annotation mode is active; interactive elements (a[href], form fields, [data-bp-ignore]) are passed through even then; original behaviour is restored on teardown
+No host interference: listeners work in the capture phase and never call stopPropagation() unless an annotation mode is active; interactive elements (a[href], form fields, [data-bp-ignore]) are passed through even then — except that Alt+click on an interactive element opens the composer while a capture mode is active (FR-1.15); [data-bp-ignore] and canAnnotate remain vetoes; original behaviour is restored on teardown
 
 *Acceptance criteria:* Host's own click handlers fire normally with the layer enabled but idle; links and fields stay operable while a mode is active (FR-2.7)
 

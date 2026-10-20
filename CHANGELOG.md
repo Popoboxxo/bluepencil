@@ -1,3 +1,85 @@
+## [0.8.0] - 2026-10-20
+
+### Added
+
+**Two more capture presets: `bug` and `feature` (FR-1.13/1.14).** A bug is always captured with
+design semantics — its state and context matter even when the click lands on text — and shows its
+severity; it defaults to `intent=implement`, which the feedback-only toggle overrides. A feature is
+hybrid: a text capture with a quote when a text target is found, otherwise a design snapshot, and it
+shows its priority. The bar reads `Text | Design | Bug | Feature`; the shortcuts are `c`, `d`, `i`
+and `n`, while `l`, `f`, `b`, `h`, `?`, `Esc`, `j`/`k` and `1…9` are unchanged.
+
+**Optional feature priority (FR-3.7).** `priority` is `high`, `medium` or `low`, meaningful only for
+`type: "feature"` and omitted on every other type. Like severity it is orthogonal to `type` and
+`intent`, optional, and additive.
+
+**Mode visibility and a host ceiling (FR-4.10).** The host bounds what may be captured with
+`init({ modes: ["text", "design", "bug"] })` or the element attribute `modes="text,design,bug"`
+(loader form `data-modes`); `modes="none"` mounts a read-only layer. Within that ceiling the settings
+popover has one checkbox per mode. A disabled mode hides its button, leaves its shortcut inert and is
+omitted from the legend; disabling the active mode falls back to `off`, and all modes off is the
+read-only state, which keeps bar, list, filters, legend and settings and hides the feedback-only
+control. Existing notes are untouched.
+
+**Alt+click on interactive elements (FR-1.15).** While a capture mode is active, Alt+click opens the
+composer for buttons, links, form fields and interactive ARIA roles. A normal click stays the host's
+behaviour; `preventDefault()` stops navigation when the composer opens, and `[data-bp-ignore]` /
+`canAnnotate` still veto (FR-12.6).
+
+**Version line (FR-4.9).** The settings popover shows a static `Version` row (`bluepencil <VERSION>`,
+`dev` from source); the layer root carries `data-bp-version`, and the extension options page shows
+the bluepencil version plus the build info (`version`, `gitSha`, `elementSha256`).
+
+**Panel grading for priority.** A feature shows a type badge and a priority badge, with a priority
+filter (`all | high | medium | low | none`) and an inline compact dropdown that can also clear the
+value. Severity (bug) is editable the same way.
+
+### Changed
+
+**The `type` enum includes `feature`.** `text | design | bug | feature`; panel type and priority
+filters cover the new values. The settings surface now holds the mode checkboxes and the version row.
+The CLI and MCP surfaces carry the extended enum, and `NotePatch.severity` / `NotePatch.priority`
+accept `null` to clear a value.
+
+**No `schemaVersion` bump — it stays `1`.** `feature` and `priority` are additive. Old readers
+degrade a `feature` note to `text` and drop `priority`; new readers import old data unchanged, and an
+unknown priority is dropped on import.
+
+**Options-page provenance without a network API.** The options page now reads a classic build-time
+script (`build-info.js`, setting `globalThis.BLUEPENCIL_BUILD_INFO`) instead of fetching
+`build-info.json`; the extension's own code makes no network request at all, so the hard
+Webstore-compliance scan passes without an exception. `build-info.json` stays for tooling and
+`verify:sync`.
+
+**Custom-element budget 45 → 48 kB (NFR-3).** The capture presets, feature priority, mode visibility
+and version line measured 46.9 kB gzip against the old 45 kB ceiling; the IIFE stays at 44.1 kB of
+45 kB. The raise is recorded in NFR-3 and `scripts/size-guard.mjs`.
+
+**Docs updated.** README (capture modes), PROTOCOL (vocabulary and agent guidance), ARCHITECTURE
+(data model and `src/ui/modes.ts`), INTEGRATION §12 (modes, ceiling, Alt+click, grading, version),
+EMBED (`modes`, settings version row) and the spec coverage counts.
+
+### Verified
+
+`npm run spec` green at **153 requirements** in **18 documents** (132 functional, 21 non-functional;
+95 P0 / 48 P1 / 10 P2); `reqmd check spec/` was not available locally because `reqmd` is a CI-side
+tool. `npm run typecheck` + `npm run typecheck:ext` green; **865 unit tests** in **37 files**;
+`npm run build` + `npm run build:ext`; `npm run verify:sync` OK (version 0.8.0, element bundle
+sha256 `2e22d7f9…`); the size guard within every budget (core 40.5 kB gzip of 100, attach loader 3.3
+of 8, IIFE 44.1 of 45, custom element 46.9 of 48); `npm run smoke:pack` (12 required artefacts, 109
+files) and `npm run smoke:install` 15/15 (every documented export path plus `bluepencil --help`).
+Every browser and smoke leg in `npm run verify` is green end to end: **embed 14/14**,
+**bookmarklet 2/2**, **e2e 13/13**, **round-trip 11/11**, **parity 13/13**, **ext 119/119** (0 failed),
+**webstore 38/38** (four `ADVICE`, no failures), **CLI 15/15** and **MCP 23/23**.
+
+### Known gaps
+
+- **`reqmd` is not installed locally.** The spec is regenerated with `npm run spec`; `reqmd check
+  spec/` runs in CI.
+- **The size budgets are close to their ceilings.** The custom element sits at 46.9 kB of 48 kB
+  (97.7%) and the IIFE at 44.1 kB of 45 kB (97.9%), so the next feature of this shape must move or
+  shrink a budget deliberately rather than assume headroom.
+
 ## [0.7.0] - 2026-10-17
 
 ### Added
