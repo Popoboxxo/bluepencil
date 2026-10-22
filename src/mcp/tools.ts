@@ -27,14 +27,13 @@
  *    description for the client, not a validator on the server.
  */
 import { canonicalBundle, canonicalNote, serializeCanonical } from "../data/canonical";
-import { createBundle, inspectBundle, parseBundle, bundleToJson, type BundleSummary } from "../data/bundle";
-import { mergeNotes, type MergeMode, type MergeResult } from "../data/merge";
+import { createBundle, inspectBundle, parseBundle, type BundleSummary } from "../data/bundle";
 import { validateNote } from "../data/schema";
-import { excludeDone, filterNotes, isRecord, type Adapter } from "../core/adapter";
+import { excludeDone, isRecord, type Adapter } from "../core/adapter";
 import { createFileAdapter, type FileAdapterIo } from "../adapters/file";
 import { parseNoteSet, serializeNoteSet } from "../adapters/memory";
-import { sortForReview, summarize } from "../core/protocol";
-import type { Store } from "../core/store";
+import { summarize } from "../core/protocol";
+import type { McpBackend } from "./backend";
 import {
   BluepencilValidationError,
   MESSAGE_KINDS,
@@ -71,17 +70,21 @@ export const AGENT_MESSAGE_KINDS: readonly MessageKind[] = MESSAGE_KINDS.filter(
 export type ConflictPolicy = (typeof CONFLICT_POLICIES)[number];
 
 export interface ToolContext {
-  store: Store;
+  /** The transport-neutral note backend (single store in 0.8/0.10 PR 1). */
+  backend: McpBackend;
   /** Explicit write opt-in for this session (FR-16.2). */
   allowWrite: boolean;
-  /** Environment this session is bound to (FR-16.3). */
-  environment: Environment;
+  /**
+   * Environment this session is bound to (FR-16.3). Only set for `scope: "single"`; an aggregate
+   * backend has no single binding.
+   */
+  environment?: Environment;
   appName: string;
   clientName: string;
   sessionId: string;
   now?: () => string;
-  /** Host hooks the frozen `Store`/`Adapter` contracts cannot express (F5/F6/F7). */
-  persistence: McpPersistence;
+  /** Host hook used only to explain a failed write (F7); the backend owns the confirmation. */
+  persistence?: McpPersistence;
 }
 
 /** Host I/O of the session's store file; `read()` returns `null` while the file does not exist. */
@@ -340,15 +343,39 @@ function nowIso(context: ToolContext): string {
   return (context.now ?? systemClock.now)();
 }
 
+/**
+ * The environment a single-store session is bound to. `ToolContext.environment` is optional because
+ * an aggregate backend has no single binding (PR 4); until then every backend is `scope: "single"`.
+ */
+function boundEnvironment(context: ToolContext): Environment {
+  const environment = context.environment ?? context.backend.environment;
+  if (environment === undefined) {
+    throw new Error("bluepencil: this backend has no single environment binding");
+  }
+  return environment;
+}
+
 function agentAuthor(context: ToolContext): string {
   return `${context.clientName} (mcp:${context.sessionId})`;
 }
 
-function errorText(error: unknown): string {
+export function errorText(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
   }
   return error === undefined || error === null ? "unknown error" : String(error);
+}
+
+/**
+ * The isError result of a write that never reached the medium, naming the underlying error (F7).
+ * Shared with the store backend so both failure paths read identically (F2).
+ */
+export function notPersistedResponse(cause: unknown, action: string, reason: string): ToolResponse {
+  const detail =
+    cause === null || cause === undefined || reason.includes(errorText(cause))
+      ? ""
+      : ` (underlying error: ${errorText(cause)})`;
+  return errorResponse(`${action} did not persist — the store was not changed: ${reason}${detail}`);
 }
 
 /** A value, or the reason it is not one of the allowed values (F12b: schema is not validation). */
@@ -391,7 +418,7 @@ function toFilter(context: ToolContext, args: Record<string, unknown>): { filter
 
   return {
     filter: {
-      environment: context.environment,
+      environment: boundEnvironment(context),
       ...(status.value !== undefined ? { status: status.value } : {}),
       ...(intent.value !== undefined ? { intent: intent.value } : {}),
       ...(type.value !== undefined ? { type: type.value } : {}),
@@ -415,12 +442,13 @@ type NoteLookup = { note: Note } | { refusal: ToolResponse };
  * appending to it (FR-16.3/NFR-18).
  */
 function environmentRefusal(context: ToolContext, note: Note, action: string): ToolResponse | null {
-  if (note.environment === context.environment) {
+  const environment = boundEnvironment(context);
+  if (note.environment === environment) {
     return null;
   }
   return errorResponse(
     `note ${note.id} belongs to environment "${note.environment}" but this session is bound to ` +
-      `"${context.environment}": ${action} is refused (FR-16.3 — a session may only read and write ` +
+      `"${environment}": ${action} is refused (FR-16.3 — a session may only read and write ` +
       `notes of its own environment)`,
   );
 }
@@ -430,8 +458,7 @@ function environmentRefusal(context: ToolContext, note: Note, action: string): T
  * lag behind a change made outside `create`/`update` — F5) and applies the environment guard.
  */
 async function loadBoundNote(context: ToolContext, id: string, action: string): Promise<NoteLookup> {
-  const notes = await context.store.list();
-  const note = notes.find((candidate) => candidate.id === id);
+  const note = await context.backend.get(id);
   if (!note) {
     return { refusal: errorResponse(`note ${id} not found`) };
   }
@@ -505,12 +532,7 @@ export function compareNoteSets(expected: readonly Note[], persisted: readonly N
 
 /** The isError result of a write that never reached the medium, naming the underlying error. */
 function notPersisted(context: ToolContext, action: string, reason: string): ToolResponse {
-  const cause = context.persistence.lastWriteError();
-  const detail =
-    cause === null || cause === undefined || reason.includes(errorText(cause))
-      ? ""
-      : ` (underlying error: ${errorText(cause)})`;
-  return errorResponse(`${action} did not persist — the store was not changed: ${reason}${detail}`);
+  return notPersistedResponse(context.persistence?.lastWriteError() ?? null, action, reason);
 }
 
 /**
@@ -532,24 +554,17 @@ async function attemptWrite<T>(
 }
 
 /**
- * Confirms a mutation really reached the backing medium (F7): the store is reloaded from the
- * adapter and the persisted set is read back from the medium itself. Returns `null` when the write
- * is on disk, an isError response otherwise — a change that only lives in the adapter's fallback
- * memory is never reported as a success.
+ * Confirms a mutation really reached the backing medium (F7): the backend reloads the store from
+ * the adapter and reads the persisted set back from the medium itself. Returns `null` when the
+ * write is on disk, an isError response otherwise — a change that only lives in the adapter's
+ * fallback memory is never reported as a success.
  */
 async function confirmWrite(
   context: ToolContext,
   action: string,
   expected: readonly Note[],
 ): Promise<ToolResponse | null> {
-  try {
-    await context.store.reload();
-    const persisted = await context.persistence.readPersisted();
-    const issues = compareNoteSets(expected, persisted);
-    return issues.length === 0 ? null : notPersisted(context, action, issues.join("; "));
-  } catch (error) {
-    return notPersisted(context, action, errorText(error));
-  }
+  return context.backend.confirmWrite(expected, action);
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -606,6 +621,9 @@ export async function callTool(
   if (!definition) {
     return errorResponse(`unknown tool "${name}"`);
   }
+  // F3: the environment binding is resolved where a tool actually needs it (filter, note guard,
+  // create, inspect, Markdown header) — an aggregate backend has no single binding, and its tools
+  // must not all fail on call.
 
   switch (name) {
     case "list_notes": {
@@ -613,16 +631,17 @@ export async function callTool(
       if ("issue" in built) {
         return errorResponse(built.issue);
       }
+      const environment = boundEnvironment(context);
       const format = readEnumArgument(args.format, FORMATS, "format");
       if (format.issue) {
         return errorResponse(format.issue);
       }
       const includeDone = args.include_done === true;
       // One read path for every list: the shared filter (FR-15.3) including the session's
-      // environment (FR-16.3), the shared done-rule and the shared review order (M2/FR-16.7).
-      const all = await context.store.list();
-      const matching = filterNotes(all, built.filter);
-      const ordered = sortForReview(includeDone ? matching : excludeDone(matching));
+      // environment (FR-16.3) and the shared done-rule. The backend returns the shared review order
+      // (M2/FR-16.7), so sorting a second time here would only duplicate that rule (F5).
+      const { notes } = await context.backend.list(built.filter);
+      const ordered = includeDone ? notes : excludeDone(notes);
       if (format.value === "markdown") {
         const lines = ordered.map((note) => `- ${summarize(note)}`);
         return {
@@ -630,7 +649,7 @@ export async function callTool(
             {
               type: "text",
               text: [
-                `# ${context.appName} — ${ordered.length} note(s) [env: ${context.environment}]`,
+                `# ${context.appName} — ${ordered.length} note(s) [env: ${environment}]`,
                 "",
                 ...(lines.length > 0 ? lines : ["(no notes)"]),
               ].join("\n"),
@@ -639,7 +658,7 @@ export async function callTool(
         };
       }
       return jsonResponse({
-        environment: context.environment,
+        environment,
         app: context.appName,
         count: ordered.length,
         notes: ordered.map(canonicalNote),
@@ -687,9 +706,10 @@ export async function callTool(
       if (!anchor.hook && !anchor.selector && !anchor.quote) {
         return errorResponse("an anchor needs at least one of hook, selector or quote");
       }
-      const before = await context.store.list();
+      const environment = boundEnvironment(context);
+      const before = (await context.backend.list({})).notes;
       const attempt = await attemptWrite(context, "create_note", () =>
-        context.store.create({
+        context.backend.create({
           type: type.value ?? "text",
           body,
           anchor,
@@ -700,7 +720,7 @@ export async function callTool(
           authorType: "agent",
           source: "agent",
           // The note is born in the session's environment, never in another one (FR-16.3).
-          environment: context.environment,
+          environment,
           ...(typeof args.session === "string" ? { sessionRef: args.session } : {}),
           ...(typeof args.ticket_ref === "string" ? { ticketRef: args.ticket_ref } : {}),
         }),
@@ -745,7 +765,7 @@ export async function callTool(
           return errorResponse("refusing to mark a pending decision as done (PROTOCOL §6.3)");
         }
       }
-      const before = await context.store.list();
+      const before = (await context.backend.list({})).notes;
       const attempt = await attemptWrite(context, `reply to ${id}`, async () => {
         const message = createMessage({
           text,
@@ -754,11 +774,11 @@ export async function callTool(
           authorType: "agent",
           now: nowIso(context),
         });
-        let updated = await context.store.addMessage(id, message);
+        let updated = await context.backend.addMessage(id, message);
         if (messageKind === "decision_request") {
-          updated = await context.store.setStatus(id, "needs_decision");
+          updated = await context.backend.update(id, { status: "needs_decision" });
         } else if (args.set_done === true) {
-          updated = await context.store.setStatus(id, "done");
+          updated = await context.backend.update(id, { status: "done" });
         }
         return updated;
       });
@@ -794,8 +814,10 @@ export async function callTool(
           return errorResponse("intent=feedback notes are decided by the human (PROTOCOL §6.2)");
         }
       }
-      const before = await context.store.list();
-      const attempt = await attemptWrite(context, `set_status on ${id}`, () => context.store.setStatus(id, wanted));
+      const before = (await context.backend.list({})).notes;
+      const attempt = await attemptWrite(context, `set_status on ${id}`, () =>
+        context.backend.update(id, { status: wanted }),
+      );
       if ("failure" in attempt) return attempt.failure;
       const updated = attempt.value;
       const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
@@ -820,8 +842,10 @@ export async function callTool(
       if ("refusal" in lookup) {
         return lookup.refusal;
       }
-      const before = await context.store.list();
-      const attempt = await attemptWrite(context, `set_intent on ${id}`, () => context.store.setIntent(id, wanted));
+      const before = (await context.backend.list({})).notes;
+      const attempt = await attemptWrite(context, `set_intent on ${id}`, () =>
+        context.backend.update(id, { intent: wanted }),
+      );
       if ("failure" in attempt) return attempt.failure;
       const updated = attempt.value;
       const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
@@ -835,24 +859,11 @@ export async function callTool(
       if (format.issue) {
         return errorResponse(format.issue);
       }
-      const includeDone = args.include_done !== false;
-      const scoped = filterNotes(await context.store.list(), { environment: context.environment });
-      const selected = includeDone ? scoped : excludeDone(scoped);
-      if (format.value === "json") {
-        const bundle = createBundle(selected, {
-          environment: context.environment,
-          exportedBy: agentAuthor(context),
-          app: { name: context.appName },
-          now: nowIso(context),
-        });
-        return { content: [{ type: "text", text: bundleToJson(bundle) }] };
-      }
-      const { toMarkdown } = await import("../core/export/markdown");
-      return {
-        content: [
-          { type: "text", text: toMarkdown(selected, { includeDone, title: `${context.appName} review notes` }) },
-        ],
-      };
+      // `self` is the only instance of a store backend; the option is part of the backend contract.
+      return context.backend.exportBundle("self", {
+        format: format.value === "json" ? "json" : "markdown",
+        includeDone: args.include_done !== false,
+      });
     }
 
     case "inspect_bundle": {
@@ -860,7 +871,7 @@ export async function callTool(
       if (typeof parsed === "string") {
         return errorResponse(parsed);
       }
-      return jsonResponse(summaryWithEnvironment(parsed, context));
+      return jsonResponse(summaryWithEnvironment(parsed, boundEnvironment(context)));
     }
 
     case "import_bundle": {
@@ -878,102 +889,20 @@ export async function callTool(
       if (onConflict.issue) {
         return errorResponse(onConflict.issue);
       }
-      const parsed = parseBundleInput(args.bundle);
-      if (typeof parsed === "string") {
-        return errorResponse(parsed);
-      }
-      const bundle = parsed;
-
-      const policy: ConflictPolicy | undefined =
+      const policy =
         onConflict.value === "keep-incoming" || onConflict.value === "keep-existing"
           ? onConflict.value
           : undefined;
-      const modeValue: MergeMode = mode.value ?? "merge";
-      const dryRun = args.dry_run !== false;
-
-      if (bundle.environment !== context.environment && args.allow_env_mismatch !== true) {
-        return errorResponse(
-          `bundle is tagged "${bundle.environment}" but this session is bound to "${context.environment}" ` +
-            `— pass allow_env_mismatch to override deliberately (NFR-18)`,
-        );
-      }
-
-      const existing = await context.store.list();
-      let result: MergeResult;
-      try {
-        result = mergeNotes(existing, bundle.notes, {
-          mode: modeValue,
-          dryRun,
-          allowEnvMismatch: args.allow_env_mismatch === true,
-          targetEnvironment: context.environment,
+      return context.backend.importBundle(
+        args.bundle,
+        {
+          mode: mode.value ?? "merge",
+          dryRun: args.dry_run !== false,
           ...(policy !== undefined ? { onConflict: policy } : {}),
-        });
-      } catch (error) {
-        return errorResponse(errorText(error));
-      }
-
-      const report = {
-        mode: modeValue,
-        dry_run: dryRun,
-        added: result.added,
-        updated: result.updated,
-        skipped: result.skipped,
-        removed: result.removed,
-        conflicts: result.conflicts,
-      };
-
-      // F10, CLI parity: `bluepencil merge` reports the conflicts and exits 2 without writing. An
-      // unresolved conflict is therefore an error here too — and nothing is persisted either way,
-      // because `dry_run` is the default.
-      if (result.conflicts.length > 0 && policy === undefined) {
-        return jsonResponse(
-          {
-            ...report,
-            refused:
-              "unresolved conflict(s) — nothing was written; pass on_conflict keep-incoming or keep-existing to resolve them",
-          },
-          true,
-        );
-      }
-
-      const resolution =
-        policy !== undefined && result.conflicts.length > 0
-          ? { conflicts_resolved: result.conflicts.length, resolution: policy }
-          : {};
-
-      if (dryRun) {
-        return jsonResponse({ ...report, ...resolution });
-      }
-
-      // Write nothing when there is nothing to write: an idempotent import leaves the store file
-      // untouched, so an unchanged note keeps its bytes as well as its fields (F6, NFR-10).
-      if (result.added + result.updated + result.removed === 0) {
-        return jsonResponse({ ...report, ...resolution, written: false });
-      }
-
-      try {
-        // Removals go through the store (it owns the authoritative set); everything else is one
-        // whole-set write of the exact merged notes — full notes, never partial patches (F5/F6).
-        const keepIds = new Set(result.notes.map((note) => note.id));
-        for (const note of existing) {
-          if (!keepIds.has(note.id)) {
-            await context.store.remove(note.id);
-          }
-        }
-      } catch (error) {
-        return notPersisted(context, `import of ${result.notes.length} note(s)`, errorText(error));
-      }
-      const attempt = await attemptWrite(context, `import of ${result.notes.length} note(s)`, () =>
-        context.persistence.replaceAll(result.notes),
+          allowEnvMismatch: args.allow_env_mismatch === true,
+        },
+        "self",
       );
-      if ("failure" in attempt) return attempt.failure;
-      const failure = await confirmWrite(
-        context,
-        `import of ${result.notes.length} note(s)`,
-        result.notes,
-      );
-      if (failure) return failure;
-      return jsonResponse({ ...report, ...resolution, written: true });
     }
 
     default:
@@ -981,16 +910,19 @@ export async function callTool(
   }
 }
 
-function summaryWithEnvironment(bundle: ReturnType<typeof parseBundle>, context: ToolContext): BundleSummary & { targetEnvironment: string; environmentMatches: boolean } {
+function summaryWithEnvironment(
+  bundle: ReturnType<typeof parseBundle>,
+  environment: Environment,
+): BundleSummary & { targetEnvironment: string; environmentMatches: boolean } {
   const summary = inspectBundle(bundle);
   return {
     ...summary,
-    targetEnvironment: context.environment,
-    environmentMatches: bundle.environment === context.environment,
+    targetEnvironment: environment,
+    environmentMatches: bundle.environment === environment,
   };
 }
 
-function parseBundleInput(input: unknown): ReturnType<typeof parseBundle> | string {
+export function parseBundleInput(input: unknown): ReturnType<typeof parseBundle> | string {
   try {
     if (typeof input === "string") {
       return parseBundle(input);
@@ -1014,30 +946,7 @@ export async function readResource(
 ): Promise<{ uri: string; mimeType: string; text: string } | null> {
   // Resources obey the same environment binding as the tools (FR-16.3): a resource must never be
   // the side door that hands a host another environment's notes.
-  const notes = filterNotes(await context.store.list(), { environment: context.environment });
-  switch (uri) {
-    case "bluepencil://notes": {
-      const { toMarkdown } = await import("../core/export/markdown");
-      return {
-        uri,
-        mimeType: "text/markdown",
-        text: toMarkdown(notes, { includeDone: true, title: `${context.appName} review notes` }),
-      };
-    }
-    case "bluepencil://notes.json":
-      return { uri, mimeType: "application/json", text: JSON.stringify(notes.map(canonicalNote), null, 2) };
-    case "bluepencil://bundle": {
-      const bundle = createBundle(notes, {
-        environment: context.environment,
-        exportedBy: agentAuthor(context),
-        app: { name: context.appName },
-        now: nowIso(context),
-      });
-      return { uri, mimeType: "application/json", text: bundleToJson(bundle) };
-    }
-    default:
-      return null;
-  }
+  return context.backend.readResource(uri);
 }
 
 export function listResources(): Array<{ uri: string; name: string; mimeType: string }> {

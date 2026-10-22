@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { createStorePersistence, callTool, compareNoteSets, validateStoredNoteSet, type McpPersistence, type ToolContext } from "../../src/mcp/tools";
+import { createStoreBackend } from "../../src/mcp/backend";
 import { createStore, type Store } from "../../src/core/store";
 import { serializeNoteSet } from "../../src/adapters/memory";
 import { createBundle, bundleToJson } from "../../src/data/bundle";
@@ -96,14 +97,25 @@ async function openSession(
   });
   const store = createStore({ environment: options.environment ?? "dev", adapter });
   await store.reload();
+  const allowWrite = options.allowWrite !== false;
+  const environment = options.environment ?? "dev";
+  const backend = createStoreBackend(store, {
+    allowWrite,
+    environment,
+    appName: "test-app",
+    persistence,
+    clientName: "vitest",
+    sessionId: "s-test",
+    now: () => NOW,
+  });
   return {
     file,
     store,
     persistence,
     context: {
-      store,
-      allowWrite: options.allowWrite !== false,
-      environment: options.environment ?? "dev",
+      backend,
+      allowWrite,
+      environment,
       appName: "test-app",
       clientName: "vitest",
       sessionId: "s-test",

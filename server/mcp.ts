@@ -21,6 +21,7 @@
 import type { Store } from "../src/core/store";
 import { createStore } from "../src/core/store";
 import { VERSION } from "../src/version";
+import { createStoreBackend } from "../src/mcp/backend";
 import {
   createStorePersistence,
   TOOL_DEFINITIONS,
@@ -183,15 +184,28 @@ export async function handleMcpRoute(
   const store: Store = createStore({ adapter, environment: context.environment });
   await store.reload();
 
-  const toolContext: ToolContext = {
-    store,
-    // A read-only hub refuses writes here as well, and it does so the way MCP requires: as a refusal
-    // of the tool (`isError`), not as a broken protocol message.
+  const appName = context.appName ?? "bluepencil hub";
+  const clientName = clientNameOf(headers);
+  const sessionId = sessionIdOf(headers);
+  const backend = createStoreBackend(store, {
+    // A read-only hub refuses writes here as well, and it does so the way MCP requires: as a
+    // refusal of the tool (`isError`), not as a broken protocol message.
     allowWrite: context.readOnly !== true,
     environment: context.environment,
-    appName: context.appName ?? "bluepencil hub",
-    clientName: clientNameOf(headers),
-    sessionId: sessionIdOf(headers),
+    appName,
+    persistence,
+    clientName,
+    sessionId,
+    ...(context.now === undefined ? {} : { now: context.now }),
+  });
+
+  const toolContext: ToolContext = {
+    backend,
+    allowWrite: context.readOnly !== true,
+    environment: context.environment,
+    appName,
+    clientName,
+    sessionId,
     persistence,
     ...(context.now === undefined ? {} : { now: context.now }),
   };
