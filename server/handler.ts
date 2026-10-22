@@ -10,7 +10,7 @@
  * This module is the *pure* half of the hub: `handleRequest(request, context)` maps one HTTP
  * request onto `{ status, headers, body }` and imports nothing but `src/**` — no `node:http`, no
  * `node:fs`, no socket, no timer. The `node:http` glue, the static file serving, the CLI parsing
- * and the file store live in `server/index.ts`; persistence arrives as `context.persist`, which is
+ * and the file store live in `server/hub.ts`; persistence arrives as `context.persist`, which is
  * called exactly once per accepted mutation (and whose failure rolls the mutation back).
  *
  * Everything is delegated to the single implementation of `src/core/**` and `src/data/**`
@@ -202,8 +202,13 @@ export interface HandlerContext {
   cors?: string;
   /** Version reported by `/health`; defaults to `SERVER_VERSION`. */
   version?: string;
-  /** App name stamped into bundles / the Markdown mirror. */
+  /** App name stamped into bundles / the Markdown mirror, and reported as `/config.app` (FR-6.15). */
   appName?: string;
+  /**
+   * `true` when this process aggregates a registry (FR-6.15/FR-16.14). Reported by `/config`;
+   * `/notes` stays the local single-environment contract regardless (FR-16.3/T22, T54).
+   */
+  federates?: boolean;
   /** Value of the bundle's `exportedBy` field. */
   exportedBy?: string;
   /**
@@ -478,8 +483,9 @@ export function isLoopbackAddress(host: string): boolean {
 
 /**
  * `GET {base}/config` (FR-6.10): everything a client needs in order to connect *before* it has a
- * credential — the name this hub was given, its version and base, **which** credential it asks for
- * (`none` | `secret` | `token`, never the value), and the binding the process actually has.
+ * credential — the name this hub was given, its app identity and whether it federates, its version
+ * and base, **which** credential it asks for (`none` | `secret` | `token`, never the value), and the
+ * binding the process actually has.
  *
  * The live part is `bind`: it is filled in from the listening socket by `server/index.ts` after
  * `listen()`, so a status display reading this is right about "this machine only" versus "reachable
@@ -498,6 +504,10 @@ function configResponse(context: HandlerContext): ServerResponse {
     200,
     {
       name: context.hubName ?? null,
+      // FR-6.15: the identity anchor and the aggregate flag are always present. Neither is a
+      // credential or an environment value — this route must stay readable before authentication.
+      app: context.appName ?? HUB_APP_NAME,
+      federates: context.federates === true,
       version: context.version ?? SERVER_VERSION,
       base: normalizeBase(context.base),
       auth,
