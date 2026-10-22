@@ -11,3 +11,4 @@ export * from "./net-policy";
 export * from "./registry";
 export * from "./client";
 export * from "./aggregate";
+export * from "./backend";

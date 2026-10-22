@@ -173,7 +173,8 @@ export const REGISTRY_MAX_CONCURRENCY = 16;
 
 /** Upper bound the file may *name* for `limit`; above {@link REGISTRY_MAX_LIMIT} it is clamped. */
 const REGISTRY_MAX_LIMIT_INPUT = 5000;
-const REGISTRY_MAX_TIMEOUT_MS = 60_000;
+/** Upper bound for a per-source timeout, shared by the registry file and the hub CLI (F6). */
+export const REGISTRY_MAX_TIMEOUT_MS = 60_000;
 
 /* RFC 7230 token characters, plus the environment-name and scheme grammars. */
 const TOKEN_HEADER_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/u;

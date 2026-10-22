@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { createStorePersistence, callTool, compareNoteSets, validateStoredNoteSet, type McpPersistence, type ToolContext } from "../../src/mcp/tools";
+import { handleRpcExchange } from "../../src/mcp/protocol";
 import { createStoreBackend } from "../../src/mcp/backend";
 import { createStore, type Store } from "../../src/core/store";
 import { serializeNoteSet } from "../../src/adapters/memory";
@@ -604,6 +605,32 @@ describe("protocol rules stay enforced before the first write (PROTOCOL §6)", (
     const stored = persistedNotes(session)[0];
     expect(stored?.status).toBe("needs_decision");
     expect(stored?.messages[0]?.kind).toBe("decision_request");
+  });
+});
+
+describe("tool surface projection (F1)", () => {
+  /** The `tools/list` answer of a session, reduced to what a client sees. */
+  async function listedTools(context: ToolContext): Promise<
+    Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }>
+  > {
+    const listed = await handleRpcExchange(
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      context,
+    );
+    return (listed?.result as { tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }> }).tools;
+  }
+
+  it("advertises nine tools without instance/limit in a single-store session", async () => {
+    const session = await openSession();
+    const tools = await listedTools(session.context);
+
+    expect(tools).toHaveLength(9);
+    expect(tools.map((tool) => tool.name)).not.toContain("list_instances");
+    for (const tool of tools) {
+      expect(tool.inputSchema.properties ?? {}, tool.name).not.toHaveProperty("instance");
+    }
+    const listNotes = tools.find((tool) => tool.name === "list_notes");
+    expect(listNotes?.inputSchema.properties ?? {}).not.toHaveProperty("limit");
   });
 });
 

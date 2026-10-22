@@ -10,7 +10,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   EXIT_CODES,
-  FEDERATION_ERROR_ALIASES,
   FEDERATION_ERROR_CODES,
   FederationError,
   REDACTED,
@@ -93,32 +92,37 @@ describe("Redactor (T62)", () => {
  * ---------------------------------------------------------------------------------------------- */
 
 describe("canonicalErrorCode", () => {
-  it("maps every alias to its canonical code", () => {
-    expect(canonicalErrorCode("instance_unknown")).toBe("unknown_instance");
-    expect(canonicalErrorCode("instance_read_only")).toBe("mode_denied");
-    expect(canonicalErrorCode("read_only_session")).toBe("read_only");
-    expect(canonicalErrorCode("aggregate_export_refused")).toBe("instance_required");
-  });
-
   it("returns canonical codes unchanged and unknown spellings as undefined", () => {
+    for (const code of FEDERATION_ERROR_CODES) {
+      expect(canonicalErrorCode(code), code).toBe(code);
+    }
     expect(canonicalErrorCode("timeout")).toBe("timeout");
     expect(canonicalErrorCode("not_a_code")).toBeUndefined();
     expect(canonicalErrorCode("")).toBeUndefined();
+    // The deprecated wave-1 spellings are gone: they are unknown strings now.
+    expect(canonicalErrorCode("instance_unknown")).toBeUndefined();
+    expect(canonicalErrorCode("instance_read_only")).toBeUndefined();
+    expect(canonicalErrorCode("read_only_session")).toBeUndefined();
+    expect(canonicalErrorCode("aggregate_export_refused")).toBeUndefined();
   });
 
-  it("constructs canonical errors for every alias", () => {
-    for (const [alias, canonical] of Object.entries(FEDERATION_ERROR_ALIASES)) {
-      const error = new FederationError(alias, "aliased");
-      expect(error.code).toBe(canonical);
+  it("constructs canonical errors for every code", () => {
+    for (const code of FEDERATION_ERROR_CODES) {
+      const error = new FederationError(code, "canonical");
+      expect(error.code).toBe(code);
       expect(error.name).toBe("FederationError");
       expect(error).toBeInstanceOf(Error);
     }
   });
 
-  it("emits no alias in the canonical list", () => {
-    for (const code of FEDERATION_ERROR_CODES) {
-      expect(FEDERATION_ERROR_ALIASES[code]).toBeUndefined();
-    }
+  it("falls back to invalid_argument for an unknown string", () => {
+    expect(new FederationError("instance_unknown").code).toBe("invalid_argument");
+    expect(new FederationError("not_a_code").code).toBe("invalid_argument");
+  });
+
+  it("covers the full canonical list, including invalid_base_url", () => {
+    expect(FEDERATION_ERROR_CODES).toContain("invalid_base_url");
+    expect(new Set(FEDERATION_ERROR_CODES).size).toBe(FEDERATION_ERROR_CODES.length);
     expect(FEDERATION_ERROR_CODES).not.toContain("instance_unknown");
     expect(FEDERATION_ERROR_CODES).not.toContain("instance_read_only");
     expect(FEDERATION_ERROR_CODES).not.toContain("read_only_session");
@@ -201,12 +205,10 @@ describe("EXIT_CODES", () => {
     }
   });
 
-  it("has a row for every deprecated alias that matches its canonical row", () => {
-    for (const [alias, canonical] of Object.entries(FEDERATION_ERROR_ALIASES)) {
-      expect(isFederationErrorCode(alias), alias).toBe(true);
-      if (!isFederationErrorCode(alias)) continue;
-      expect(canonicalErrorCode(alias)).toBe(canonical);
-      expect(EXIT_CODES[alias]).toEqual(EXIT_CODES[canonical]);
+  it("has exactly one row per canonical code and no alias rows", () => {
+    expect(Object.keys(EXIT_CODES).sort()).toEqual([...FEDERATION_ERROR_CODES].sort());
+    for (const code of FEDERATION_ERROR_CODES) {
+      expect(isFederationErrorCode(code), code).toBe(true);
     }
   });
 });
@@ -265,8 +267,10 @@ describe("toExitCode", () => {
     expect(toExitCode(new FederationError("unverified"), "runtime")).toBe(0);
   });
 
-  it("uses the canonical row even when the alias was passed in", () => {
+  it("uses the canonical row of the normalised code", () => {
+    // An unknown spelling is normalised to invalid_argument at construction.
     const error = new FederationError("instance_unknown");
+    expect(error.code).toBe("invalid_argument");
     expect(toExitCode(error, "health")).toBe(0);
     expect(toExitCode(error, "runtime")).toBe(4);
   });

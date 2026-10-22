@@ -41,6 +41,8 @@ import {
   type McpPersistence,
   type ToolResponse,
 } from "./tools";
+import type { InstanceStatus } from "../federation/aggregate";
+import type { FederationError } from "../federation/errors";
 
 export type BackendKind = "store" | "federation";
 export type BackendScope = "single" | "aggregate";
@@ -51,30 +53,8 @@ export interface ListOptions {
   environment?: Environment;
 }
 
-/**
- * Provisional structural stand-in for the federation aggregate's `InstanceStatus` (PR 3).
- * The store backend only ever reports `self`; the shape is already the one the aggregate needs.
- */
-export interface InstanceStatus {
-  id: string;
-  app?: string;
-  environment?: Environment;
-  ok: boolean;
-  unverified?: boolean;
-  count?: number;
-  code?: string;
-  version?: string;
-  mode?: "read" | "write";
-  /** `self` only: whether the own store participates in the aggregate. */
-  includeSelf?: boolean;
-}
-
-/** Provisional structural stand-in for `src/federation/errors.ts` (PR 2). */
-export interface FederationError {
-  code: string;
-  message?: string;
-  instance?: string;
-}
+/** Re-exported so callers of the backend contract do not import the federation layer directly. */
+export type { FederationError, InstanceStatus };
 
 export interface BackendList {
   notes: Note[];

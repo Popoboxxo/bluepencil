@@ -671,6 +671,39 @@ describe("client.app_identity", () => {
     expect(client.unverified).toBe(true);
     expect(client.app).toBeUndefined();
   });
+
+  it('treats an empty /config app as absent (F8)', async () => {
+    const captured = identityFetch(hubConfig({ federates: false, app: "" }), { ok: true });
+    const client = createHttpInstanceClient({
+      id: "hub",
+      base: "https://hub.example",
+      resolver: publicResolver,
+      fetchImpl: captured.fetchImpl,
+    });
+
+    await client.config();
+    expect(client.app).toBeUndefined();
+    expect(client.unverified).toBe(true);
+  });
+
+  it("falls back to the registry expectation when /config reports an empty app (F8)", async () => {
+    const captured = identityFetch(hubConfig({ federates: false, app: "" }), { ok: true });
+    const client = createHttpInstanceClient({
+      id: "hub",
+      base: "https://hub.example",
+      app: "expected-app",
+      resolver: publicResolver,
+      fetchImpl: captured.fetchImpl,
+    });
+
+    await client.config();
+    expect(client.app).toBe("expected-app");
+    expect(client.unverified).toBe(true);
+
+    const health = await client.health();
+    expect(health.unverified).toBe(true);
+    expect(health.app).toBeUndefined();
+  });
 });
 
 /* ------------------------------------------------------------------------------------------------
@@ -1107,7 +1140,7 @@ describe("mcpCall — handshake and JSON-RPC mapping", () => {
     expect(response.content[0]?.text).toBe("refused");
   });
 
-  it("routes exportBundle/importBundle through tools/call", async () => {
+  it("routes exportBundle/importBundle through tools/call with snake_case arguments (T71)", async () => {
     const captured = mcpFetch(() => ({ result: okResult }));
     const client = createHttpInstanceClient({
       id: "hub",
@@ -1117,7 +1150,10 @@ describe("mcpCall — handshake and JSON-RPC mapping", () => {
     });
 
     await client.exportBundle({ format: "json", includeDone: true });
-    await client.importBundle({ kind: "bundle" }, { on_conflict: "keep-incoming" });
+    await client.importBundle(
+      { kind: "bundle" },
+      { mode: "merge", dryRun: false, onConflict: "keep-incoming", allowEnvMismatch: true },
+    );
 
     const bodies = captured.calls
       .filter((call) => call.url.endsWith("/mcp"))
@@ -1125,13 +1161,65 @@ describe("mcpCall — handshake and JSON-RPC mapping", () => {
       .filter((body) => body.method === "tools/call");
 
     expect(bodies).toHaveLength(2);
+    // The remote MCP tools read snake_case; the exact body is the contract (PR-3 carry-over).
     expect(bodies[0]?.params).toEqual({
       name: "export_bundle",
-      arguments: { format: "json", includeDone: true },
+      arguments: { format: "json", include_done: true },
     });
     expect(bodies[1]?.params).toEqual({
       name: "import_bundle",
-      arguments: { on_conflict: "keep-incoming", bundle: { kind: "bundle" } },
+      arguments: {
+        bundle: { kind: "bundle" },
+        mode: "merge",
+        dry_run: false,
+        on_conflict: "keep-incoming",
+        allow_env_mismatch: true,
+      },
     });
+  });
+
+  it("omits absent optional import arguments instead of sending undefined", async () => {
+    const captured = mcpFetch(() => ({ result: okResult }));
+    const client = createHttpInstanceClient({
+      id: "hub",
+      base: "https://hub.example",
+      resolver: publicResolver,
+      fetchImpl: captured.fetchImpl,
+    });
+
+    await client.importBundle({ kind: "bundle" }, { mode: "upsert", dryRun: true });
+
+    const call = captured.calls
+      .filter((entry) => entry.url.endsWith("/mcp"))
+      .map((entry) => JSON.parse(entry.body ?? "{}") as { method?: string; params?: unknown })
+      .find((body) => body.method === "tools/call");
+    expect(call?.params).toEqual({
+      name: "import_bundle",
+      arguments: { bundle: { kind: "bundle" }, mode: "upsert", dry_run: true },
+    });
+  });
+
+  it("forwards a mutable clientName on every /mcp request (FR-16.4)", async () => {
+    const captured = mcpFetch(() => ({ result: okResult }));
+    const client = createHttpInstanceClient({
+      id: "hub",
+      base: "https://hub.example",
+      resolver: publicResolver,
+      clientName: "first-agent",
+      fetchImpl: captured.fetchImpl,
+    });
+
+    await client.mcpCall("list_notes", {});
+    client.clientName = "second-agent";
+    await client.mcpCall("list_notes", {});
+
+    const toolRequests = captured.calls.filter(
+      (call) =>
+        call.url.endsWith("/mcp") &&
+        (JSON.parse(call.body ?? "{}") as { method?: string }).method === "tools/call",
+    );
+    expect(toolRequests).toHaveLength(2);
+    expect(headerValue(toolRequests[0]?.headers, "x-bluepencil-client")).toBe("first-agent");
+    expect(headerValue(toolRequests[1]?.headers, "x-bluepencil-client")).toBe("second-agent");
   });
 });

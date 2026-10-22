@@ -7,8 +7,8 @@
  * single canonical error code — no caller invents its own mapping.
  *
  * Two rules shape the API:
- *  - callers may name a historical alias (wave-1 orders did), but {@link FederationError} always
- *    normalises to a canonical code and no code path emits an alias;
+ *  - there is exactly one canonical code union; an unknown spelling falls back to
+ *    `invalid_argument` instead of introducing a second vocabulary;
  *  - every message that leaves the process passes through a {@link Redactor} built from the
  *    resolved environment values, so a token cannot reach a log, a tool result or a terminal
  *    (NFR-22). Partial matches are masked too, because an error message may quote only a slice.
@@ -51,40 +51,19 @@ export const FEDERATION_ERROR_CODES = [
   "not_persisted",
 ] as const;
 
-/** Canonical codes only — an alias never appears in this list. */
+/** The canonical code union. There are no aliases: every code in this list is emitted as-is. */
 export type CanonicalFederationErrorCode = (typeof FEDERATION_ERROR_CODES)[number];
-
-/**
- * Deprecated spellings kept only so wave-1 call sites still compile. The class normalises them and
- * no code path emits them; new code must use the canonical value.
- */
-const ALIASES = {
-  instance_unknown: "unknown_instance",
-  instance_read_only: "mode_denied",
-  read_only_session: "read_only",
-  aggregate_export_refused: "instance_required",
-} as const satisfies Readonly<Record<string, CanonicalFederationErrorCode>>;
-
-export type FederationErrorAlias = keyof typeof ALIASES;
-
-/** Public union: canonical codes plus the deprecated aliases, so both can be named. */
-export type FederationErrorCode = CanonicalFederationErrorCode | FederationErrorAlias;
-
-export const FEDERATION_ERROR_ALIASES: Readonly<Record<string, FederationErrorCode>> = ALIASES;
+export type FederationErrorCode = CanonicalFederationErrorCode;
 
 const CANONICAL_CODES: ReadonlySet<string> = new Set(FEDERATION_ERROR_CODES);
-const ALIAS_MAP: ReadonlyMap<string, CanonicalFederationErrorCode> = new Map(
-  Object.entries(ALIASES) as Array<[string, CanonicalFederationErrorCode]>,
-);
 
 /**
- * Resolve a spelling to a canonical code. Aliases map to their canonical value, canonical codes map
- * to themselves and anything unknown is `undefined` — this function never throws.
+ * Resolve a spelling to a canonical code. Canonical codes map to themselves and anything unknown is
+ * `undefined` — this function never throws.
  */
-export function canonicalErrorCode(code: string): CanonicalFederationErrorCode | undefined {
+export function canonicalErrorCode(code: string): FederationErrorCode | undefined {
   if (typeof code !== "string") return undefined;
-  if (CANONICAL_CODES.has(code)) return code as CanonicalFederationErrorCode;
-  return ALIAS_MAP.get(code);
+  return CANONICAL_CODES.has(code) ? (code as FederationErrorCode) : undefined;
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -99,13 +78,13 @@ export interface FederationErrorDetails {
 
 /** The single error type the federation layer throws and serialises. */
 export class FederationError extends Error {
-  /** Always canonical after construction, even when an alias was passed in. */
-  readonly code: CanonicalFederationErrorCode;
+  /** Always canonical after construction; an unknown spelling becomes `invalid_argument`. */
+  readonly code: FederationErrorCode;
   readonly instance?: string;
   readonly status?: number;
 
   /**
-   * @param code    canonical code, alias or arbitrary string. An unknown string falls back to
+   * @param code    canonical code or arbitrary string. An unknown string falls back to
    *                `invalid_argument` instead of throwing — constructing an error must never fail,
    *                otherwise the real failure would be replaced by a `TypeError`.
    */
@@ -269,20 +248,12 @@ const CANONICAL_EXIT_CODES: Record<CanonicalFederationErrorCode, FederationExitC
  * partial entry, `start_refused` aborts startup, `isError` is a plain failing tool call and
  * `warning` is an advisory note that does not fail the call (see `unverified`).
  *
- * Alias rows repeat their canonical row so a caller that still names an alias gets the same answer;
- * they exist only for compatibility and are never emitted.
- *
  * `unverified` is the one documented exception to the otherwise uniform runtime domain {1, 4, 5}:
  * §7 binds it to CLI runtime 0. An instance that answers without `app` is usable — the warning is
  * health 5 (degraded) but the command itself did not fail.
  */
-export const EXIT_CODES: Readonly<Record<FederationErrorCode, FederationExitCodeRow>> = {
-  ...CANONICAL_EXIT_CODES,
-  instance_unknown: CANONICAL_EXIT_CODES.unknown_instance,
-  instance_read_only: CANONICAL_EXIT_CODES.mode_denied,
-  read_only_session: CANONICAL_EXIT_CODES.read_only,
-  aggregate_export_refused: CANONICAL_EXIT_CODES.instance_required,
-};
+export const EXIT_CODES: Readonly<Record<FederationErrorCode, FederationExitCodeRow>> =
+  CANONICAL_EXIT_CODES;
 
 /* ------------------------------------------------------------------------------------------------
  * Consumers

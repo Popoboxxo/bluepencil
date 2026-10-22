@@ -33,9 +33,12 @@ import { excludeDone, isRecord, type Adapter } from "../core/adapter";
 import { createFileAdapter, type FileAdapterIo } from "../adapters/file";
 import { parseNoteSet, serializeNoteSet } from "../adapters/memory";
 import { summarize } from "../core/protocol";
+import type { FederatedNote, InstanceStatus } from "../federation/aggregate";
+import { FederationError, toMcpError } from "../federation/errors";
 import type { McpBackend } from "./backend";
 import {
   BluepencilValidationError,
+  ENVIRONMENTS,
   MESSAGE_KINDS,
   NOTE_INTENTS,
   NOTE_PRIORITIES,
@@ -43,6 +46,7 @@ import {
   NOTE_STATUSES,
   NOTE_TYPES,
   createMessage,
+  isEnvironment,
   systemClock,
   type Anchor,
   type Environment,
@@ -181,7 +185,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description:
       "List the notes of this session's store, newest review order (open decisions first, then " +
       "feedback-only, then the rest). Only notes of the session's environment are returned; done " +
-      "notes are hidden unless include_done is true.",
+      "notes are hidden unless include_done is true. In a federated session, no instance means the " +
+      "aggregate over every instance and each note carries its instance.",
     write: false,
     inputSchema: {
       type: "object",
@@ -194,7 +199,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         session: { type: "string" },
         include_done: { type: "boolean", default: false },
         format: { type: "string", enum: [...FORMATS], default: "json" },
+        instance: { type: "string" },
+        limit: { type: "integer", minimum: 1, maximum: 1000, default: 200 },
+        environment: { type: "string", enum: [...ENVIRONMENTS] },
       },
+    },
+  },
+  {
+    name: "list_instances",
+    description:
+      "List the instances this MCP session can reach (id, app, environment, mode and health). " +
+      "Never includes base URLs, tokens or other credentials.",
+    write: false,
+    inputSchema: {
+      type: "object",
+      properties: {},
     },
   },
   {
@@ -203,7 +222,10 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     write: false,
     inputSchema: {
       type: "object",
-      properties: { id: { type: "string" } },
+      properties: {
+        id: { type: "string" },
+        instance: { type: "string" },
+      },
       required: ["id"],
     },
   },
@@ -227,6 +249,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         route: { type: "string" },
         session: { type: "string" },
         ticket_ref: { type: "string" },
+        instance: { type: "string" },
       },
       required: ["body"],
     },
@@ -245,6 +268,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         text: { type: "string" },
         kind: { type: "string", enum: [...AGENT_MESSAGE_KINDS], default: "reply" },
         set_done: { type: "boolean", default: false },
+        instance: { type: "string" },
       },
       required: ["id", "text"],
     },
@@ -260,6 +284,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         id: { type: "string" },
         status: { type: "string", enum: [...NOTE_STATUSES] },
+        instance: { type: "string" },
       },
       required: ["id", "status"],
     },
@@ -273,6 +298,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         id: { type: "string" },
         intent: { type: "string", enum: [...NOTE_INTENTS] },
+        instance: { type: "string" },
       },
       required: ["id", "intent"],
     },
@@ -288,6 +314,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         format: { type: "string", enum: [...FORMATS], default: "markdown" },
         include_done: { type: "boolean", default: true },
+        instance: { type: "string" },
       },
     },
   },
@@ -317,11 +344,57 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         dry_run: { type: "boolean", default: true },
         on_conflict: { type: "string", enum: [...CONFLICT_POLICIES] },
         allow_env_mismatch: { type: "boolean", default: false },
+        instance: { type: "string" },
       },
       required: ["bundle"],
     },
   },
 ];
+
+/** Scopes a tool list can be projected for — mirrors `McpBackend.scope`. */
+export type ToolScope = "single" | "aggregate";
+
+/**
+ * Removes the named properties from an input schema without touching the rest of it (F1).
+ *
+ * A single-store session has no second instance and no aggregate window, so advertising
+ * `instance`/`limit` there would describe arguments the session silently ignores. The schema is a
+ * description for the client (see the module comment), so it has to describe *this* session.
+ */
+function withoutProperties(
+  inputSchema: Record<string, unknown>,
+  names: readonly string[],
+): Record<string, unknown> {
+  const properties = inputSchema.properties;
+  if (!isRecord(properties)) return inputSchema;
+  const kept = Object.fromEntries(
+    Object.entries(properties).filter(([key]) => !names.includes(key)),
+  );
+  return { ...inputSchema, properties: kept };
+}
+
+/**
+ * The tool surface of one scope (F1).
+ *
+ * `single` keeps the 0.8 nine tools, with `instance` stripped everywhere and `limit` stripped from
+ * `list_notes`; `list_instances` does not exist without an aggregate. `aggregate` is the complete
+ * federation surface: ten tools, `instance`/`limit` included.
+ */
+export function toolDefinitionsForScope(scope: ToolScope): ToolDefinition[] {
+  if (scope === "aggregate") return [...TOOL_DEFINITIONS];
+  return TOOL_DEFINITIONS.filter((tool) => tool.name !== "list_instances").map((tool) => ({
+    ...tool,
+    inputSchema: withoutProperties(
+      tool.inputSchema,
+      tool.name === "list_notes" ? ["instance", "limit"] : ["instance"],
+    ),
+  }));
+}
+
+/** The tool surface for the backend of this session — `tools/list` answers exactly this. */
+export function toolDefinitionsFor(backend: Pick<McpBackend, "scope">): ToolDefinition[] {
+  return toolDefinitionsForScope(backend.scope);
+}
 
 export function jsonResponse(value: unknown, isError = false): ToolResponse {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], ...(isError ? { isError: true } : {}) };
@@ -336,6 +409,9 @@ export function errorResponse(message: string): ToolResponse {
  * ---------------------------------------------------------------------------------------------- */
 
 function requireWrite(context: ToolContext): ToolResponse | null {
+  // A single-store session keeps the 0.8 refusal text. A federated session reports its two locks
+  // through the backend as structured `mode_denied`/`read_only` errors (FR-16.13/16.14).
+  if (context.backend.kind === "federation") return null;
   return context.allowWrite ? null : errorResponse(READ_ONLY_NOTE);
 }
 
@@ -357,6 +433,74 @@ function boundEnvironment(context: ToolContext): Environment {
 
 function agentAuthor(context: ToolContext): string {
   return `${context.clientName} (mcp:${context.sessionId})`;
+}
+
+function isFederated(context: ToolContext): boolean {
+  return context.backend.kind === "federation";
+}
+
+/** An optional `instance` argument; an empty string is treated as absent. */
+function readInstanceArgument(value: unknown): { value?: string; issue?: string } {
+  if (value === undefined || value === null || value === "") return {};
+  if (typeof value !== "string") return { issue: "instance must be a string" };
+  return { value };
+}
+
+/** `limit` is bounded by the tool contract (1..1000; default 200 is the aggregate's). */
+function readLimitArgument(value: unknown): { value?: number; issue?: string } {
+  if (value === undefined || value === null) return {};
+  const limit = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(limit) || limit < 1) {
+    return { issue: "limit must be an integer between 1 and 1000" };
+  }
+  // The aggregate owns the bound; clamping keeps a too-large value useful instead of failing it.
+  return { value: Math.min(Math.floor(limit), 1000) };
+}
+
+/**
+ * A note as the tool returns it. A single-store session keeps the exact 0.8 canonical note; an
+ * aggregate adds the labels the federation promised and never writes them into the note itself.
+ */
+function noteForRead(context: ToolContext, note: Note): Record<string, unknown> {
+  const canonical = canonicalNote(note) as unknown as Record<string, unknown>;
+  if (!isFederated(context)) return canonical;
+  const federated = note as FederatedNote;
+  return { ...canonical, instance: federated.instance, app: federated.app };
+}
+
+/** Write answers carry the qualified id and the `instance` echo (plan §7). */
+function noteForWrite(context: ToolContext, note: Note): Record<string, unknown> {
+  const canonical = canonicalNote(note) as unknown as Record<string, unknown>;
+  if (!isFederated(context)) return canonical;
+  const federated = note as FederatedNote;
+  return { ...canonical, instance: federated.instance };
+}
+
+/** JSON-safe form of a federation error entry (the `message` field is not enumerable on Error). */
+function errorJson(error: { code: string; message: string; instance?: string; status?: number }): Record<string, unknown> {
+  return {
+    code: error.code,
+    message: error.message,
+    ...(error.instance === undefined ? {} : { instance: error.instance }),
+    ...(error.status === undefined ? {} : { status: error.status }),
+  };
+}
+
+/** The fields `list_instances` may publish — deliberately never `base`, `auth` or a token. */
+function publicInstance(row: InstanceStatus): Record<string, unknown> {
+  return {
+    id: row.id,
+    ...(row.app === undefined ? {} : { app: row.app }),
+    ...(row.environment === undefined ? {} : { environment: row.environment }),
+    mode: row.mode ?? "read",
+    ok: row.ok,
+    ...(row.unverified === undefined ? {} : { unverified: row.unverified }),
+    ...(row.version === undefined ? {} : { version: row.version }),
+    ...(row.includeSelf === undefined ? {} : { includeSelf: row.includeSelf }),
+    // The failure code is the only diagnostic a degraded peer keeps (F3): without it a row says
+    // "not ok" and nothing else.
+    ...(row.code === undefined ? {} : { code: row.code }),
+  };
 }
 
 export function errorText(error: unknown): string {
@@ -416,9 +560,32 @@ function toFilter(context: ToolContext, args: Record<string, unknown>): { filter
   const priority = readEnumArgument(args.priority, NOTE_PRIORITIES, "priority");
   if (priority.issue) return { issue: priority.issue };
 
+  let environment: Environment | undefined;
+  if (args.environment !== undefined) {
+    if (!isEnvironment(args.environment)) {
+      return { issue: `environment must be one of ${ENVIRONMENTS.join(", ")}` };
+    }
+    if (context.backend.scope === "single") {
+      const bound = boundEnvironment(context);
+      if (args.environment !== bound) {
+        throw new FederationError(
+          "environment_mismatch",
+          `this session is bound to environment "${bound}"; filtering for "${args.environment}" ` +
+            `is refused (FR-16.3 — a session may only read its own environment)`,
+        );
+      }
+      environment = bound;
+    } else {
+      // In federation scope `environment` is a filter, never a binding or a rewrite (FR-16.3).
+      environment = args.environment;
+    }
+  } else if (context.backend.scope === "single") {
+    environment = boundEnvironment(context);
+  }
+
   return {
     filter: {
-      environment: boundEnvironment(context),
+      ...(environment === undefined ? {} : { environment }),
       ...(status.value !== undefined ? { status: status.value } : {}),
       ...(intent.value !== undefined ? { intent: intent.value } : {}),
       ...(type.value !== undefined ? { type: type.value } : {}),
@@ -457,13 +624,25 @@ function environmentRefusal(context: ToolContext, note: Note, action: string): T
  * Loads one note through the store's adapter (not through the store's optimistic memory, which can
  * lag behind a change made outside `create`/`update` — F5) and applies the environment guard.
  */
-async function loadBoundNote(context: ToolContext, id: string, action: string): Promise<NoteLookup> {
-  const note = await context.backend.get(id);
+async function loadBoundNote(
+  context: ToolContext,
+  id: string,
+  action: string,
+  instance?: string,
+): Promise<NoteLookup> {
+  const note = await context.backend.get(id, instance);
   if (!note) {
+    if (isFederated(context)) {
+      throw new FederationError("not_found", `note ${id} not found`, instance === undefined ? undefined : { instance });
+    }
     return { refusal: errorResponse(`note ${id} not found`) };
   }
-  const refusal = environmentRefusal(context, note, action);
-  return refusal ? { refusal } : { note };
+  // The environment guard is a single-store rule; a federated read is labelled, not rewritten.
+  if (!isFederated(context)) {
+    const refusal = environmentRefusal(context, note, action);
+    if (refusal) return { refusal };
+  }
+  return { note };
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -549,6 +728,9 @@ async function attemptWrite<T>(
   try {
     return { value: await mutate() };
   } catch (error) {
+    // A federation refusal (mode_denied, read_only, unknown_instance, …) is not a persistence
+    // failure and must keep its canonical code; the outer `callTool` maps it to `toMcpError`.
+    if (error instanceof FederationError) throw error;
     return { failure: notPersisted(context, action, errorText(error)) };
   }
 }
@@ -621,6 +803,21 @@ export async function callTool(
   if (!definition) {
     return errorResponse(`unknown tool "${name}"`);
   }
+
+  try {
+    return await dispatchTool(context, name, args);
+  } catch (error) {
+    // Federation refusals are structured tool errors (`{error:{code,…}}`), never protocol errors.
+    if (error instanceof FederationError) return toMcpError(error);
+    throw error;
+  }
+}
+
+async function dispatchTool(
+  context: ToolContext,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<ToolResponse> {
   // F3: the environment binding is resolved where a tool actually needs it (filter, note guard,
   // create, inspect, Markdown header) — an aggregate backend has no single binding, and its tools
   // must not all fail on call.
@@ -631,12 +828,67 @@ export async function callTool(
       if ("issue" in built) {
         return errorResponse(built.issue);
       }
-      const environment = boundEnvironment(context);
       const format = readEnumArgument(args.format, FORMATS, "format");
       if (format.issue) {
         return errorResponse(format.issue);
       }
       const includeDone = args.include_done === true;
+
+      if (isFederated(context)) {
+        const instanceArg = readInstanceArgument(args.instance);
+        if (instanceArg.issue) return errorResponse(instanceArg.issue);
+        const limitArg = readLimitArgument(args.limit);
+        if (limitArg.issue) return errorResponse(limitArg.issue);
+
+        const listed = await context.backend.list(built.filter, {
+          ...(instanceArg.value === undefined ? {} : { instance: instanceArg.value }),
+          ...(limitArg.value === undefined ? {} : { limit: limitArg.value }),
+          ...(built.filter.environment === undefined
+            ? {}
+            : { environment: built.filter.environment }),
+        });
+        const ordered = includeDone ? listed.notes : excludeDone(listed.notes);
+
+        // Every selected instance failed: an empty list must not look like "no notes" (T68).
+        if (listed.instances.length > 0 && listed.instances.every((row) => !row.ok)) {
+          return toMcpError(
+            listed.errors[0] ??
+              new FederationError("partial", "every selected instance failed"),
+          );
+        }
+
+        const environment = built.filter.environment;
+        if (format.value === "markdown") {
+          const lines = ordered.map(
+            (note) => `- [${(note as FederatedNote).instance}] ${summarize(note)}`,
+          );
+          return {
+            content: [
+              {
+                type: "text",
+                text: [
+                  `# ${context.appName} — ${ordered.length} note(s)` +
+                    (environment === undefined ? "" : ` [env: ${environment}]`),
+                  "",
+                  ...(lines.length > 0 ? lines : ["(no notes)"]),
+                ].join("\n"),
+              },
+            ],
+          };
+        }
+        return jsonResponse({
+          instances: listed.instances,
+          partial: listed.partial,
+          truncated: listed.truncated,
+          errors: listed.errors.map(errorJson),
+          ...(environment === undefined ? {} : { environment }),
+          count: ordered.length,
+          notes: ordered.map((note) => noteForRead(context, note)),
+        });
+      }
+
+      // Single store: the 0.8 path exactly — one binding, one envelope, one text.
+      const environment = boundEnvironment(context);
       // One read path for every list: the shared filter (FR-15.3) including the session's
       // environment (FR-16.3) and the shared done-rule. The backend returns the shared review order
       // (M2/FR-16.7), so sorting a second time here would only duplicate that rule (F5).
@@ -665,12 +917,24 @@ export async function callTool(
       });
     }
 
+    case "list_instances": {
+      const rows = await context.backend.instances();
+      return jsonResponse(rows.map(publicInstance));
+    }
+
     case "get_note": {
-      const lookup = await loadBoundNote(context, String(args.id ?? ""), "reading the note");
+      const instanceArg = readInstanceArgument(args.instance);
+      if (instanceArg.issue) return errorResponse(instanceArg.issue);
+      const lookup = await loadBoundNote(
+        context,
+        String(args.id ?? ""),
+        "reading the note",
+        instanceArg.value,
+      );
       if ("refusal" in lookup) {
         return lookup.refusal;
       }
-      return jsonResponse(canonicalNote(lookup.note));
+      return jsonResponse(noteForRead(context, lookup.note));
     }
 
     case "create_note": {
@@ -706,36 +970,46 @@ export async function callTool(
       if (!anchor.hook && !anchor.selector && !anchor.quote) {
         return errorResponse("an anchor needs at least one of hook, selector or quote");
       }
-      const environment = boundEnvironment(context);
-      const before = (await context.backend.list({})).notes;
+      const instanceArg = readInstanceArgument(args.instance);
+      if (instanceArg.issue) return errorResponse(instanceArg.issue);
+      const federated = isFederated(context);
+      // A federated write is validated against the *target's* environment; the session must never
+      // inject (or rewrite) an environment into the draft (NFR-18).
+      const environment = federated ? undefined : boundEnvironment(context);
+      const before = federated ? [] : (await context.backend.list({})).notes;
       const attempt = await attemptWrite(context, "create_note", () =>
-        context.backend.create({
-          type: type.value ?? "text",
-          body,
-          anchor,
-          intent: intent.value ?? "implement",
-          ...(severity.value !== undefined ? { severity: severity.value } : {}),
-          ...(priority.value !== undefined ? { priority: priority.value } : {}),
-          author: agentAuthor(context),
-          authorType: "agent",
-          source: "agent",
-          // The note is born in the session's environment, never in another one (FR-16.3).
-          environment,
-          ...(typeof args.session === "string" ? { sessionRef: args.session } : {}),
-          ...(typeof args.ticket_ref === "string" ? { ticketRef: args.ticket_ref } : {}),
-        }),
+        context.backend.create(
+          {
+            type: type.value ?? "text",
+            body,
+            anchor,
+            intent: intent.value ?? "implement",
+            ...(severity.value !== undefined ? { severity: severity.value } : {}),
+            ...(priority.value !== undefined ? { priority: priority.value } : {}),
+            author: agentAuthor(context),
+            authorType: "agent",
+            source: "agent",
+            // The note is born in the target's environment, never in another one (FR-16.3).
+            ...(environment === undefined ? {} : { environment }),
+            ...(typeof args.session === "string" ? { sessionRef: args.session } : {}),
+            ...(typeof args.ticket_ref === "string" ? { ticketRef: args.ticket_ref } : {}),
+          },
+          federated ? instanceArg.value : undefined,
+        ),
       );
       if ("failure" in attempt) return attempt.failure;
       const created = attempt.value;
       const failure = await confirmWrite(context, `create_note ${created.id}`, [...before, created]);
       if (failure) return failure;
-      return jsonResponse({ created: canonicalNote(created) });
+      return jsonResponse({ created: noteForWrite(context, created) });
     }
 
     case "reply": {
       const refusal = requireWrite(context);
       if (refusal) return refusal;
       const id = String(args.id ?? "");
+      const instanceArg = readInstanceArgument(args.instance);
+      if (instanceArg.issue) return errorResponse(instanceArg.issue);
       if (args.kind === "decision") {
         return errorResponse(
           "a decision must come from a human (PROTOCOL §6.1) — use kind=decision_request and let the human answer",
@@ -749,7 +1023,7 @@ export async function callTool(
       if (text.trim() === "") {
         return errorResponse("text must not be empty");
       }
-      const lookup = await loadBoundNote(context, id, "replying to the note");
+      const lookup = await loadBoundNote(context, id, "replying to the note", instanceArg.value);
       if ("refusal" in lookup) {
         return lookup.refusal;
       }
@@ -765,7 +1039,7 @@ export async function callTool(
           return errorResponse("refusing to mark a pending decision as done (PROTOCOL §6.3)");
         }
       }
-      const before = (await context.backend.list({})).notes;
+      const before = isFederated(context) ? [] : (await context.backend.list({})).notes;
       const attempt = await attemptWrite(context, `reply to ${id}`, async () => {
         const message = createMessage({
           text,
@@ -774,11 +1048,11 @@ export async function callTool(
           authorType: "agent",
           now: nowIso(context),
         });
-        let updated = await context.backend.addMessage(id, message);
+        let updated = await context.backend.addMessage(id, message, instanceArg.value);
         if (messageKind === "decision_request") {
-          updated = await context.backend.update(id, { status: "needs_decision" });
+          updated = await context.backend.update(id, { status: "needs_decision" }, instanceArg.value);
         } else if (args.set_done === true) {
-          updated = await context.backend.update(id, { status: "done" });
+          updated = await context.backend.update(id, { status: "done" }, instanceArg.value);
         }
         return updated;
       });
@@ -787,13 +1061,15 @@ export async function callTool(
       const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
       const failure = await confirmWrite(context, `reply to ${id}`, expected);
       if (failure) return failure;
-      return jsonResponse({ note: canonicalNote(updated) });
+      return jsonResponse({ note: noteForWrite(context, updated) });
     }
 
     case "set_status": {
       const refusal = requireWrite(context);
       if (refusal) return refusal;
       const id = String(args.id ?? "");
+      const instanceArg = readInstanceArgument(args.instance);
+      if (instanceArg.issue) return errorResponse(instanceArg.issue);
       const status = readEnumArgument(args.status, NOTE_STATUSES, "status");
       if (status.issue) {
         return errorResponse(status.issue);
@@ -802,7 +1078,7 @@ export async function callTool(
       if (wanted === undefined) {
         return errorResponse(`status must be one of ${NOTE_STATUSES.join(", ")}`);
       }
-      const lookup = await loadBoundNote(context, id, "setting the status");
+      const lookup = await loadBoundNote(context, id, "setting the status", instanceArg.value);
       if ("refusal" in lookup) {
         return lookup.refusal;
       }
@@ -814,22 +1090,24 @@ export async function callTool(
           return errorResponse("intent=feedback notes are decided by the human (PROTOCOL §6.2)");
         }
       }
-      const before = (await context.backend.list({})).notes;
+      const before = isFederated(context) ? [] : (await context.backend.list({})).notes;
       const attempt = await attemptWrite(context, `set_status on ${id}`, () =>
-        context.backend.update(id, { status: wanted }),
+        context.backend.update(id, { status: wanted }, instanceArg.value),
       );
       if ("failure" in attempt) return attempt.failure;
       const updated = attempt.value;
       const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
       const failure = await confirmWrite(context, `set_status on ${id}`, expected);
       if (failure) return failure;
-      return jsonResponse({ note: canonicalNote(updated) });
+      return jsonResponse({ note: noteForWrite(context, updated) });
     }
 
     case "set_intent": {
       const refusal = requireWrite(context);
       if (refusal) return refusal;
       const id = String(args.id ?? "");
+      const instanceArg = readInstanceArgument(args.instance);
+      if (instanceArg.issue) return errorResponse(instanceArg.issue);
       const intent = readEnumArgument(args.intent, NOTE_INTENTS, "intent");
       if (intent.issue) {
         return errorResponse(intent.issue);
@@ -838,20 +1116,20 @@ export async function callTool(
       if (wanted === undefined) {
         return errorResponse(`intent must be one of ${NOTE_INTENTS.join(", ")}`);
       }
-      const lookup = await loadBoundNote(context, id, "changing the intent");
+      const lookup = await loadBoundNote(context, id, "changing the intent", instanceArg.value);
       if ("refusal" in lookup) {
         return lookup.refusal;
       }
-      const before = (await context.backend.list({})).notes;
+      const before = isFederated(context) ? [] : (await context.backend.list({})).notes;
       const attempt = await attemptWrite(context, `set_intent on ${id}`, () =>
-        context.backend.update(id, { intent: wanted }),
+        context.backend.update(id, { intent: wanted }, instanceArg.value),
       );
       if ("failure" in attempt) return attempt.failure;
       const updated = attempt.value;
       const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
       const failure = await confirmWrite(context, `set_intent on ${id}`, expected);
       if (failure) return failure;
-      return jsonResponse({ note: canonicalNote(updated) });
+      return jsonResponse({ note: noteForWrite(context, updated) });
     }
 
     case "export_bundle": {
@@ -859,11 +1137,16 @@ export async function callTool(
       if (format.issue) {
         return errorResponse(format.issue);
       }
-      // `self` is the only instance of a store backend; the option is part of the backend contract.
-      return context.backend.exportBundle("self", {
-        format: format.value === "json" ? "json" : "markdown",
-        includeDone: args.include_done !== false,
-      });
+      const instanceArg = readInstanceArgument(args.instance);
+      if (instanceArg.issue) return errorResponse(instanceArg.issue);
+      // A single-store backend ignores the instance; a federator refuses the aggregate (NFR-18).
+      return context.backend.exportBundle(
+        isFederated(context) ? (instanceArg.value ?? "") : "self",
+        {
+          format: format.value === "json" ? "json" : "markdown",
+          includeDone: args.include_done !== false,
+        },
+      );
     }
 
     case "inspect_bundle": {
@@ -871,7 +1154,11 @@ export async function callTool(
       if (typeof parsed === "string") {
         return errorResponse(parsed);
       }
-      return jsonResponse(summaryWithEnvironment(parsed, boundEnvironment(context)));
+      // A federated session has no target environment to compare against; the summary is still
+      // useful and remains purely informational.
+      return jsonResponse(
+        isFederated(context) ? inspectBundle(parsed) : summaryWithEnvironment(parsed, boundEnvironment(context)),
+      );
     }
 
     case "import_bundle": {
@@ -893,15 +1180,25 @@ export async function callTool(
         onConflict.value === "keep-incoming" || onConflict.value === "keep-existing"
           ? onConflict.value
           : undefined;
+      const instanceArg = readInstanceArgument(args.instance);
+      if (instanceArg.issue) return errorResponse(instanceArg.issue);
+      if (isFederated(context) && args.allow_env_mismatch === true) {
+        // Never forwarded in federation mode, and rejected before any request (NFR-18).
+        throw new FederationError(
+          "invalid_argument",
+          "allow_env_mismatch is not available in federation mode (NFR-18)",
+        );
+      }
       return context.backend.importBundle(
         args.bundle,
         {
           mode: mode.value ?? "merge",
           dryRun: args.dry_run !== false,
           ...(policy !== undefined ? { onConflict: policy } : {}),
-          allowEnvMismatch: args.allow_env_mismatch === true,
+          // In federation mode this is always false (rejected above); single-store keeps 0.8.
+          allowEnvMismatch: isFederated(context) ? false : args.allow_env_mismatch === true,
         },
-        "self",
+        isFederated(context) ? (instanceArg.value ?? "") : "self",
       );
     }
 

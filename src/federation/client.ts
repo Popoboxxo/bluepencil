@@ -31,6 +31,7 @@ import {
   type NotePatch,
   type Session,
 } from "../core/model";
+import type { ImportOptions } from "../mcp/backend";
 import type { ToolResponse } from "../mcp/tools";
 import { VERSION } from "../version";
 import type { ReadSource } from "./aggregate";
@@ -237,7 +238,9 @@ function parseConfig(value: unknown): HubConfig | null {
   }
 
   const app = value["app"];
-  if (typeof app === "string") config.app = app;
+  // An empty string is "no app", not an app named "": the getter then falls back to the registry
+  // expectation and `unverified` stays true (F8).
+  if (typeof app === "string" && app !== "") config.app = app;
 
   const federates = value["federates"];
   if (typeof federates === "boolean") config.federates = federates;
@@ -282,8 +285,13 @@ export class InstanceClient implements ReadSource {
   readonly #fetchImpl: typeof fetch | undefined;
   readonly #auth: InstanceAuth | undefined;
   readonly #resolver: HostResolver;
-  readonly #clientName: string | undefined;
   readonly #sessionId: string | undefined;
+  /**
+   * Mutable provenance name (FR-16.4). The federation backend assigns it before every call, so a
+   * name learned at `initialize` reaches the wire on the next `/mcp` request. Public on purpose: a
+   * private field would silently discard that assignment.
+   */
+  clientName: string | undefined;
   /** Own redactor so even a caller without one cannot leak the credential (NFR-22). */
   readonly #redactors: readonly Redactor[];
 
@@ -311,7 +319,7 @@ export class InstanceClient implements ReadSource {
     /* Default on purpose: a client without a resolver would never see a DNS answer, so an
      * attacker-controlled hostname could point at link-local space unchecked (F-01). */
     this.#resolver = options.resolver ?? createDnsResolver();
-    this.#clientName = options.clientName;
+    this.clientName = options.clientName;
     this.#sessionId = options.sessionId;
 
     const redactors: Redactor[] = [];
@@ -528,18 +536,31 @@ export class InstanceClient implements ReadSource {
     return this.mcpCall(tool, args);
   }
 
+  /**
+   * The remote tool reads snake_case (`include_done`), so the typed camelCase option is mapped
+   * explicitly instead of being forwarded under the wrong name (PR-3 carry-over, T71).
+   */
   async exportBundle(options: {
     format: "json" | "markdown";
     includeDone: boolean;
   }): Promise<ToolResponse> {
-    return this.mcpCall("export_bundle", options);
+    return this.mcpCall("export_bundle", {
+      format: options.format,
+      include_done: options.includeDone,
+    });
   }
 
-  async importBundle(
-    bundle: unknown,
-    options: Record<string, unknown>,
-  ): Promise<ToolResponse> {
-    return this.mcpCall("import_bundle", { ...options, bundle });
+  /** Maps the typed import options onto the tool's snake_case arguments (T71/T84). */
+  async importBundle(bundle: unknown, options: ImportOptions): Promise<ToolResponse> {
+    return this.mcpCall("import_bundle", {
+      bundle,
+      mode: options.mode,
+      dry_run: options.dryRun,
+      ...(options.onConflict === undefined ? {} : { on_conflict: options.onConflict }),
+      ...(options.allowEnvMismatch === undefined
+        ? {}
+        : { allow_env_mismatch: options.allowEnvMismatch }),
+    });
   }
 
   /* ----------------------------------------------------------------------------------------------
@@ -839,7 +860,7 @@ export class InstanceClient implements ReadSource {
 
   #mcpHeaders(): Record<string, string> {
     const headers: Record<string, string> = {};
-    if (this.#clientName !== undefined) headers["x-bluepencil-client"] = this.#clientName;
+    if (this.clientName !== undefined) headers["x-bluepencil-client"] = this.clientName;
     if (this.#sessionId !== undefined) headers["mcp-session-id"] = this.#sessionId;
     return headers;
   }
@@ -880,7 +901,7 @@ export class InstanceClient implements ReadSource {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {},
           clientInfo: {
-            name: this.#clientName ?? DEFAULT_MCP_CLIENT_NAME,
+            name: this.clientName ?? DEFAULT_MCP_CLIENT_NAME,
             version: VERSION,
           },
         },

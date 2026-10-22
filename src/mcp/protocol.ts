@@ -17,8 +17,7 @@ import {
   errorResponse,
   getPrompt,
   listPrompts,
-  listResources,
-  readResource,
+  toolDefinitionsFor,
   type ToolContext,
 } from "./tools";
 import { VERSION } from "../version";
@@ -90,6 +89,7 @@ export async function handleRpc(
         const requested = params.protocolVersion;
         context.clientName =
           ((params.clientInfo as { name?: string } | undefined)?.name as string) ?? "mcp-client";
+        const federated = context.backend.kind === "federation";
         transport.reply(id, {
           protocolVersion: typeof requested === "string" ? requested : PROTOCOL_VERSION,
           capabilities: {
@@ -97,12 +97,22 @@ export async function handleRpc(
             resources: { subscribe: false, listChanged: false },
             prompts: { listChanged: false },
           },
-          serverInfo: { name: "bluepencil", version: VERSION },
-          instructions:
-            "Annotated review notes for one app in one environment. Read bluepencil://notes first: it " +
-            "opens with the exception sections (open decisions, feedback only) that constrain everything " +
-            "else. Writes are disabled unless the session was started with --allow-write; never invent a " +
-            "human decision.",
+          serverInfo: {
+            name: federated ? "bluepencil-federator" : "bluepencil",
+            version: VERSION,
+          },
+          instructions: federated
+            ? "Annotated review notes aggregated over several bluepencil instances. Call " +
+              "list_instances first to see which instances exist and whether they are writable. " +
+              "Reads without an instance span every instance; every note carries its instance. " +
+              "Writes need exactly one instance (or an instance/noteId id) and are disabled unless " +
+              "this session was started with --allow-write and the target is mode: \"write\". " +
+              "bluepencil:// resources are not available in a federated session; never invent a " +
+              "human decision."
+            : "Annotated review notes for one app in one environment. Read bluepencil://notes first: it " +
+              "opens with the exception sections (open decisions, feedback only) that constrain everything " +
+              "else. Writes are disabled unless the session was started with --allow-write; never invent a " +
+              "human decision.",
         });
         return;
       }
@@ -115,7 +125,10 @@ export async function handleRpc(
         return;
       case "tools/list":
         transport.reply(id, {
-          tools: TOOL_DEFINITIONS.map(({ name, description, inputSchema }) => ({
+          // `toolDefinitionsFor` projects the surface of *this* scope (F1): a single-store session
+          // keeps the 0.8 nine tools without `instance`/`limit` and without `list_instances`
+          // (T26/T56), a federated session sees all ten with both arguments (T23).
+          tools: toolDefinitionsFor(context.backend).map(({ name, description, inputSchema }) => ({
             name,
             description,
             inputSchema,
@@ -139,16 +152,20 @@ export async function handleRpc(
         return;
       }
       case "resources/list":
-        transport.reply(id, { resources: listResources() });
+        // Backend-aware: a federation session has no single-store resources (FR-16.5, T73).
+        transport.reply(id, { resources: context.backend.resources() });
         return;
       case "resources/read": {
         const uri = String(params.uri ?? "");
-        const resource = await readResource(context, uri);
+        const resource = await context.backend.readResource(uri);
         if (!resource) {
+          const known = context.backend.resources().map((entry) => entry.uri).join(", ");
           transport.fail(
             id,
             INVALID_PARAMS,
-            `unknown resource "${uri}" — known resources: ${listResources().map((entry) => entry.uri).join(", ")}`,
+            context.backend.kind === "federation"
+              ? `resource_unsupported: a federated session offers no MCP resources (FR-16.5)`
+              : `unknown resource "${uri}" (resource_unsupported) — known resources: ${known}`,
           );
           return;
         }
