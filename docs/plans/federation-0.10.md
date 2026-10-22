@@ -1,6 +1,6 @@
 ---
 type: Plan
-status: rev-4
+status: rev-5
 topic: federation-0.10
 milestone: M5b
 target_version: 0.10.0
@@ -9,7 +9,7 @@ review: docs/plans/federation-0.10-review.md
 
 # Föderation / Hub-of-Hubs — Umsetzungsplan bluepencil 0.10.0
 
-**Status: Rev. 4 — drei Nutzerentscheidungen eingearbeitet, Requirements-Schritt ausgeführt (2026-10-22).**
+**Status: Rev. 5 — an den implementierten Wave-1-Kern angeglichen (2026-10-22).**
 **Review: `docs/plans/federation-0.10-review.md`** (Durchlauf 1: CHANGES_REQUESTED → umgesetzt; Durchlauf 2: CHANGES_REQUESTED → in Rev. 3/4 umgesetzt; Rev.-4-Entscheidungen siehe §12).
 
 ### Änderungslog
@@ -20,6 +20,7 @@ review: docs/plans/federation-0.10-review.md
 | 2 | 2026-10-22 | Erster Review-Durchlauf (RVW-01…RVW-21) eingearbeitet: Export/Import über `/mcp`, Redirect-Policy, Threat Model, `ReadSource`, MCP-Resources, kanonische Exit-Code-Tabelle, `Redactor`-Signatur, Tests T71–T89 |
 | 3 | 2026-10-22 | ID-Normalisierung auf `FR-6.15`/`NFR-22`; zweiter Review-Durchlauf (RVW2-01…RVW2-19, T71–T89 + Traceability + Wirksamkeit der Rev.-2-Fixes) vollständig eingearbeitet; §12 führt beide Durchläufe |
 | 4 | 2026-10-22 | Drei Nutzerentscheidungen: (1) fehlendes `federates` ist immer ein `federates_missing`-Startfehler; (2) ein einziges `--allow-insecure` ersetzt `--allow-plain-http`/`--allow-private-network` (Link-Local/Metadata bleiben immer blockiert); (3) Write-Opt-in mit zwei Schlössern (`mode:"write"` **und** `--allow-write`); Tests T90–T94. Zusätzlich Requirements-Schritt ausgeführt: `FR-6.15`, `FR-16.10`–`FR-16.15` und `NFR-22` in `docs/REQUIREMENTS.md` aufgenommen, `spec/` mit `npm run spec` regeneriert |
+| 5 | 2026-10-22 | Synchronisation mit dem implementierten Wave-1-Kern (`src/federation/{errors,registry,aggregate,client}.ts`): (1) `invalid_base_url` als kanonischer Code in §6-Union und §7-Exit-Tabelle (Start verweigert, Exit 4); (2) vier deprecated Alias-Schreibweisen in §6 dokumentiert (nicht kanonisch, Entfall in PR 4); (3) Aggregat-Reihenfolge auf den implementierten, globalen Review-Sort (`compareForReview`, `instance`-, qualifizierter `id`-Tie-Break) umgestellt — §6/§7/T18 konsistent; (4) `loadRegistry`-Overloads inkl. `allowInsecure`/`resolver`/`stat`, DNS-Auflösung standardmäßig beim Start, `defaults.concurrency`/`defaults.limit` mit Clamp und Konstanten; (5) DNS-Check-to-Connect-Restrisiko (TOCTOU/Rebinding) in §11 als dokumentiertes Restrisiko aufgenommen. Keine Code-, Test-, REQUIREMENTS- oder `spec/`-Änderung |
 
 > **Charakter:** interner Umsetzungsplan, keine Implementierung. Dieses Dokument enthält keinen
 > Code und ändert `README.md` nicht; der zugehörige Requirements-Schritt wurde ausgeführt
@@ -94,7 +95,7 @@ die Entscheidungen 7 und 10 wurden durch Nutzerentscheidung präzisiert, nicht u
 | **FR-16.10 (neu)** | Registry-Validierung | `loadRegistry` lehnt literale Secrets, unbekannte Felder, doppelte/reservierte IDs, Nicht-http(s)-URLs, Userinfo-/Query-/Fragment-URLs, Link-Local-Ziele und fehlende Auth-Env ab; `http` nur für Loopback oder mit `--allow-insecure`; private IPs (RFC1918/ULA) nur mit `--allow-insecure`; Link-Local (`169.254.0.0/16`, `fe80::/10`) und Metadata-Ziele sind **immer** verboten, auch mit `--allow-insecure`; kein Teil-Load; Fehlercodes stabil | M5b | `src/federation/registry.ts`, `errors.ts`, CLI `instances` | kanonisch (neu) | T05–T13, T34, T41, T79, T80, T85, T86, T91, T92 |
 | **FR-16.11 (neu)** | `list_instances`, `instance`-Parameter, qualifizierte IDs | Neues Read-Tool `list_instances`; `instance` filtert `list_notes`; `instance/noteId` wird am ersten `/` geparst; `self` ist formatierbarer Read-Alias, `all`/`*` nur Selektoren; `format`/`parse` roundtrip; keine Auth-Daten in der Ausgabe | M5b | `src/federation/ids.ts`, `src/mcp/tools.ts`, `src/mcp/backend.ts` | kanonisch (neu) | T01–T04, T23, T40, T60, T61, T77, T88 |
 | **FR-16.12 (neu)** | Aggregat-Reads mit Timeout, Teilfehler-Envelope, `limit`/`truncated` | `list_notes` ohne `instance` liest alle Instanzen parallel; pro Instanz Timeout; eine tote Instanz erzeugt einen Fehlereintrag, keine leere Gesamtantwort; `partial`/`errors`; `limit` (Default 200, max 1000) und `truncated`; deterministische Reihenfolge; `defaults.timeoutMs`/Limit-Clamp getestet | M5b | `aggregate.ts`, `client.ts`, `backend.ts`, `tools.ts` | kanonisch (neu) | T14, T15, T17–T20, T24, T25, T27, T28, T58, T66–T68, T87 |
-| **FR-16.13 (neu)** | Write-Routing, kein Fan-out, `mode`, `--allow-write`, `--read-only` | Jeder Write nennt genau eine Instanz; **zwei Schlösser:** `mode:"write"` ist nur die Obergrenze, zusätzlich braucht die Föderations-Session `--allow-write`; ohne `--allow-write` sind alle föderierten Writes (auch `self`) `mode_denied`; globales `--read-only` gewinnt; `all`/`*` als Write-Ziel = `fanout_denied`; `bulk_remove` ohne Instanz = `instance_required`; `environment` wird nie umgeschrieben; keine Env-Promotion; `allow_env_mismatch` im Föderationsmodus abgelehnt; Write-Antwort qualifiziert | M5b | `federation/backend.ts`, `client.ts`, `tools.ts`, `errors.ts` | kanonisch (neu) | T38, T39, T50–T52, T59, T71, T83, T84, T93, T94 |
+| **FR-16.13 (neu)** | Write-Routing, kein Fan-out, `mode`, `--allow-write`, `--read-only` | Jeder Write nennt genau eine Instanz; **zwei Schlösser:** `mode:"write"` ist nur die Obergrenze, zusätzlich braucht die Föderations-Session `--allow-write`; ohne `--allow-write` sind alle föderierten Writes (auch `self`) `mode_denied`; globales `--read-only` gewinnt; `all`/`*` als Write-Ziel = `fanout_denied`; **`bulk_remove` ist ein Backend-Vertrag, kein MCP-Tool** (nur `remove` und Backend-Tests nutzen die Methode); ohne Instanz = `instance_required`; die Tool-Oberfläche ist **9 (Single) / 10 (Föderation inkl. `list_instances`)**; `environment` wird nie umgeschrieben; keine Env-Promotion; `allow_env_mismatch` im Föderationsmodus abgelehnt; Write-Antwort qualifiziert | M5b | `federation/backend.ts`, `client.ts`, `tools.ts`, `errors.ts` | kanonisch (neu) | T38, T39, T50–T52, T59, T71, T83, T84, T93, T94 |
 | **FR-16.14 (neu)** | Kombinierter Hub, federate-only, `includeSelf`, `--allow-write`/`--allow-insecure` | Hub mit `--registry` aggregiert in `/mcp` (self + Registry), `/notes` bleibt lokal; `/config` meldet immer `federates`; Federator hat keinen `/notes`-Endpunkt; `defaults.includeSelf` Default `true`; `--no-self` schließt self aus; `--include-self` beim reinen Federator = Usage-Fehler; `list_instances` enthält `self` nur bei `includeSelf`; self schreibbar gdw. `allowWrite && !readOnly && !self.readOnly && includeSelf`; ohne `--allow-write` ist auch `self` read-only; `--allow-insecure` ist das einzige Lab-Flag (HTTP + private IPs) | M5b | `server/hub.ts`, `server/federator.ts`, `server/mcp.ts` | kanonisch (neu) | T29, T32, T33, T46–T49, T55, T57, T63, T69, T74–T76 |
 | **FR-16.15 (neu)** | `bluepencil instances validate\|list\|health` | Drei Subcommands; `validate`/`list` ohne Netz; `health` prüft `/config` + `/health`; stabile Exit-Codes (kanonisch §7); `--json` stabil; keine Secrets; Startup-Unreachable degradiert, Health-Exit 5 | M5b | `src/cli/bin.ts`, `registry.ts`, `client.ts` | kanonisch (neu) | T30, T42–T45, T70, T72 |
 | **NFR-22 (neu)** | Keine Secrets in Registry/Logs/Tool-Ausgaben | Registry transportiert nur Env-Referenzen; `list_instances`, Fehler, Logs und CLI-Ausgaben enthalten keine Tokenwerte, Authorization-Header oder Env-Werte; `secret-scan` bleibt grün; Redaction ist mit mehreren Secrets/Teiltreffern getestet | M5b | `registry.ts`, `errors.ts`, `client.ts`, `tools.ts`, `server/*` | kanonisch (neu) | T16, T35–T37, T62, T78, T81 |
@@ -345,6 +346,8 @@ export interface Registry {
   schemaVersion: 1;
   defaults?: {
     includeSelf?: boolean; mode?: "read" | "write"; timeoutMs?: number;
+    concurrency?: number;   // default 8, valid 1..16 (REGISTRY_MAX_CONCURRENCY)
+    limit?: number;         // default 200, max 1000; input up to 5000 is clamped
     allowedHosts?: string[];   // optionale Host-Allowlist (SSRF-Härtung)
   };
   instances: RegistryInstance[];
@@ -357,9 +360,19 @@ export interface RegistryIssue { path: string; code: RegistryErrorCode; message:
 export function validateRegistry(value: unknown,
   options?: { allowInsecure?: boolean; env?: NodeJS.ProcessEnv },
 ): { registry: Registry; issues: [] } | { registry?: never; issues: RegistryIssue[] };
+export interface LoadRegistryOptions {
+  allowInsecure?: boolean;
+  resolver?: HostResolver;   // DNS check; on by default at start-up (F-01)
+  stat?: (path: string) => Promise<{ mode: number; uid?: number }>;   // injectable (T79)
+}
+export function loadRegistry(path: string, env?: NodeJS.ProcessEnv,
+  options?: LoadRegistryOptions): Promise<Registry>;   // explicit environment
 export function loadRegistry(path: string,
-  options?: { allowInsecure?: boolean; env?: NodeJS.ProcessEnv },
-): Registry;   // wirft RegistryError; prüft 0600/Eigentümer; kein Teil-Load
+  options?: LoadRegistryOptions): Promise<Registry>;   // env defaults to process.env
+// options: allowInsecure/resolver/stat; auth.env is resolved against env (default process.env);
+// DNS resolution is on by default at start-up (F-01, not offline); opens as
+// RegistryError (invalid document) or FederationError("invalid_registry") (file/permissions);
+// checks 0600/owner; no partial load.
 ```
 **Validierungsregeln (jeweils mit Test):** `schemaVersion` muss `1` sein, sonst
 `unsupported_schema` (T85); unbekannte Felder auf jedem Level sind Fehler (T07); `id` muss dem
@@ -375,8 +388,18 @@ erlaubt (T91); `allowInsecure` ist das einzige Lab-Flag und ersetzt `allowPlainH
 `env` muss ein gültiger Variablenname sein und beim Start gesetzt sein, sonst `missing_env_var`
 (T12, T13). `defaults.includeSelf` Default `true` (T69); im **reinen Federator** ist das Feld ein
 dokumentierter No-op (kein `self`) und wird nicht validiert; `mode` Default `read` (T50).
-`loadRegistry` prüft die Dateirechte (0600, kein World-Writable) und meldet `invalid_registry`
-bei Tampering-Verdacht (T79). Die Eigentümer-Prüfung ist **best-effort**: sie läuft nur, wenn der
+`defaults.concurrency` hat den Default 8 und den gültigen Bereich 1–16 (außerhalb =
+`invalid_shape`); `defaults.limit` hat den Default 200 und das Maximum 1000 — Eingaben bis 5000
+werden auf 1000 **geklemmt, nicht abgelehnt**, darüber ist es ein Fehler (T87). Die Konstanten
+liegen in `src/federation/registry.ts`: `REGISTRY_DEFAULT_TIMEOUT_MS` (3000),
+`REGISTRY_DEFAULT_LIMIT` (200), `REGISTRY_MAX_LIMIT` (1000), `REGISTRY_DEFAULT_CONCURRENCY` (8),
+`REGISTRY_MAX_CONCURRENCY` (16).
+`loadRegistry` hat zwei Overloads — `(path, env?, options?)` und `(path, options?)`; die Optionen
+sind `allowInsecure`, `resolver` und `stat` (`stat` ist für T79 injizierbar), während `auth.env`
+gegen die übergebene Umgebung (Default `process.env`) aufgelöst wird. Anders als
+`validateRegistry` löst `loadRegistry` DNS standardmäßig auf (F-01); die Startprüfung ist damit
+nicht offline. `loadRegistry` prüft die Dateirechte (0600, kein World-Writable) und meldet
+`invalid_registry` bei Tampering-Verdacht (T79). Die Eigentümer-Prüfung ist **best-effort**: sie läuft nur, wenn der
 Prozess die Metadaten sehen darf, und ist über ein injizierbares `fs.stat` testbar; in CI ohne
 `root` prüft T79 primär die Mode-Bits und die Allowlist.
 ### `src/federation/ids.ts` (neu)
@@ -468,9 +491,11 @@ export async function aggregateList(
 Alle ausgewählten Clients laufen parallel; jeder Fehler wird zu einem `FederationError`-Eintrag,
 nie zu einem Abbruch aller. `partial = true` genau dann, wenn mindestens ein Client erfolgreich
 und mindestens einer fehlgeschlagen ist; schlagen **alle** fehl, ist `notes: []`, `partial:
-false`, und der Tool-Aufruf wird `isError: true` (T17, T68). Reihenfolge: Registry-Reihenfolge
-(außen), innerhalb einer Instanz `sortForReview` (innen); damit ist die Ausgabe deterministisch,
-solange die Registry-Datei stabil ist (T18). `limit` wird nach dem Zusammenführen angewandt;
+false`, und der Tool-Aufruf wird `isError: true` (T17, T68). Reihenfolge: Die Notes werden
+zusammengeführt und danach **global** nach der gemeinsamen Review-Ordnung (`compareForReview`)
+sortiert; erster Tie-Break ist `instance`, zweiter die qualifizierte `id`. Die Registry-Reihenfolge
+bestimmt nur die Iteration, **nie** die Ausgabe; damit ist die Ausgabe deterministisch und
+unabhängig von der Reihenfolge der Registry-Datei (T18). `limit` wird nach dem Zusammenführen angewandt;
 `truncated = true`, wenn mehr Treffer vorhanden waren (T19). `FederatedNote.id` ist die
 qualifizierte ID, `instance`/`app` sind gesetzt (`app` fällt auf die Registry-Erwartung oder
 `"unknown"` zurück, wenn `/config.app` fehlt), `environment` bleibt die Note-Env (T20).
@@ -516,7 +541,7 @@ Autorität (F7 bleibt dort). Ein 5xx/Netzfehler ist ein Fehler, kein „vielleic
 ### `src/federation/errors.ts` (neu)
 ```ts
 export type FederationErrorCode =
-  | "invalid_registry" | "unknown_instance" | "self_unavailable" | "mode_denied" | "read_only"
+  | "invalid_registry" | "invalid_base_url" | "unknown_instance" | "self_unavailable" | "mode_denied" | "read_only"
   | "timeout" | "partial" | "identity_mismatch" | "federates_missing" | "unverified"
   | "nested_federation" | "self_reference" | "id_collision"
   | "invalid_id" | "instance_required" | "fanout_denied" | "invalid_argument"
@@ -533,6 +558,14 @@ export class Redactor {
 export function toMcpError(error: FederationError, redactor?: Redactor): ToolResponse;
 export function toExitCode(error: FederationError, context: "health" | "runtime", redactor?: Redactor): number;
 ```
+**Deprecated Alias-Schreibweisen (nicht kanonisch):** `instance_unknown`, `instance_read_only`,
+`read_only_session` und `aggregate_export_refused` sind historische Schreibweisen aus den
+Wave-1-Aufträgen; sie normalisieren auf `unknown_instance`, `mode_denied`, `read_only` bzw.
+`instance_required` (`src/federation/errors.ts`, `ALIASES`/`canonicalErrorCode`). Sie sind
+**keine** kanonischen Codes, werden von keinem Codepfad emittiert und nur noch von Tests
+referenziert. Mit PR 4 werden sie entfernt; die Tests werden dabei auf die kanonischen Namen
+umgestellt.
+
 MCP: Tool-Fehler sind `isError`-Results mit `error.code`; nur echte Protokollfehler bleiben
 JSON-RPC-Fehler. CLI/HTTP: **eine kanonische Tabelle in §7** ist die Single Source of Truth;
 §6 leitet daraus nur ab. `Redactor` wird beim Start mit den aufgelösten Env-Werten gebaut,
@@ -623,16 +656,23 @@ bleibt optional (nur `scope:"single"`). Neue/geänderte Tool-Schemas:
 | `get_note` | `id` darf qualifiziert sein; optional `instance` (muss passen); die Prüfung liegt in `McpBackend.get(id, instance?)` |
 | `create_note` | `instance` (bei Föderation Pflicht); Antwort qualifiziert (`instance/noteId`) |
 | `reply` / `set_status` / `set_intent` | `id` qualifiziert oder `instance`; kein Unqualified-Write im Federator; Antwort qualifiziert |
-| `bulk_remove` | `instance` (bei Föderation Pflicht); `all`/`*` → `fanout_denied`; kein filterbasierter Cross-Instance-Delete (`instance_required`) |
 | `export_bundle` | `instance` (bei Föderation Pflicht); Transport `/mcp` der Ziel-Instanz, `instance:"self"` lokal; kein Aggregat-Bundle |
 | `import_bundle` | `instance` (bei Föderation Pflicht); Transport `/mcp`, `instance:"self"` lokal; `allow_env_mismatch` → `invalid_argument`; kein Fan-out |
 | `list_instances` | **neu**, read-only, keine Argumente; liefert `id/app/environment/mode/ok/unverified/version/includeSelf`, **kein** `base`, **kein** `auth` |
 | `inspect_bundle` | unverändert |
 
+`bulk_remove` ist **kein MCP-Tool**, sondern ausschließlich eine interne
+`McpBackend`-Methode (genutzt von `remove` und den Backend-Tests); die Tool-Oberfläche ist
+**9 (Single) / 10 (Föderation inkl. `list_instances`)**. Ein `bulk_remove`-Aufruf über `tools/call`
+existiert daher nicht und wird auch nicht beworben. Die Single-Scope-Projektion entfernt
+`instance` aus jedem Schema und `limit` aus `list_notes`, damit ein Store keine Argumente anbietet,
+die er ignoriert (F1).
+
 `list_notes`-Antwort im Aggregat: `{ instances, partial, truncated, errors, environment?,
 count, notes }`; jede Note ist eine Kopie mit qualifizierter `id`, `instance`, `app` (T58).
 Markdown-Format setzt `[instance]` vor jede Zeile. `list_instances` ist die einzige neue
-Tool-Definition; `tools/list` enthält danach 10 Tools (T23, T60). **Resources:** `listResources`
+Tool-Definition; `tools/list` enthält danach in einer **federierten** Session 10 Tools, in einer
+Single-Store-Session 9 (T23, T60). **Resources:** `listResources`
 wird backend-aware; der Federator liefert `[]`, der Store-Backend weiterhin die drei
 `bluepencil://`-URIs. `readResource` im Federator `null` → `INVALID_PARAMS`
 `resource_unsupported` (T73). **Write-Provenance:** Remote-Writes setzen `source:"agent"`,
@@ -686,7 +726,7 @@ stabil und enthält keine Env-Werte (T42–T45, T72). Die bestehenden Commands b
 |---|---|---|---|---|---|
 | `list_notes` | single | ohne `instance` | unverändert: ein Store, eine Env | gebunden | — |
 | `list_notes` | single | `environment` | Wert muss der Bindung entsprechen | **nie überschreiben** | `environment_mismatch` |
-| `list_notes` | federation | ohne `instance` | Aggregat über `self` (falls `includeSelf`) + alle Instanzen | Mix erlaubt, Notes etikettiert | `partial`, `timeout`, `instance_unreachable` |
+| `list_notes` | federation | ohne `instance` | Aggregat über `self` (falls `includeSelf`) + alle Instanzen; global sortiert (`compareForReview`, Tie-Break `instance`, dann qualifizierte `id`) | Mix erlaubt, Notes etikettiert | `partial`, `timeout`, `instance_unreachable` |
 | `list_notes` | federation | `instance:"self"` | nur lokaler Store (kombinierter Hub); bei `--no-self` `self_unavailable` | self-Env | `self_unavailable` |
 | `list_notes` | federation | `instance:"all"\|"*"` | Aggregat wie ohne `instance` | Mix | wie oben |
 | `list_notes` | federation | `instance:"<id>"` | genau eine Instanz | deren Env | `unknown_instance`, `timeout` |
@@ -698,8 +738,8 @@ stabil und enthält keine Env-Werte (T42–T45, T72). Die bestehenden Commands b
 | `create_note` | federation | `instance:"self"` | lokaler Store; schreibbar gdw. `allowWrite && !readOnly && !self.readOnly && includeSelf` | self-Env | `self_unavailable`, `read_only`, `mode_denied` |
 | `create_note` | federation | ohne `instance` | `instance_required` | — | `instance_required` |
 | `reply`/`set_status`/`set_intent` | federation | `id:"dev/n-…"` oder `instance`+`id` | Route zu genau einer Instanz nur bei `mode:"write"` **und** `--allow-write`; Antwort qualifiziert | deren Env | `mode_denied`, `read_only`, `not_found` |
-| `bulk_remove` | federation | `instance:"dev"` + Filter | löscht nur in `dev` und nur bei `mode:"write"` **und** `--allow-write`; Antwort `{removed}` | `dev`-Env | `mode_denied`, `read_only`, `not_persisted` |
-| `bulk_remove` | federation | ohne `instance` / `all` / `*` | `instance_required` bzw. `fanout_denied`; kein Cross-Instance-Delete | — | `instance_required`, `fanout_denied` |
+| `bulk_remove` (Backend-Vertrag, kein MCP-Tool) | federation | `instance:"dev"` + Filter | löscht nur in `dev` und nur bei `mode:"write"` **und** `--allow-write`; Antwort `{removed}` | `dev`-Env | `mode_denied`, `read_only`, `not_persisted` |
+| `bulk_remove` (Backend-Vertrag, kein MCP-Tool) | federation | ohne `instance` / `all` / `*` | `instance_required` bzw. `fanout_denied`; kein Cross-Instance-Delete | — | `instance_required`, `fanout_denied` |
 | `export_bundle` | federation | `instance:"dev"` | `mcpCall("export_bundle")`; ein Bundle, eine Env | `dev`-Env | `instance_required`, `timeout` |
 | `export_bundle` | federation | `instance:"self"` | lokal über `SelfSource.exportBundle` (kein HTTP) | self-Env | `self_unavailable` |
 | `export_bundle` | federation | ohne `instance` | Refusal (kein Mixed-Env-Bundle) | — | `instance_required` |
@@ -731,6 +771,7 @@ stabil und enthält keine Env-Werte (T42–T45, T72). Die bestehenden Commands b
 | `nested_federation` | Start verweigert | 4 | 4 | 200 `federates:true` |
 | `self_reference` | Start verweigert | 4 | 4 | — |
 | `invalid_registry` | Start verweigert | 4 | 4 | — |
+| `invalid_base_url` | Start verweigert | 4 | 4 | — |
 | `id_collision` | Start verweigert | 4 | 4 | — |
 | `invalid_id` | `partial`-Eintrag | 5 | 4 | 200 mit ungültiger ID |
 | `instance_required` | `isError` | 0 | 4 | — |
@@ -748,7 +789,10 @@ stabil und enthält keine Env-Werte (T42–T45, T72). Die bestehenden Commands b
 die **Instanz** antwortet. `/notes` des Hubs bleibt der unveränderte Ein-Env-Vertrag. Ein
 Federator hat keinen `/notes`-Endpunkt, also auch kein HTTP-Mapping für Aggregat-Antworten.
 **§6 leitet ausschließlich aus dieser Tabelle ab;** `mode_denied`/`read_only` sind keine
-Health-Fälle, `invalid_response`/`not_persisted` sind explizit zugeordnet (T70).
+Health-Fälle, `invalid_response`/`not_persisted` sind explizit zugeordnet (T70). Eine fehlerhafte
+oder durch die Policy blockierte Base-URL (`invalid_base_url`, z. B. Link-Local/Metadata, private
+IP ohne `--allow-insecure`, Query/Fragment/Userinfo) **verweigert den Start mit Exit 4** — genau
+wie `invalid_registry`; die Tabelle ist deckungsgleich mit `src/federation/errors.ts`.
 ## 8. Testplan
 
 Harness: `tests/unit/*.test.ts` (Vitest, jsdom default; Node-Fälle per Docblock), Contract-Tests
@@ -776,12 +820,12 @@ zitiert.
 | T15 | `client.timeout_aborts` | hängende Instanz → `timeout` nach `timeoutMs`, kein leerer Erfolg |
 | T16 | `client.no_token_in_error` | Fehlermeldung/`toString` enthält keinen Tokenwert — auch über den verdrahteten `Redactor` in `InstanceClientOptions` |
 | T17 | `aggregate.partial_timeout_envelope` | eine von zwei Instanzen timeoutet → `partial:true`, `errors:[timeout]`, Notes der anderen |
-| T18 | `aggregate.deterministic_order` | zwei Läufe mit gleicher Registry liefern dieselbe Reihenfolge |
+| T18 | `aggregate.deterministic_order` | zwei Läufe liefern dieselbe Reihenfolge; sie folgt `compareForReview` mit `instance`- und qualifiziertem `id`-Tie-Break, nicht der Registry-Reihenfolge |
 | T19 | `aggregate.limit_truncated` | 250 Treffer, `limit:200` → 200 Notes, `truncated:true` |
 | T20 | `aggregate.qualifies_ids` | jede Aggregat-Note hat `instance/…`, `instance`, `app`; Original unverändert |
 | T21 | `contract.hub_config_v0_10` | `/config` liefert `app` + `federates`; `federates:false` ohne Registry |
 | T22 | `contract.notes_single_env_unchanged` | `/notes` bleibt ein Store/eine Env; keine `instance`-Felder, keine Aggregation |
-| T23 | `contract.mcp_tools_list_includes_list_instances` | `tools/list` enthält 10 Tools inkl. `list_instances`; Protokollversion unverändert |
+| T23 | `contract.mcp_tools_list_includes_list_instances` | `tools/list` einer **federierten** Session enthält 10 Tools inkl. `list_instances` (mit `instance`); eine Single-Store-Session behält 9 Tools ohne `instance`/`limit`; Protokollversion unverändert |
 | T24 | `contract.instance_client_roundtrip` | `InstanceClient` gegen In-Process-Hub: config/health/list/get/create/update/message/bulk/sessions |
 | T25 | `contract.federation_read_parity` | Aggregat-Notes entsprechen den Einzelabrufen (gleiche Note-Inhalte, nur Etiketten/ID qualifiziert) |
 | T26 | `contract.mcp_http_door_unchanged` | `/mcp` ohne Registry nutzt denselben Store wie `/notes` (FR-16.9) |
@@ -817,7 +861,7 @@ zitiert.
 | T56 | `hub.mcp_without_registry_unchanged` | `/mcp` ohne Registry ist byte-gleich zum 0.8-Verhalten (gleiche Tools/Antworten) |
 | T57 | `hub.include_self_flag` | `--include-self`/`--no-self` und `defaults.includeSelf` wirken; Default true |
 | T58 | `tools.list_notes_aggregate_envelope` | Envelope `{instances,partial,truncated,errors,count,notes}`; Markdown mit `[instance]` |
-| T59 | `tools.write_routes_to_instance` | `create/reply/set_status/set_intent/bulk_remove/import` treffen genau eine Instanz; `bulk_remove` ohne Instanz → `instance_required`, `all`/`*` → `fanout_denied`; Export/Import via `/mcp`; kein Fan-out |
+| T59 | `tools.write_routes_to_instance` | `create/reply/set_status/set_intent/import` treffen genau eine Instanz; die interne Backend-Methode `bulk_remove` (kein MCP-Tool) ohne Instanz → `instance_required`, `all`/`*` → `fanout_denied`; Export/Import via `/mcp`; kein Fan-out |
 | T60 | `tools.list_instances_no_secrets` | Tool liefert id/app/env/mode/includeSelf/ok/unverified/version, aber kein `base`/`auth`; Typ bindet `mode` |
 | T61 | `sessions.qualified_ids` | Aggregat-Sessions sind `instance/ref`; `Note.sessionRef` bleibt unqualifiziert |
 | T62 | `redaction.multiple_secrets_and_partial` | `Redactor` entfernt mehrere aufgelöste Secrets und Teiltreffer aus Meldungen |
@@ -1131,6 +1175,7 @@ Pipeline erfolgt nur durch den Orchestrator/User, nicht automatisch.
 | R15 | Export/Import über `/mcp` bricht bei Backend ohne Door | mittel | mittel | Dokumentierte Voraussetzung; `GET /bundle` bleibt lesbar; T71 | Import-Fehler bei reinem `/notes`-Backend |
 | R16 | Degradierter Start wird als „alle Instanzen ok“ missverstanden | mittel | mittel | `ok:false`/`partial`/Health 5; T72 | Agent ignoriert `partial` |
 | R17 | Alt-Hubs < 0.10 sind nicht föderierbar | mittel | mittel | harte `federates`-Pflicht (`federates_missing`), klare Fehlermeldung, Upgrade-Hinweis in `docs/FEDERATION.md`; T90 | Startfehler beim ersten Rollout; gemischte Flotte |
+| R18 | **DNS-Check-to-Connect-Restrisiko (TOCTOU/Rebinding):** zwischen der Pre-Flight-Auflösung in `checkBaseUrl` und der eigenen DNS-Auflösung des `fetch` kann sich die Antwort ändern; ein Angreifer mit kontrolliertem DNS kann nach dem Check auf Link-Local/Metadata umbiegen | niedrig–mittel (kontrolliertes DNS + kurze TTL nötig) | hoch (SSRF/Metadata, falls der Check umgangen wird) | Der Code **pinnt die aufgelöste IP in v1 nicht** (`checkBaseUrl` prüft, `fetch` verbindet erneut); das ist ein **dokumentiertes Restrisiko**, keine stille Mitigation. Begrenzend wirken: Check vor **jedem** Request, `redirect:"manual"`, `allowedHosts`-Allowlist, Link-Local/Metadata-Block literal und aufgelöst. Für ein späteres Release: gepinnter Dispatcher/Agent (Verbindung auf die geprüfte IP), strikte Allowlist, optional Proxy mit eigener Auflösung | DNS-Antwort wechselt zwischen Check und Verbindung; Registry-Hosts ohne Allowlist; ungewöhnliche TTLs |
 ## 12. Review-Ergebnis
 
 **Durchlauf 1** (`RVW-01…RVW-21`): Verdict `CHANGES_REQUESTED` (1 blocker, 10 major,
