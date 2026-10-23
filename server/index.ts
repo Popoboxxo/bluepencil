@@ -10,6 +10,7 @@
  */
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { FederationError, federationStartupExitCode } from "../src/federation/errors";
 import { SERVER_VERSION } from "./handler";
 import { HELP, StoreFileError, flushHubJournal, parseHubArgs, startHub } from "./hub";
 
@@ -38,6 +39,22 @@ function fail(message: string, code: number): never {
   process.exit(code);
 }
 
+/**
+ * Exit code for a hub start-up failure (plan §7). The federation start refusals (`invalid_registry`,
+ * `federates_missing`, `self_reference`, …) are the same class as on the federator and must report
+ * the same code, so they go through {@link federationStartupExitCode} instead of the runtime column
+ * or the generic failure `1`. A fatal `invalid_response` at start-up is a refusal (4), not a
+ * degraded runtime (5). A store error stays `2` (as the MCP server), everything else is `1`.
+ *
+ * Usage errors never reach this function: {@link parseHubArgs} returns them as a string before the
+ * start is attempted, and `main` exits `1` for them.
+ */
+export function startupExitCode(error: unknown): number {
+  if (error instanceof StoreFileError) return 2;
+  if (error instanceof FederationError) return federationStartupExitCode(error);
+  return 1;
+}
+
 async function main(argv: string[]): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h")) {
     process.stdout.write(`${HELP}\n`);
@@ -64,8 +81,9 @@ async function main(argv: string[]): Promise<void> {
   try {
     await startHub(parsed);
   } catch (error) {
-    // A usage failure is exit 1, an unreadable/corrupt store file is exit 2 (as the MCP server).
-    fail(errorText(error), error instanceof StoreFileError ? 2 : 1);
+    // A usage failure is exit 1, an unreadable/corrupt store file is exit 2 (as the MCP server),
+    // and a federation start refusal is exit 4 (plan §7, same table as the federator).
+    fail(errorText(error), startupExitCode(error));
   }
 }
 

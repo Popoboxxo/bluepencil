@@ -32,8 +32,8 @@ import { InstanceClient } from "../src/federation/client";
 import {
   FederationError,
   Redactor,
+  federationStartupExitCode,
   isDegradable,
-  toExitCode,
 } from "../src/federation/errors";
 import {
   REGISTRY_DEFAULT_CONCURRENCY,
@@ -443,7 +443,7 @@ async function main(argv: string[]): Promise<void> {
      * canonical code is prefixed so an operator (and the smoke test) can key on `federates_missing`
      * rather than parse prose. */
     process.stderr.write(`${LOG_PREFIX}${failure.code}: ${oneLine(failure.message)}\n`);
-    process.exit(toExitCode(failure, "runtime"));
+    process.exit(federationStartupExitCode(failure));
   }
 }
 

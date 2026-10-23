@@ -19,45 +19,11 @@
  */
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { createStore } from "../core/store";
-import { DEFAULT_ENVIRONMENT, isEnvironment, newId, type Environment } from "../core/model";
 import { createStoreBackend } from "./backend";
+import { parseMcpArgs } from "./options";
 import { createStorePersistence, validateStoredNoteSet } from "./tools";
 import { runStdioServer } from "./stdio";
 import { VERSION } from "../version";
-
-interface ServerOptions {
-  storePath: string;
-  environment: Environment;
-  appName: string;
-  allowWrite: boolean;
-  sessionId: string;
-}
-
-function parseArgs(argv: string[]): ServerOptions | string {
-  const get = (flag: string): string | undefined => {
-    const withEquals = argv.find((arg) => arg.startsWith(`${flag}=`));
-    if (withEquals) return withEquals.slice(flag.length + 1);
-    const index = argv.indexOf(flag);
-    return index >= 0 ? argv[index + 1] : undefined;
-  };
-
-  const storePath = get("--store") ?? process.env.BLUEPENCIL_STORE ?? "";
-  if (!storePath) {
-    return "--store <path> is required (a .bluepencil.json bundle or a bare notes array)";
-  }
-  const environment = (get("--environment") ?? process.env.BLUEPENCIL_ENVIRONMENT ?? DEFAULT_ENVIRONMENT) as string;
-  if (!isEnvironment(environment)) {
-    return `--environment must be one of dev, staging, live (got "${environment}")`;
-  }
-  const allowWrite = argv.includes("--allow-write") || process.env.BLUEPENCIL_ALLOW_WRITE === "1";
-  return {
-    storePath,
-    environment,
-    appName: get("--app") ?? process.env.BLUEPENCIL_APP ?? "unknown-app",
-    allowWrite,
-    sessionId: get("--session-id") ?? process.env.BLUEPENCIL_SESSION ?? newId("s"),
-  };
-}
 
 let writeCounter = 0;
 
@@ -101,7 +67,7 @@ async function readStoreOrFail(path: string): Promise<string | null> {
 }
 
 async function main(): Promise<void> {
-  const parsed = parseArgs(process.argv.slice(2));
+  const parsed = parseMcpArgs(process.argv.slice(2));
   if (typeof parsed === "string") {
     failStartup(parsed, 1);
   }

@@ -301,6 +301,19 @@ export function toExitCode(
 }
 
 /**
+ * Process exit code for a federation **start-up refusal** (plan §7, CR-03).
+ *
+ * A start refusal is not a degraded runtime. Using the runtime column would map a fatal
+ * `invalid_response` to 5 and a hypothetical `unverified` to 0 — an operator and CI would read a
+ * refused start as "partial" or even "success". Usage stays 1; a `StoreFileError` is the caller's
+ * concern (2) because the federation layer does not know that type. Every other federation error
+ * is a refusal and exits 4.
+ */
+export function federationStartupExitCode(error: FederationError): number {
+  return error.code === "usage" ? 1 : 4;
+}
+
+/**
  * True for the failures a federator tolerates at start-up (plan §6/§7, T72/R6).
  *
  * A peer that is not up yet must not take the whole session down: it stays in `list_instances`
