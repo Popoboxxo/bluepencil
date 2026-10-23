@@ -1,15 +1,16 @@
 ---
 type: Plan
-status: rev-6
+status: rev-7
 topic: federation-0.10
 milestone: M5b
 target_version: 0.10.0
+updated: 2026-10-23
 review: docs/plans/federation-0.10-review.md
 ---
 
 # Föderation / Hub-of-Hubs — Umsetzungsplan bluepencil 0.10.0
 
-**Status: Rev. 6 — Shape (e) korrigiert: der Federator ist stdio-only und kein Compose-Dauerdienst; die Docker-Shape ist ein aggregierender Hub plus zwei Leaf-Hubs (2026-10-23).**
+**Status: Rev. 7 — Umsetzungsstatus PR 1–8, Korrekturen gegen Rev. 6 und offene Restrisiken ergänzt (2026-10-23). Rev. 6 (Shape (e)) bleibt inhaltlich stehen; die Abweichungen sind in `## Korrekturen gegenüber Rev. 6` einzeln begründet.**
 **Review: `docs/plans/federation-0.10-review.md`** (Durchlauf 1: CHANGES_REQUESTED → umgesetzt; Durchlauf 2: CHANGES_REQUESTED → in Rev. 3/4 umgesetzt; Rev.-4-Entscheidungen siehe §12).
 
 ### Änderungslog
@@ -22,6 +23,7 @@ review: docs/plans/federation-0.10-review.md
 | 4 | 2026-10-22 | Drei Nutzerentscheidungen: (1) fehlendes `federates` ist immer ein `federates_missing`-Startfehler; (2) ein einziges `--allow-insecure` ersetzt `--allow-plain-http`/`--allow-private-network` (Link-Local/Metadata bleiben immer blockiert); (3) Write-Opt-in mit zwei Schlössern (`mode:"write"` **und** `--allow-write`); Tests T90–T94. Zusätzlich Requirements-Schritt ausgeführt: `FR-6.15`, `FR-16.10`–`FR-16.15` und `NFR-22` in `docs/REQUIREMENTS.md` aufgenommen, `spec/` mit `npm run spec` regeneriert |
 | 5 | 2026-10-22 | Synchronisation mit dem implementierten Wave-1-Kern (`src/federation/{errors,registry,aggregate,client}.ts`): (1) `invalid_base_url` als kanonischer Code in §6-Union und §7-Exit-Tabelle (Start verweigert, Exit 4); (2) vier deprecated Alias-Schreibweisen in §6 dokumentiert (nicht kanonisch, Entfall in PR 4); (3) Aggregat-Reihenfolge auf den implementierten, globalen Review-Sort (`compareForReview`, `instance`-, qualifizierter `id`-Tie-Break) umgestellt — §6/§7/T18 konsistent; (4) `loadRegistry`-Overloads inkl. `allowInsecure`/`resolver`/`stat`, DNS-Auflösung standardmäßig beim Start, `defaults.concurrency`/`defaults.limit` mit Clamp und Konstanten; (5) DNS-Check-to-Connect-Restrisiko (TOCTOU/Rebinding) in §11 als dokumentiertes Restrisiko aufgenommen. Keine Code-, Test-, REQUIREMENTS- oder `spec/`-Änderung |
 | 6 | 2026-10-23 | Shape (e) korrigiert: der Federator ist stdio-only und kein Compose-Dauerdienst; Docker-Shape ist ein aggregierender Hub (`bluepencil-hub --store aggregator.json --registry … --no-self`) plus zwei Leaf-Hubs. Der Federator bleibt lokaler stdio-Modus am Agenten (`docker run -i --rm … bluepencil-federator` nur als Beispiel eines angehängten Clients). §9/§10: Federator-only ist kein HTTP-Dienst und hat kein `/config`; `includeSelf` ist dort No-op. Keine Code-/Test-/Requirements-Änderung. |
+| 7 | 2026-10-23 | **Ist-Stand statt Plan-Annahme:** neuer §0 „Umsetzungsstatus“ (PR 1–8, Belege, Gate-Stand), `## Korrekturen gegenüber Rev. 6` (vierzehn Punkte, je mit Grund) und `## Offene Restrisiken (Stand Rev. 7)`. §11 um einen Status-Absatz ergänzt, §10 um Ist-Stand und eine ehrliche DoD-Bilanz, §6/§9 an mehreren Stellen sachlich korrigiert (kein `federation`-Build-Job/`./federation`-Export, SVG-Dateiname, README-Abschnitte, Compose-Flags). Keine Code-, Test-, Requirements- oder `spec/`-Änderung. |
 
 > **Charakter:** interner Umsetzungsplan, keine Implementierung. Dieses Dokument enthält keinen
 > Code und ändert `README.md` nicht; der zugehörige Requirements-Schritt wurde ausgeführt
@@ -30,10 +32,129 @@ review: docs/plans/federation-0.10-review.md
 > Pipeline-Input; `pipeline_stages` ist deshalb bewusst nicht gesetzt (Begründung in §10).
 >
 > **Sprache:** Prosa Deutsch, Code-/Config-Beispiele Englisch. Der Ist-Stand wurde gegen den Baum
-> geprüft (package.json 0.8.0, `server/index.ts`, `server/handler.ts`, `server/mcp.ts`,
+> geprüft (package.json 0.10.0, `server/index.ts`, `server/handler.ts`, `server/mcp.ts`,
 > `src/mcp/*`, `src/core/model.ts:166–202`, `src/core/store.ts:59–81`,
 > `src/adapters/http.ts`, `src/embed/attributes.ts`, `extension/src/settings.ts`). Wo etwas
 > nicht verifizierbar war, steht „zu verifizieren“ statt einer Erfindung.
+
+## 0. Umsetzungsstatus (Rev. 7)
+
+Dieser Abschnitt beschreibt den **Baum**, nicht den Plan. Er ist in PR 8 gegen die genannten Dateien
+geprüft. Legende: **benannt** = die T-ID steht in einer Testdatei oder einem Skript; **abgedeckt,
+nicht benannt** = die Eigenschaft ist durch einen anders benannten Test belegt (Datei genannt);
+**kein Gate** = im Baum existiert kein Test dafür. Keine Zeile behauptet einen **Lauf** aus diesem
+Auftrag: er hat weder `npm test` noch `npm run verify` ausgeführt. Einzige gemessene Angabe ist der
+`release-preflight` des Release-Bumps (Exit 0); „grün“ heißt sonst nirgends „gemessen“.
+
+| PR | Geliefert (Beleg im Baum) | Gate-Stand (Rev. 7) |
+|---|---|---|
+| 1 | `src/mcp/backend.ts` (`McpBackend`, `createStoreBackend`), `src/mcp/stdio.ts`, `src/mcp/tools.ts` (10 Definitionen inkl. `list_instances`; `toolDefinitionsForScope("single")` liefert 9), `src/mcp/server.ts` über `runStdioServer` | **T65 benannt** (`tests/unit/mcp-backend.test.ts`); T26/T56 in `tests/unit/hub-federation.test.ts` bzw. `hub-options.test.ts`. Unit/Contract; Lauf siehe CI. |
+| 2 | `src/federation/{registry,ids,errors,net-policy}.ts` plus `tests/unit/{federation-registry,federation-ids,federation-errors,federation-net-policy}.test.ts` | **Benannt:** T01–T13, T34, T41, T62, T79, T80, T85–T87, T91, T92. Unit; T79 prüft Mode-Bits/Allowlist real und den Eigentümer-Pfad nur über injiziertes `stat` (best-effort, wie Rev. 6). |
+| 3 | `src/federation/{client,aggregate}.ts` plus `tests/unit/{federation-client,federation-aggregate}.test.ts` | **Benannt:** T14–T20, T24, T25, T66–T68, T74, T78, T87; T92 zusätzlich clientseitig (DNS-Recheck). Unit/Contract gegen In-Process-HTTP. |
+| 4 | `src/federation/{backend,index}.ts` plus `tests/unit/federation-backend.test.ts` | **Benannt:** T23, T38–T40, T50–T52, T58–T61, T69, T71, T73, T75–T77, T83–T84, T88–T89. Unit. |
+| 5 | `server/hub.ts` (`--registry`, `--app`, `--include-self`/`--no-self`, `/config` mit `app`/`federates`, aggregierendes `/mcp`) plus `tests/unit/hub-federation.test.ts`, `tests/unit/hub-options.test.ts` | **Benannt:** T21, T22, T26, T29, T46–T49, T50, T53–T57, T72, T76, T82, T90, T93, T94 (Datei-Header/describe; nicht jede ID steht im `describe`-Namen). Unit/Contract auf Loopback. |
+| 6 | `server/federator.ts`, `src/cli/instances.ts`, `scripts/federation-smoke.mjs`, Build-Job `federator` (`dist/federator.js`) in `scripts/build.mjs` | **Benannt:** T45/T47/T72 (`tests/unit/federator.test.ts`), T30/T42–T44 (`tests/unit/cli-instances.test.ts`). **Nicht benannt:** T27/T28 (als reale Prozesse in `scripts/federation-smoke.mjs`), T32 (strukturell: der Federator startet keinen HTTP-Server), T70 (Exit-Tabelle in `federation-errors.test.ts`). CI-Step „Federation smoke“ im Job `verify`; Lauf siehe CI. |
+| 7 | `docs/MCP.md`, `docs/FEDERATION.md`, `docs/images/federation-overview.svg`, README (`## The pieces`, `## Deployment shapes`, `## Connecting an agent`), `docs/HERMES.md`, ARCHITECTURE/INTEGRATION/DOCKER/RELEASING/BUILD-SYNC, `examples/federation/instances.json` plus `tests/unit/federation-example-registry.test.ts` | **T31/T63/T64: kein Gate.** Kein Test im Baum nennt diese IDs. T63 ist per Code-Inspektion belegt (`src/embed/attributes.ts` enthält kein `instance`), T64 per Inspektion (`extension/src/settings.ts` unverändert), T31 per Inspektion (kein Browser-Pfad zur Registry). Die Beispiel-Registry ist getestet (Bases mit API-Pfad, `{env}`-only, 0600-Kopie), aber das ist nicht T31/T63/T64. **Geliefert:** `docs/EMBED.md` nennt die Föderations-Grenze (kein `instance`-Attribut, `/mcp` aggregiert, `/notes` bleibt single-env) und verweist auf `FEDERATION.md`. |
+| 8 | `--allow-write`-Fix (`src/mcp/options.ts`), Hub-Exit-4 (`server/index.ts:startupExitCode`), Docker `dist/federator.js` plus Wrapper `bluepencil-hub`/`bluepencil-federator`, `examples/federation/docker-compose.yml`, CI-Step `smoke:federation`, `image`-Job prüft beide Bins | **Benannt/abgedeckt:** `tests/unit/mcp-server-options.test.ts` (kein T-ID: `--allow-write false`, Env nur `1`, Usage-Fehler), `tests/unit/server-start.test.ts` (kein T-ID: Exit 4 für Start-Verweigerungen), `hub-options.test.ts`/`federator.test.ts` (strikte Bool-Flags, F-04/R04). **T33: bedingter/manueller Gate** (CI-Kommentar; laut Auftrag einmal mit Docker ausgeführt, im Baum nicht belegbar). **T35–T37/T81: kein Gate**; teilweise abgedeckt durch T16, T34, T60, T62, T78. `secret-scan`/`verify`: Skripte vorhanden, hier nicht ausgeführt. **Version 0.10.0 + CHANGELOG: geliefert** (`package.json:3` und `extension/manifest.json:4` stehen auf `0.10.0`; `CHANGELOG.md` beginnt mit `## [0.10.0] - 2026-10-23`; `npm run release-preflight` exit 0 — siehe Korrektur (10)). |
+
+**Kurzfassung:** Die PRs 1–6 sind im Baum mit benannten Tests belegt. PR 7 und PR 8 sind
+**dokumentations- und härtefertig, aber nicht testvollständig**: T31, T63, T64, T35–T37 und T81
+existieren nicht als Tests, und T33 ist kein automatisierter Gate. Das ist
+kein „fast fertig“ — es ist der Unterschied zwischen „Code vorhanden“ und „DoD erfüllt“.
+
+## Korrekturen gegenüber Rev. 6
+
+Jede Zeile ist eine **Abweichung von Rev. 6**, nicht eine stille Umdeutung. Wo Rev. 6 faktisch falsch
+geworden ist, wurde der Text darunter zusätzlich an der Fundstelle korrigiert (in Klammern genannt).
+
+1. **Docker-Shape.** Der aggregierende Hub in `examples/federation/docker-compose.yml` läuft mit
+   `--registry --no-self --read-only --allow-insecure`; `--read-only` ist damit **aktiv** in der
+   ausgelieferten Compose (reine Ansicht). Kein stdio-Federator als Compose-Dienst (schon Rev. 6).
+   Die Leaf-Hubs nutzen den Env-Vertrag des Images
+   (`BLUEPENCIL_STORE`, `BLUEPENCIL_NAME`, `BLUEPENCIL_APP`, `BLUEPENCIL_ENVIRONMENT`,
+   `BLUEPENCIL_AUTH_SECRET`) plus Healthchecks statt der `command:`-Arrays aus Rev. 6 §9 (e);
+   `docker-compose.yml` im Repo-Root ist unverändert. *Grund:* Der Aggregator hat hier kein
+   Credential; ohne `--read-only` könnte jeder Container im Netz in seinen flüchtigen
+   `/tmp`-Store schreiben und das Aggregat verfälschen. Das Flag ist Defence-in-Depth hinter dem
+   ohnehin fehlenden `--allow-write`, keinen Schreibpfad öffnet es nicht.
+2. **Image.** Das Image liefert `dist/server.js` **und** `dist/federator.js` plus die Wrapper
+   `bluepencil-hub`/`bluepencil-federator`; der Hub-Entrypoint bleibt der Default (schließt R12; der
+   CI-Job `image` prüft beide Bins mit `--version`). *Grund:* Ein hub-only-Image wäre erst am
+   MCP-Client aufgefallen; der Default musste der Hub bleiben, damit `docker run` und Compose
+   unverändert funktionieren.
+3. **Exit-Codes.** Der Hub beendet **jede fatale Föderations-Start-Verweigerung** mit **4**
+   (vorher 1), gemappt in `server/index.ts:startupExitCode` über `federationStartupExitCode`
+   (`src/federation/errors.ts`) — nicht über die Runtime-Spalte der Tabelle. Das schließt ein
+   fatales `invalid_response` oder `unverified` beim Start ein; `5` ist **ausschließlich**
+   Runtime-Degradierung (`timeout`, `partial`, `instance_unreachable`, …), `usage` bleibt 1.
+   Federator und CLI taten das bereits. Rev. 6 nannte Exit 4 nur im
+   Federator-/CLI-Kontext und ließ den Hub-Pfad offen; das ist korrigiert. *Grund:* Derselbe
+   Fehler (z. B. `invalid_registry`) muss an jedem Startpfad denselben Code haben; über die
+   Runtime-Spalte hätte ein fatales `invalid_response` als „partial“ (5) und `unverified` als
+   Erfolg (0) gelesen — beides würde einen verweigerten Start als Erfolg aussehen lassen.
+4. **`--allow-write`.** `bluepencil mcp --allow-write false` **aktivierte** Writes, weil nur die
+   Anwesenheit geprüft wurde (Fail-open). Fix in PR 8: strikter `booleanFlag` in
+   `src/mcp/options.ts`, Env-Fallback nur `BLUEPENCIL_ALLOW_WRITE=1`, nicht parsebare Werte →
+   Usage-Fehler. Hub, Federator und `instances` wurden auditiert und waren bereits strikt. *Grund:*
+   Ein Sicherheitsschloss, das auf `--allow-write false` öffnet, ist schlimmer als kein Schloss;
+   Rev. 6 hatte die Presence-Annahme stillschweigend übernommen.
+5. **Registry-Beispiel.** Die Bases in `examples/federation/instances.json` müssen den API-Pfad
+   enthalten (`http://hub-dev:8787/api/v1/bluepencil`); eine nackte Origin liefert `not_found` →
+   Exit 4. Die eingecheckte Datei ist nach `git checkout` 0644, deshalb ist `chmod 600` Pflicht
+   (dokumentiert in Compose und in der Kopie+`chmod` der Test-Fixture). *Grund:* Der Hub serviert
+   unter `--base`; der Loader normalisiert nur, er errät den Pfad nicht.
+6. **SVG.** Die Datei heißt `docs/images/federation-overview.svg` (Rev. 6 sagte `federation.svg`);
+   die Panels zeigen die drei Betriebsarten. *Grund:* Der Name folgt dem README-Einsatz („overview“
+   über alle Clients), nicht nur der Föderation; vom Nutzer so entschieden. (§9 ist korrigiert.)
+7. **README-Struktur.** Statt eines einzelnen `## Federation: one agent, several hubs` hat das README
+   jetzt `## The pieces` (alle Clients + Hub in einem Diagramm, Client→Store→Netzwerk→Agent-Tabelle),
+   `## Deployment shapes` (fünf Shapes mit Diagramm und lauffähigem Snippet) und
+   `## Connecting an agent` (generische MCP-Clients; Hermes als ein Beispiel). Die Referenztiefe
+   liegt in `docs/FEDERATION.md`. *Grund:* Nutzerentscheidung — der Einstieg soll die ganze Landschaft
+   zeigen, nicht nur die Föderation; die Föderation ist eine von fünf Shapes. (§9 ist korrigiert.)
+8. **Site/npm.** `scripts/build-site.mjs` rendert ausschließlich `docs/PRIVACY.md` und die
+   hartkodierte Landing-Page; `docs/plans/` kann `site/` nicht erreichen (verifiziert, keine
+   Code-Änderung). **Restrisiko:** `package.json` `"files"` enthält `docs/`, also landen die Pläne
+   derzeit im npm-Tarball. *Grund:* Die Site ist ein Privacy-Policy-Artefakt, kein Docs-Site-Build;
+   der Tarball ist ein separater Fehler, der nicht durch die Site-Logik entsteht.
+9. **Build/Export.** Rev. 6 §6 sah zwei neue Build-Jobs (`federation` → `dist/federation.js`) und
+   einen `./federation`-Export in `package.json` vor. **Beides ist nicht im Baum:** `scripts/build.mjs`
+   hat nur den Job `federator`, und `package.json#exports` enthält kein `./federation`. Die
+   Föderationsmodule sind intern (Bundles der Bins), kein öffentlicher Subpfad. *Grund:* Ein
+   öffentlicher Export hätte die internen Verträge (`McpBackend`, `ReadSource`) einfrieren müssen;
+   das war für 0.10.0 nicht nötig. (§6 ist an der Fundstelle korrigiert.)
+10. **Version/CHANGELOG (aufgelöst).** Rev. 6/§10 und PR 8 verlangten „Version 0.10.0, CHANGELOG“.
+    Der Bump ist inzwischen gelandet: `package.json` (`"version": "0.10.0"`, Zeile 3) und
+    `extension/manifest.json` (`"version": "0.10.0"`, Zeile 4) stehen auf 0.10.0, und `CHANGELOG.md`
+    beginnt mit `## [0.10.0] - 2026-10-23`. `npm run release-preflight` läuft damit durch (Exit 0).
+    README, `docs/RELEASING.md`, `docs/ARCHITECTURE.md` und `docs/BUILD-SYNC.md` behaupten zu Recht
+    0.10.0. *Grund:* Die frühere Abweichung war eine noch offene Release-Vorbereitung; sie ist mit
+    dem Release-Bump geschlossen.
+11. **Release-/CI-Zuschnitt.** Rev. 6 §9 wollte die 0.10.0-Assets „um `bluepencil-federator`
+    ergänzen“ und einen Docker-/Compose-Job als bedingten Gate. Geliefert ist das Gegenteil bzw.
+    etwas anderes: `docs/RELEASING.md` sagt ausdrücklich, der Federator ist **kein** Release-Asset
+    (er steckt im Image und in den Paket-Bins); CI hat **keinen** Compose-Job — der Job `image`
+    baut und startet das Image und prüft beide Wrapper-Bins, der Step `smoke:federation` fährt reale
+    Prozesse ohne Docker, und T33 bleibt manuell/bedingt. *Grund:* Ein fünftes Release-Artefakt wäre
+    eine zweite Wahrheit für dasselbe Binary; der Compose-Bruch wird bewusst nicht als
+    blockierender Gate verkauft, solange kein Docker-Daemon garantiert ist.
+12. **Funktionsname im Backend.** Rev. 6 §4/§6 nannte `createFederationBackend` und
+    `FederationBackendOptions`; der Baum exportiert `createFederatedBackend` und
+    `FederatedBackendOptions` (`src/federation/backend.ts`). *Grund:* reine Namenskorrektur, keine
+    Semantikänderung; `docs/ARCHITECTURE.md` nennt bereits die gelieferte Schreibweise. (§4/§6 sind
+    korrigiert.)
+13. **Deprecated Alias-Codes entfernt.** Rev. 6 §6 sagte „mit PR 4 werden sie entfernt“; sie sind
+    entfernt — `src/federation/errors.ts` enthält weder `ALIASES` noch `instance_unknown`,
+    `instance_read_only`, `read_only_session` oder `aggregate_export_refused`. *Grund:* Der Absatz
+    war eine Ankündigung, kein Ist-Stand; jetzt ist er historisch. (§6 ist an der Fundstelle
+    korrigiert.)
+14. **`docs/EMBED.md` angepasst (aufgelöst).** Rev. 6 §9 verlangte dort eine Endpoint-Tabelle mit
+    „`/mcp` ist kein Browser-Endpunkt; kein `instance`-Attribut“. `docs/EMBED.md` nennt jetzt die
+    Föderations-Grenze: Browser und Embed/Attach-Oberfläche föderieren nie und tragen kein
+    `instance`-Attribut; ein Hub mit `--registry` aggregiert auf `/mcp`, während `/notes` an seine
+    einzelne Umgebung gebunden bleibt; Verweis auf `FEDERATION.md`. *Grund:* Der fehlende Beleg in
+    der Einsteiger-Doku ist nachgezogen.
+
 ## 1. Zielbild
 
 bluepencil 0.10.0 ergänzt die bestehende Einzel-Hub-Welt um **Föderation**: ein Agent liest
@@ -54,7 +175,7 @@ Datenimplementierung.
 (a) MCP client ──stdio──> bluepencil mcp ──> notes.json
 (b) Browser ──/notes (one env)──> Hub (leaf) ──> notes.json
     MCP client ──/mcp──────────> same process, same store
-(c) MCP client ──stdio──> federator ──> registry.json
+(c) MCP client ──stdio──> federator ──> instances.json
                               ├──/config,/notes──> Hub dev     ──> store-dev.json
                               └──/config,/notes──> Hub staging ──> store-staging.json
     Browser ──/notes──> Hub dev OR Hub staging      (never registry/federator)
@@ -122,7 +243,7 @@ die Entscheidungen 7 und 10 wurden durch Nutzerentscheidung präzisiert, nicht u
 | `src/federation/ids.ts` | `instance/noteId` parsen/formatieren; reservierte IDs; `/`-Regel | nein |
 | `src/federation/client.ts` | HTTP-Client für genau eine Instanz (`/config`, `/notes`, `/sessions`, `/health`, `/mcp` für export/import) | ja, nur mit `mode:"write"` **und** `--allow-write` |
 | `src/federation/aggregate.ts` | `ReadSource`-Interface; parallele Reads, Timeout, Teilfehler, `limit`/`truncated`, deterministische Sortierung | nein |
-| `src/federation/backend.ts` | `createFederationBackend`: Read-Aggregat + Write-Routing + Export/Import + Resource-Policy | ja, geroutet |
+| `src/federation/backend.ts` | `createFederatedBackend`: Read-Aggregat + Write-Routing + Export/Import + Resource-Policy | ja, geroutet |
 | `src/federation/errors.ts` | Fehlercodes, MCP-/CLI-Mapping, `Redactor` | nein |
 | `server/hub.ts` | Hub-Start, optional Registry, self-Client, `/mcp`-Backendwahl | ja, lokal |
 | `server/federator.ts` | Federator-CLI + stdio-MCP ohne eigenen Store | nur an Instanzen |
@@ -511,13 +632,17 @@ export interface SelfSource extends ReadSource {   // kombinierter Hub; In-Proce
   exportBundle(options: { format: "json" | "markdown"; includeDone: boolean }): Promise<ToolResponse>;
   importBundle(bundle: unknown, options: ImportOptions): Promise<ToolResponse>;
 }
-export interface FederationBackendOptions {
+export interface FederatedBackendOptions {
   registry: Registry; self?: SelfSource;
   readOnly: boolean; allowWrite: boolean;   // second lock; write needs allowWrite && !readOnly
   includeSelf: boolean; timeoutMs: number; limit: number; appName: string;
 }
-export function createFederationBackend(options: FederationBackendOptions): McpBackend;
+export function createFederatedBackend(options: FederatedBackendOptions): McpBackend;
 ```
+
+> **Rev.-7-Befund (Korrektur):** Der tatsächliche Export heißt `createFederatedBackend` (mit
+> `FederatedBackendOptions`), nicht `createFederationBackend`. Rev. 6 hatte den Namen geraten; die
+> Abweichung ist rein nominell, die Semantik unten gilt unverändert.
 Reads: `list` ruft `aggregateList(sources, self, …)`; `get(id, instance?)` parst die ID und prüft
 eine zusätzlich übergebene `instance` auf Gleichheit (`invalid_argument`); bei fehlender
 Qualifikation `self` (sofern vorhanden) sonst `instance_required`; `sessions` liefert
@@ -567,6 +692,10 @@ Wave-1-Aufträgen; sie normalisieren auf `unknown_instance`, `mode_denied`, `rea
 referenziert. Mit PR 4 werden sie entfernt; die Tests werden dabei auf die kanonischen Namen
 umgestellt.
 
+> **Rev.-7-Befund (Korrektur):** Die Aliase sind inzwischen **entfernt** — `src/federation/errors.ts`
+> enthält kein `ALIASES` und keine der vier Schreibweisen mehr. Der Absatz ist damit historisch;
+> die kanonischen Namen sind die einzigen.
+
 MCP: Tool-Fehler sind `isError`-Results mit `error.code`; nur echte Protokollfehler bleiben
 JSON-RPC-Fehler. CLI/HTTP: **eine kanonische Tabelle in §7** ist die Single Source of Truth;
 §6 leitet daraus nur ab. `Redactor` wird beim Start mit den aufgelösten Env-Werten gebaut,
@@ -591,7 +720,7 @@ export function parseHubArgs(argv: string[]): HubOptions | string;
 `package.json#exports["./server"]`. `parseHubArgs`/`ServerOptions`/Hilfe nehmen **`--app` bzw.
 `BLUEPENCIL_APP`** auf; ohne Flag bleibt der Default `"bluepencil hub"` (T82). `/notes`,
 `/sessions`, `/bundle`, `/health` bleiben lokal (T22, T54). `/mcp` wählt: ohne Registry
-`createStoreBackend` (T56), mit Registry `createFederationBackend` inkl. `self` (T55).
+`createStoreBackend` (T56), mit Registry `createFederatedBackend` inkl. `self` (T55).
 `/config` bekommt `app` (aus `--app`) und `federates` (`registry !== undefined`) (T21, T53).
 `--allow-write` ist ausschließlich das zweite Schloss der **Föderations-Session**: es gate-t
 Writes über das `/mcp`-Aggregat (auch `self`), nicht `/notes` und nicht den bestehenden
@@ -645,7 +774,7 @@ export async function runStdioServer(options: StdioOptions): Promise<void>;
 ```
 `src/mcp/server.ts` parst weiterhin `--store/--environment/--app/--allow-write/--session-id`,
 baut `createStoreBackend` und ruft `runStdioServer`; das Verhalten bleibt identisch (T65).
-`server/federator.ts` ruft dieselbe Schleife mit `createFederationBackend`.
+`server/federator.ts` ruft dieselbe Schleife mit `createFederatedBackend`.
 ### `src/mcp/tools.ts`
 
 `ToolContext` wird von `store: Store` auf `backend: McpBackend` umgestellt; `ToolContext.environment`
@@ -721,7 +850,13 @@ das Flag lockert nur die URL-Policy für Lab-/Compose-Registries.
 `dist/federation.js`, ESM, Node 20) und `federator` (`server/federator.ts` →
 `dist/federator.js`, ESM, Node 20, Shebang prüfen). Der bestehende `server`-Job bleibt
 `server/index.ts` → `dist/server.js`. `npm run smoke:federation` und
-`npm run smoke:cli` (enthält die `instances`-Fälle) werden in PR 8 in `verify` aufgenommen (T33).
+`npm run smoke:cli` (enthält die `instances`-Fälle) werden in PR 8 in den CI-Job `verify`
+aufgenommen (T33).
+
+> **Rev.-7-Befund (Korrektur):** Geliefert ist nur der Job **`federator`**; ein Job `federation`
+> und der Export `./federation` existieren **nicht** in `scripts/build.mjs` bzw. `package.json`.
+> `package.json#bin` enthält dagegen die drei Bins wie oben. Der Block ist damit teils Plan,
+> teils Ist; die Abweichung ist in `## Korrekturen gegenüber Rev. 6` (9) begründet.
 ## 7. Semantik-Tabelle
 ### Reads, Writes, Sessions
 
@@ -792,7 +927,10 @@ das Flag lockert nur die URL-Policy für Lab-/Compose-Registries.
 die **Instanz** antwortet. `/notes` des Hubs bleibt der unveränderte Ein-Env-Vertrag. Ein
 Federator hat keinen `/notes`-Endpunkt, also auch kein HTTP-Mapping für Aggregat-Antworten.
 **§6 leitet ausschließlich aus dieser Tabelle ab;** `mode_denied`/`read_only` sind keine
-Health-Fälle, `invalid_response`/`not_persisted` sind explizit zugeordnet (T70). Eine fehlerhafte
+Health-Fälle, `invalid_response`/`not_persisted` sind explizit zugeordnet (T70). Die Spalten
+`CLI health`/`CLI runtime` gelten für **Laufzeit**fehler; ein **Start**fehler geht über
+`federationStartupExitCode` (`src/federation/errors.ts`): jede fatale Start-Verweigerung ist 4,
+nur `usage` ist 1 — auch ein fatales `invalid_response`/`unverified` beim Start. Eine fehlerhafte
 oder durch die Policy blockierte Base-URL (`invalid_base_url`, z. B. Link-Local/Metadata, private
 IP ohne `--allow-insecure`, Query/Fragment/Userinfo) **verweigert den Start mit Exit 4** — genau
 wie `invalid_registry`; die Tabelle ist deckungsgleich mit `src/federation/errors.ts`.
@@ -947,7 +1085,7 @@ die §10-Gates werden daraus abgeleitet. Jede Test-ID T01–T94 kommt genau einm
 |---|---|
 | `Status` | `0.10.0`; ein Satz: federation is an **agent-side** layer over hubs; browser clients still write to one hub |
 | `Ways to put it on a page` | Zeile für „Agent over several hubs“ → `bluepencil-federator`; Zeile für „Hub with a registry“ → `bluepencil-hub --registry`; Browser-Zeilen unverändert |
-| **neu:** `## Federation: one agent, several hubs` | Kurzüberblick, drei Betriebsarten, Link `docs/FEDERATION.md`, ein Mini-Registry-Beispiel; ausdrücklich: no browser federation, no `instance` attribute |
+| **neu:** `## The pieces`, `## Deployment shapes`, `## Connecting an agent` | Rev. 6 nannte einen Abschnitt `## Federation: one agent, several hubs`; geliefert sind drei: „The pieces“ (alle Clients + Hub in einem Diagramm, Client→Store→Netzwerk→Agent-Tabelle), „Deployment shapes“ (fünf Shapes mit Diagramm und lauffähigem Snippet) und „Connecting an agent“ (generische MCP-Clients, Hermes als ein Beispiel). Referenztiefe bleibt `docs/FEDERATION.md`; ausdrücklich: no browser federation, no `instance` attribute. |
 | `The browser extension` | Ein Profil in v1; ein `federates:true`-Hub ändert das Schreibziel nicht; Link FEDERATION |
 | `Honest Gaps` | kein Cross-Instance-Session-Merge; Aggregat liest alle Notes bis `limit`; Extension ein Hub-Profil; Hubs < 0.10 ohne `federates` sind nicht föderierbar (`federates_missing`); `unverified` nur bei fehlendem `app` |
 | `Documentation` | `docs/MCP.md` und `docs/FEDERATION.md` ergänzen; `docs/HERMES.md` als Beispiel kennzeichnen |
@@ -963,17 +1101,25 @@ die §10-Gates werden daraus abgeleitet. Jede Test-ID T01–T94 kommt genau einm
 | `docs/INTEGRATION.md` | „Choosing a mode“ um Föderation ergänzen; Auth pro Instanz; Security-Notes (keine Browser-Registry, ein Schreibziel) |
 | `docs/DOCKER.md` | Aggregierender Hub plus zwei Leaf-Hubs, Registry-Mount, `BLUEPENCIL_REGISTRY`, one-shot `docker run -i --rm … bluepencil-federator` als angehängter MCP-Client, `--read-only`, `--allow-write`, `--allow-insecure` nur im privaten Netz (HTTP + private IPs; Link-Local/Metadata bleiben immer blockiert); Grenzen (kein TLS, ein Writer pro Store) |
 | `docs/EMBED.md` | Endpoint-Tabelle: `/notes` ist und bleibt lokal; `/mcp` ist kein Browser-Endpunkt; kein `instance`-Attribut |
-| `docs/RELEASING.md` | 0.10.0-Assets um `bluepencil-federator` ergänzen; Reihenfolge Build → Verify → Tag; keine Schema-/Store-Format-Änderung |
-| `.github/workflows/*` | `smoke:federation` und `smoke:cli` in CI; Docker-/Compose-Job (aggregierender Hub + zwei Leaf-Hubs) als **bedingter** Gate (nicht blockierend ohne Docker); der Federator-Gate ist ein one-shot `docker run -i`. |
+| `docs/RELEASING.md` | 0.10.0-Abschnitt: der Federator ist **kein** Release-Asset (er steckt im Image und in den Paket-Bins); Reihenfolge Build → Verify → Tag; keine Schema-/Store-Format-Änderung. Rev. 6 wollte ihn „als Asset ergänzen“ — das ist die inhaltliche Korrektur. |
+| `.github/workflows/*` | `smoke:federation` und `smoke:cli` als Steps im CI-Job `verify`; der Job `image` baut und startet das Image und prüft beide Wrapper-Bins; **kein** Compose-Job — T33 bleibt bedingter/manueller Gate. |
 | `docs/BUILD-SYNC.md` | Version 0.10.0 in `package.json` + `extension/manifest.json`; Federator-Bin ist kein Element-Bundle, `verify:sync` bleibt Element-fokussiert |
+
+> **Rev.-7-Befund (aufgelöst):** Die Doku-Zeilen zu `docs/RELEASING.md`/`docs/BUILD-SYNC.md` sind
+> als *Inhalt* geliefert, und die darin behauptete Version 0.10.0 steht im Baum: `package.json:3`
+> und `extension/manifest.json:4` tragen `0.10.0`, `CHANGELOG.md` beginnt mit
+> `## [0.10.0] - 2026-10-23`. Siehe `## Korrekturen gegenüber Rev. 6` (10).
 ### SVG
 
-`docs/images/federation.svg` — drei Panels nebeneinander: „Single Store“, „Hub + Browser“,
-„Federator + Registry + 2 Hubs“. Durchgezogene Pfeile: Browser → Hub, MCP-Client → Federator,
-Federator → `/config`/`/notes` je Hub. Gestrichelte rote Pfeile mit „not allowed“: Browser →
-Registry, Browser → Federator, Federator → Federator (nested), Write-Fan-out. Jede Box mit
-`role="img"`/`<title>`; Farbe nur als Sekundärinformation, Text ist die Aussage. Keine
-Screenshots, keine Marketing-Grafik.
+`docs/images/federation-overview.svg` (Rev. 6 nannte `federation.svg`) — drei Panels
+nebeneinander: „Single hub“ (ein Store, eine Env), „Hub + registry“ und „Federator (stdio)“.
+Durchgezogene Pfeile: Browser → Hub, MCP-Client → Federator, Federator → `/config`/`/notes` je
+Hub. Gestrichelte rote Pfeile für die verbotenen Pfade (Browser → Föderation, verschachtelte
+Föderation, Instanz `self`). Das SVG trägt `role="img"`, `aria-labelledby` mit `<title>`/`<desc>`;
+Farbe ist nur Sekundärinformation, Text ist die Aussage. Keine Screenshots, keine Marketing-Grafik.
+
+> Die Panels zeigen die **drei Betriebsarten**, nicht die drei Rollen aus Rev. 6; das ist die
+> Nutzerentscheidung aus der Korrektur (6) und der Grund für den Dateinamen.
 ### Fünf Deployment-Shapes (vollständige Beispiele, Englisch)
 
 **(a) Single Store, stdio**
@@ -1009,7 +1155,7 @@ bluepencil-hub \
 ```
 **(c) Hub mit Registry, nur lesend**
 
-`registry.json`:
+`instances.json`:
 
 ```json
 {"schemaVersion":1,
@@ -1018,7 +1164,7 @@ bluepencil-hub \
    "app":"my-web-tool","mode":"read","auth":{"env":"BP_STAGING_TOKEN"}}]}
 ```
 ```bash
-BLUEPENCIL_REGISTRY=./registry.json \
+BLUEPENCIL_REGISTRY=./instances.json \
 bluepencil-hub \
   --store /srv/bluepencil/dev.json \
   --app my-web-tool \
@@ -1030,7 +1176,7 @@ The browser still calls `/notes` on this hub and sees only `dev.json`. An MCP cl
 
 **(d) Federator + zwei Hubs (Dev/Staging-Mix, Dev schreibbar)**
 
-`federation.json`:
+`instances.json`:
 
 ```json
 {"schemaVersion":1,
@@ -1042,11 +1188,11 @@ The browser still calls `/notes` on this hub and sees only `dev.json`. An MCP cl
    "app":"my-web-tool","mode":"read","auth":{"env":"BP_STAGING_TOKEN"}}]}
 ```
 ```bash
-bluepencil-federator --registry ./federation.json --allow-write
+bluepencil-federator --registry ./instances.json --allow-write
 ```
 ```json
 {"mcpServers":{"bluepencil-federation":{"command":"bluepencil-federator",
- "args":["--registry","./federation.json","--allow-write"],
+ "args":["--registry","./instances.json","--allow-write"],
  "env":{"BP_DEV_TOKEN":"set-in-your-shell","BP_STAGING_TOKEN":"set-in-your-shell"}}}}
 ```
 Read: `list_notes` without `instance` returns both environments, each note tagged. Write:
@@ -1076,43 +1222,68 @@ services:
 
   hub-aggregator:
     image: ghcr.io/popoboxxo/bluepencil:0.10.0
-    entrypoint: ["bluepencil-hub"]
-    command: ["--store", "/data/aggregator.json",
-              "--registry", "/etc/bluepencil/federation.json",
+    entrypoint: ["/usr/local/bin/bluepencil-hub"]
+    user: "${BLUEPENCIL_UID:-1000}:${BLUEPENCIL_GID:-1000}"
+    command: ["--store", "/tmp/aggregator.json",
+              "--host", "0.0.0.0", "--port", "8787", "--base", "/api/v1/bluepencil",
+              "--name", "hub-aggregator", "--app", "my-web-tool",
+              "--registry", "/etc/bluepencil/instances.json",
               "--no-self", "--read-only", "--allow-insecure"]   # http + private Docker net; link-local/metadata stay blocked
-    volumes: ["./federation.json:/etc/bluepencil/federation.json:ro"]
+    ports: ["127.0.0.1:${BLUEPENCIL_AGGREGATOR_PORT:-8790}:8787"]
+    volumes: ["./instances.json:/etc/bluepencil/instances.json:ro"]
+    environment:
+      BP_DEV_TOKEN: "${BP_DEV_TOKEN:?BP_DEV_TOKEN is required (see .env.example)}"
+      BP_STAGING_TOKEN: "${BP_STAGING_TOKEN:?BP_STAGING_TOKEN is required (see .env.example)}"
     depends_on: [hub-dev, hub-staging]
 
 volumes:
   dev-data: {}
   staging-data: {}
 ```
-`federation.json` for the aggregator uses `http://hub-dev:8787/api/v1/bluepencil` and
+`instances.json` for the aggregator uses `http://hub-dev:8787/api/v1/bluepencil` and
 `http://hub-staging:8787/api/v1/bluepencil`; `--allow-insecure` is required because these are
 non-loopback `http` targets in a private network. The aggregator's own store is intentionally
 empty, so `--no-self` keeps `self` out of the aggregate; `/notes` on the aggregator stays local
-(empty) — **only `/mcp` aggregates**. No port is published for `hub-aggregator` in this shape; an
-MCP client attaches to `http://hub-aggregator:8787/api/v1/bluepencil/mcp` from inside the private
-Docker network (publish `8788:8787` only if a client outside that network must attach). It must
-not be exposed outside the private Docker network; link-local (`169.254.0.0/16`, `fe80::/10`) and
-metadata targets remain blocked even with the flag. Hubs < 0.10 without `federates` are not
-federable (`federates_missing`). The leaf hubs still accept browser writes on their own `/notes`
-(the browser never talks to the aggregator).
+(empty) — **only `/mcp` aggregates**. The aggregator's `/mcp` door is published on host loopback
+only (`127.0.0.1:8790` in the shipped Compose, mapping container `8787`), so an MCP client on that
+machine attaches via `http://127.0.0.1:8790/api/v1/bluepencil/mcp`; `8788` is the **staging leaf's**
+host port, not the aggregator's. Do not expose the aggregator on a public interface: this shape gives
+it no credential. Link-local (`169.254.0.0/16`, `fe80::/10`) and metadata targets remain blocked
+even with the flag. Hubs < 0.10 without `federates` are not federable (`federates_missing`). The leaf
+hubs still accept browser writes on their own `/notes` (the browser never talks to the aggregator).
+
+> **Rev.-7-Befund (überholt):** Die gelieferte `examples/federation/docker-compose.yml` wich in
+> drei Punkten ab: (1) Rev. 7 lief der Aggregator **ohne** `--read-only`; die aktuelle Entscheidung
+> setzt `--read-only`, weil der Aggregator eine reine Ansicht ist (Writes sind ohne `--allow-write`
+> ohnehin zu; das Flag ist Defence-in-Depth), (2) die Datei heißt `instances.json`, nicht
+> `federation.json`, und (3) die Leaf-Hubs nutzen den **Env-Vertrag** des Images
+> (`BLUEPENCIL_STORE`/`BLUEPENCIL_NAME`/`BLUEPENCIL_APP`/`BLUEPENCIL_ENVIRONMENT`/
+> `BLUEPENCIL_AUTH_SECRET`) plus Healthchecks statt der `command:`-Arrays oben. Die Registry braucht
+> dort `chmod 600` (nach `git checkout` ist sie 0644). Siehe `## Korrekturen gegenüber Rev. 6` (1).
 
 **The pure federator is not a Compose service.** It is the local stdio process the agent starts;
 Compose cannot keep it alive without an attached MCP client. An attached-client example:
 
 ```bash
-docker run -i --rm --network bluepencil_default \
-  -v ./federation.json:/etc/bluepencil/federation.json:ro \
+docker run -i --rm --network bluepencil-federation \
+  --user "$(id -u):$(id -g)" \
+  --env-file .env \
+  --no-healthcheck \
+  -v ./instances.json:/etc/bluepencil/instances.json:ro \
   ghcr.io/popoboxxo/bluepencil:0.10.0 bluepencil-federator \
-  --registry /etc/bluepencil/federation.json --read-only --allow-insecure
+  --registry /etc/bluepencil/instances.json --read-only --allow-insecure
 ```
 
-`-i` keeps stdin open; without an attached client the process exits on stdin EOF. A federator-only
+`-i` keeps stdin open; without an attached client the process exits on stdin EOF. `--env-file .env`
+liest die Registry-Credentials aus der Compose-`.env` (die Token-Zeilen in `.env.example` müssen
+entkommentiert und gefüllt sein), `--user` hält die `0600`-Eigentümerprüfung ein, und
+`--no-healthcheck` schaltet die Hub-`/config`-Probe ab — ein Federator hat keinen HTTP-Endpunkt und
+würde sonst dauerhaft `unhealthy` melden. A federator-only
 process is **not** an HTTP service and has **no `/config`**; `includeSelf` is a documented no-op
-there. The image must contain both the `bluepencil-hub` and `bluepencil-federator` bins; PR 8
-verifies the Dockerfile/entrypoint (currently hub-only, **zu verifizieren**).
+there. The image contains both the `bluepencil-hub` and `bluepencil-federator` bins
+(`Dockerfile`: `dist/server.js` **und** `dist/federator.js` plus die Wrapper); der CI-Job `image`
+startet beide mit `--version`. Rev. 6 stand hier noch auf „currently hub-only, zu verifizieren“ —
+das ist mit PR 8 erledigt (R12 geschlossen).
 ## 10. PR-Reihenfolge, Aufwand, DoD
 ### PRs
 
@@ -1145,6 +1316,40 @@ verifies the Dockerfile/entrypoint (currently hub-only, **zu verifizieren**).
 **Schätzunsicherheit: +1,5 PT** (Referenzrahmen des Auftrags: ~11 PT; Erhöhung nur nach
 Freigabe, keine eigenmächtige Gesamtsumme).
 
+**Ist-Stand (Rev. 7).** Es gibt **keine gemessenen Ist-Werte** — der Auftrag hat keine Zeiten
+erfasst, und dieser Plan erfindet keine. Belegbar ist nur die *Richtung*: PR 1–6 sind im
+geplanten Rahmen geliefert (je ein Modul plus benannte Tests, siehe §0). **PR 7 ist deutlich
+größer als 0,5 PT**: zwei neue Dokumente, ein SVG, drei neue README-Abschnitte mit fünf Shapes
+und Änderungen an acht weiteren Dokumenten. **PR 8 ist ebenfalls größer als 1,5 PT**: neben
+Compose/Image/CI kamen der `--allow-write`-Fail-open-Fix, die Hub-Exit-4-Angleichung und die
+Wrapper-Bins dazu. Die Summe 11,0 PT bleibt als *Schätzung* stehen; sie ist nach unten nicht
+belastbar. Der Versionsbump/CHANGELOG (Korrektur (10)) ist inzwischen erledigt und kein offener
+Restposten mehr.
+
+### DoD-Checkliste
+
+Die Klammern sind der Rev.-7-Befund gegen den Baum. `[x]` heißt **belegt vorhanden**, nicht
+„in diesem Auftrag grün gelaufen“; `[ ]` heißt **nicht belegt oder nicht geliefert**.
+
+- [ ] `npm run typecheck` und `npm run typecheck:ext` grün. *(Nicht ausgeführt; Lauf siehe CI.)*
+- [ ] `npm run test` grün; alle T01–T94 vorhanden und mindestens einmal ausgeführt. *(**Nicht erfüllt:** T31, T35–T37, T63, T64 und T81 haben keinen Test im Baum, T33 ist nur bedingt/manuell — §0. Der Lauf selbst ist nicht belegt.)*
+- [ ] `npm run build`, `npm run build:ext`, `npm run verify:sync`, `npm run size` grün. *(Nicht ausgeführt; Skripte vorhanden, Lauf siehe CI.)*
+- [ ] `npm run secret-scan` grün; keine literalen Credentials in Registry/Doku/Beispielen. *(Nicht ausgeführt; `scripts/secret-scan.mjs` vorhanden, die Beispiele tragen nur `{env}`-Referenzen.)*
+- [ ] `npm run spec:check` grün (in dieser Umgebung nur wegen fehlendem `reqmd` offen); `spec/` ist aus der um `FR-6.15`, `FR-16.10`–`FR-16.15`, `NFR-22` ergänzten `docs/REQUIREMENTS.md` mit `npm run spec` regeneriert. *(`spec/16-mcp/requirements.md` enthält FR-16.10, `spec/99-non-functional/requirements.md` NFR-22; `spec:check` selbst ist ohne `reqmd` nur in CI möglich.)*
+- [x] `docs/MCP.md`, `docs/FEDERATION.md`, `docs/RELEASING.md`, `docs/BUILD-SYNC.md` und CI-Workflows aktualisiert; SVG valide. *(Dateien vorhanden; die SVG ist wohlgeformt gelesen, aber nicht formal validiert.)*
+- [x] Version 0.10.0 in `package.json` und `extension/manifest.json`; CHANGELOG-Eintrag. *(**Geliefert:** `package.json:3` und `extension/manifest.json:4` stehen auf 0.10.0, `CHANGELOG.md` beginnt mit `## [0.10.0] - 2026-10-23`; `npm run release-preflight` exit 0 — Korrektur (10).)*
+- [x] `/notes` unverändert single-env (T22, T54); `/mcp` ohne Registry unverändert (T26, T56). *(T22/T54 in `hub-options.test.ts`, T26/T56 in `hub-federation.test.ts`/`hub-options.test.ts`; Lauf siehe CI.)*
+- [x] Kein neues Browser-Attribut (T63); Extension-Schema unverändert (T64). *(Per Inspektion: `src/embed/attributes.ts` enthält kein `instance`, `extension/src/settings.ts` unverändert. **T63/T64 existieren nicht als Tests.**)*
+- [x] Threat-Model-Maßnahmen umgesetzt: Redirect-Manual (T78), Registry-0600 (T79), SSRF-Policy (T80), Blast-Radius (T81), `--allow-insecure`-Grenzen (T91, T92). *(T78/T79/T80/T91/T92 benannt; **T81 hat kein Gate** — teilweise abgedeckt durch T34/T60/T62.)*
+- [x] `federates`-Pflicht: fehlendes Feld → Startfehler `federates_missing`, kein `unverified` (T90); `unverified` nur bei fehlendem `app` (T49). *(T90 in `federation-client.test.ts` und `hub-federation.test.ts`, T49 in `federation-client.test.ts`.)*
+- [x] Zwei Write-Schlösser: `mode:"write"` **und** `--allow-write`; ohne `--allow-write` auch `self` read-only (T93, T94); `--read-only` stärker. *(T38/T50/T51/T93/T94 in `federation-backend.test.ts` und `hub-federation.test.ts`; zusätzlich `mcp-server-options.test.ts` für den Fail-open-Fix.)*
+- [x] Export/Import über `/mcp` (T71); `allow_env_mismatch` abgelehnt (T84); self-Regeln (T75–T77). *(T71/T84/T75–T77 in `federation-backend.test.ts`.)*
+- [ ] Fünf Deployment-Shapes einmal manuell/CI durchgespielt (a–e); T33 als bedingter Gate dokumentiert. *(T33 ist im CI als bedingter/manueller Gate kommentiert; laut Auftrag einmal mit Docker ausgeführt, im Baum nicht belegbar. Die Shapes sind dokumentiert, nicht alle durchgespielt.)*
+- [x] Rollback-Pfad in `docs/FEDERATION.md` dokumentiert; keine Schema-/Store-Format-Änderung. *(`docs/FEDERATION.md` §15 „Rollback“; keine Schema-/Store-Format-Änderung im Baum.)*
+- [ ] Konventionen: Conventional Commits, max. 72 Zeichen, Englisch; keine Regression. *(Nicht in diesem Auftrag geprüft: keine `git`-Operation, kein Commit.)*
+- [x] Kein Auto-Hand-off an `feature-lifecycle`; Plan wird bewusst übergeben. *(Kein Hand-off ausgeführt.)*
+
+
 ### Rollback
 
 Die 0.10.0-Änderungen sind **additiv**: keine Schema- oder Store-Format-Änderung, die Registry
@@ -1156,25 +1361,6 @@ Dieser Plan ist **kein** `plan-driven`-Input: `pipeline_stages` bleibt bewusst l
 Stage-IDs der `feature-lifecycle`-Pipeline nicht Teil dieses Auftrags sind. Eine Übergabe an die
 Pipeline erfolgt nur durch den Orchestrator/User, nicht automatisch.
 
-### DoD-Checkliste
-
-- [ ] `npm run typecheck` und `npm run typecheck:ext` grün.
-- [ ] `npm run test` grün; alle T01–T94 vorhanden und mindestens einmal ausgeführt.
-- [ ] `npm run build`, `npm run build:ext`, `npm run verify:sync`, `npm run size` grün.
-- [ ] `npm run secret-scan` grün; keine literalen Credentials in Registry/Doku/Beispielen.
-- [ ] `npm run spec:check` grün (in dieser Umgebung nur wegen fehlendem `reqmd` offen); `spec/` ist aus der um `FR-6.15`, `FR-16.10`–`FR-16.15`, `NFR-22` ergänzten `docs/REQUIREMENTS.md` mit `npm run spec` regeneriert.
-- [ ] `docs/MCP.md`, `docs/FEDERATION.md`, `docs/RELEASING.md`, `docs/BUILD-SYNC.md` und CI-Workflows aktualisiert; SVG valide.
-- [ ] Version 0.10.0 in `package.json` und `extension/manifest.json`; CHANGELOG-Eintrag.
-- [ ] `/notes` unverändert single-env (T22, T54); `/mcp` ohne Registry unverändert (T26, T56).
-- [ ] Kein neues Browser-Attribut (T63); Extension-Schema unverändert (T64).
-- [ ] Threat-Model-Maßnahmen umgesetzt: Redirect-Manual (T78), Registry-0600 (T79), SSRF-Policy (T80), Blast-Radius (T81), `--allow-insecure`-Grenzen (T91, T92).
-- [ ] `federates`-Pflicht: fehlendes Feld → Startfehler `federates_missing`, kein `unverified` (T90); `unverified` nur bei fehlendem `app` (T49).
-- [ ] Zwei Write-Schlösser: `mode:"write"` **und** `--allow-write`; ohne `--allow-write` auch `self` read-only (T93, T94); `--read-only` stärker.
-- [ ] Export/Import über `/mcp` (T71); `allow_env_mismatch` abgelehnt (T84); self-Regeln (T75–T77).
-- [ ] Fünf Deployment-Shapes einmal manuell/CI durchgespielt (a–e); T33 als bedingter Gate dokumentiert.
-- [ ] Rollback-Pfad in `docs/FEDERATION.md` dokumentiert; keine Schema-/Store-Format-Änderung.
-- [ ] Konventionen: Conventional Commits, max. 72 Zeichen, Englisch; keine Regression.
-- [ ] Kein Auto-Hand-off an `feature-lifecycle`; Plan wird bewusst übergeben.
 ## 11. Risiken und Gegenmaßnahmen
 
 | # | Risiko | Eintritt | Impact | Mitigation | Frühindikator |
@@ -1197,6 +1383,76 @@ Pipeline erfolgt nur durch den Orchestrator/User, nicht automatisch.
 | R16 | Degradierter Start wird als „alle Instanzen ok“ missverstanden | mittel | mittel | `ok:false`/`partial`/Health 5; T72 | Agent ignoriert `partial` |
 | R17 | Alt-Hubs < 0.10 sind nicht föderierbar | mittel | mittel | harte `federates`-Pflicht (`federates_missing`), klare Fehlermeldung, Upgrade-Hinweis in `docs/FEDERATION.md`; T90 | Startfehler beim ersten Rollout; gemischte Flotte |
 | R18 | **DNS-Check-to-Connect-Restrisiko (TOCTOU/Rebinding):** zwischen der Pre-Flight-Auflösung in `checkBaseUrl` und der eigenen DNS-Auflösung des `fetch` kann sich die Antwort ändern; ein Angreifer mit kontrolliertem DNS kann nach dem Check auf Link-Local/Metadata umbiegen | niedrig–mittel (kontrolliertes DNS + kurze TTL nötig) | hoch (SSRF/Metadata, falls der Check umgangen wird) | Der Code **pinnt die aufgelöste IP in v1 nicht** (`checkBaseUrl` prüft, `fetch` verbindet erneut); das ist ein **dokumentiertes Restrisiko**, keine stille Mitigation. Begrenzend wirken: Check vor **jedem** Request, `redirect:"manual"`, `allowedHosts`-Allowlist, Link-Local/Metadata-Block literal und aufgelöst. Für ein späteres Release: gepinnter Dispatcher/Agent (Verbindung auf die geprüfte IP), strikte Allowlist, optional Proxy mit eigener Auflösung | DNS-Antwort wechselt zwischen Check und Verbindung; Registry-Hosts ohne Allowlist; ungewöhnliche TTLs |
+
+### Status der Risiken (Rev. 7)
+
+Die Tabelle bleibt als Planungshistorie stehen; hier steht, was davon im Baum tatsächlich
+eingetreten oder entschärft ist. „Entschärft“ heißt: Mechanismus vorhanden und (mindestens) ein
+Test benannt — nicht, dass der Test in diesem Auftrag lief.
+
+- **R1 — Backend-Refactor bricht Single-Store-Parität: überwiegend entschärft.** Der Refactor ist
+  geliefert (`src/mcp/backend.ts`, `createStoreBackend`), T65 ist benannt, T26/T56 existieren.
+  Kein Hinweis auf eine Parity-Verletzung im Baum; der Lauf ist nicht belegt.
+- **R2 — `/mcp`-Aggregat als Bruch von FR-16.9: entschärft, dokumentarisch.** §4 und
+  `docs/FEDERATION.md` formulieren die Garantie ausdrücklich „pro Instanz“; T26/T55/T56 vorhanden.
+  Das Risiko bleibt ein Leser-Missverständnis, kein Code-Risiko.
+- **R3 — Env-Isolation verletzt: entschärft für die Code-Pfade.** Kein Env-Rewrite, kein
+  `allow_env_mismatch`-Forward, keine Dedupe; T39/T54/T89 vorhanden. Das Aggregat ist weiterhin
+  absichtlich Multi-Env — die Ausnahme ist benannt, nicht still.
+- **R4 — Secret-Leak: teilweise entschärft.** Vorhanden: `{env}`-only, `Redactor` (T62),
+  `list_instances` ohne `base`/`auth` (T60), T16/T34/T78. **Nicht vorhanden:** T35–T37 und T81 als
+  Tests. Die Mitigation existiert, ihr Nachweis ist lückenhaft.
+- **R11 — `--allow-insecure` zu weit geöffnet: entschärft.** Default aus, genau eine Warnzeile auf
+  stderr (`server/hub.ts`, `server/federator.ts`), Link-Local/Metadata literal **und** nach DNS
+  immer blockiert (`src/federation/net-policy.ts`); T41/T80/T91/T92 vorhanden.
+- **R12 — Image ohne Federator-Bin: geschlossen.** `Dockerfile` kopiert `dist/server.js` **und**
+  `dist/federator.js` plus beide Wrapper; der CI-Job `image` startet `bluepencil-federator
+  --version/--help` und `bluepencil-hub --version`. Der Frühindikator `exec: not found` kann so
+  nicht mehr in den Release gelangen.
+- **R14 — Registry-Tampering/SSRF: entschärft, mit Rest.** `loadRegistryFile` verlangt 0600 und
+  prüft den Eigentümer (best-effort über `fs.stat`), `allowedHosts` und der Link-Local-/Metadata-
+  Block greifen; T79/T80 vorhanden. Der Eigentümer-Check ist ohne `root` nicht real testbar
+  (unverändert gegenüber Rev. 6).
+- **R18 — DNS-TOCTOU: offen, dokumentiert.** Der Code pinnt die aufgelöste IP nicht;
+  `docs/FEDERATION.md` (§ „Residual risk: DNS check-to-connect TOCTOU“) sagt das ausdrücklich.
+  Keine stille Mitigation, siehe `## Offene Restrisiken (Stand Rev. 7)`.
+
+## Offene Restrisiken (Stand Rev. 7)
+
+Diese Liste ist absichtlich ungemütlich: sie nennt, was auch nach PR 8 offen ist. Nichts davon ist
+ein „später mal“, sondern eine bewusste 0.10.0-Grenze.
+
+1. **DNS-Check-to-Connect-TOCTOU.** Die aufgelöste IP wird nicht gepinnt; zwischen Pre-Flight-Check
+   und `fetch`-Verbindung kann DNS umbiegen. Dokumentiert in `docs/FEDERATION.md`; Gegenmittel
+   (gepinnter Dispatcher) ist ein eigenes Release.
+2. **`spec:check` braucht `reqmd`.** Der Check läuft nur in CI bzw. wo `reqmd` installiert ist; in
+   dieser Umgebung ist er nicht ausführbar. `spec/` enthält FR-16.10 und NFR-22, aber „grün“ ist
+   hier nicht gemessen.
+3. **Extension: ein Hub-Profil.** Kein Multi-Profil, kein `instance`; zwei Hubs nur über zwei
+   Browser-Profile oder den Federator. Bewusst kein Umbau in 0.10.0.
+4. **Kein Cross-Instance-Session-Merge.** Sessions bleiben instanzlokal; `instance/sessionRef` ist
+   Label/Filter, keine neue Semantik (Entscheidung 12).
+5. **Aggregat ist durch `limit` begrenzt.** Default 200, max 1000, `truncated` zeigt die Kürzung;
+   ein Agent, der „alle Notes“ erwartet, sieht ggf. nur die ersten 200.
+6. **Hubs < 0.10 sind nicht föderierbar.** Fehlendes `federates` ist ein Startfehler
+   (`federates_missing`); gemischte Flotten brauchen ein Upgrade der Leaves.
+7. **Kein npm-Publish in diesem Release.** Installation nur über Tag/Git bzw. das lokale Paket;
+   `docs/RELEASING.md` nennt das ausdrücklich.
+8. **`docs/plans/` liegt im npm-Tarball.** `package.json#files` enthält `docs`; die Pläne sind damit
+   Teil des veröffentlichten Pakets. Die Site ist sauber (`build-site.mjs` rendert nur
+   `docs/PRIVACY.md`), der Tarball nicht.
+9. **T33 ist nur ein manueller/bedingter Gate.** Der Compose-Image-Smoke läuft nicht in CI; der
+   CI-Step `smoke:federation` fährt reale Prozesse ohne Docker. Ein Compose-Bruch fällt erst beim
+   manuellen Lauf auf.
+10. **Sieben Test-IDs haben kein automatisiertes Gate.** T31, T63, T64 (PR 7) sowie T35–T37 und T81
+    (PR 8) existieren nicht als Tests; T33 ist zusätzlich nur bedingt/manuell. Die Eigenschaften sind
+    teils per Inspektion, teils gar nicht belegt. Das ist die größte offene Lücke gegenüber der DoD.
+11. **Registry ist Startzeit-Konfiguration.** Kein Hot-Reload/SIGHUP; Änderungen wirken erst beim
+    nächsten Start oder bei `instances health` (`docs/FEDERATION.md`).
+12. **Compose-Registry hängt am Host-Dateisystem.** Die 0600-/uid-Prüfung ist fail-closed; auf
+    Hosts, deren File-Sharing Bind-Mount-Modi umschreibt (einige Docker-Desktop-Setups), muss die
+    Registry in ein Named Volume kopiert werden. Das ist dokumentiert, aber ein Betriebsrisiko.
+
 ## 12. Review-Ergebnis
 
 **Durchlauf 1** (`RVW-01…RVW-21`): Verdict `CHANGES_REQUESTED` (1 blocker, 10 major,
