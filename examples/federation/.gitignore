@@ -1,0 +1,3 @@
+# Compose reads this file; it carries the leaf tokens (BP_DEV_TOKEN/BP_STAGING_TOKEN).
+# Never commit it — .env.example is the documented, secret-free template.
+.env

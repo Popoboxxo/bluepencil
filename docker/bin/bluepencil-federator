@@ -1,0 +1,21 @@
+#!/bin/sh
+#
+# `bluepencil-federator` inside the image — the same bin name `package.json` declares.
+#
+# The federator is a **stdio** MCP server: it has no store and no HTTP endpoint, and it lives exactly
+# as long as the client that started it. That is why it is not a Compose service. A client starts it
+# per session:
+#
+#   docker run -i --rm --network <bluepencil network> --user "$(id -u):$(id -g)" \
+#     -v ./instances.json:/etc/bluepencil/instances.json:ro \
+#     -e BP_DEV_TOKEN -e BP_STAGING_TOKEN \
+#     ghcr.io/popoboxxo/bluepencil:<version> bluepencil-federator \
+#     --registry /etc/bluepencil/instances.json --read-only --allow-insecure
+#
+# `--user` matches the uid that owns the 0600 registry file; the image's `node` user is uid 1000.
+#
+# `-i` keeps stdin open; stdout is newline-delimited JSON-RPC and carries no diagnostics. The default
+# ENTRYPOINT dispatches this bin before it prints anything, so the protocol stream stays clean.
+set -eu
+
+exec node /app/federator.js "$@"

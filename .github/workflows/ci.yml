@@ -4,6 +4,9 @@
 # the headless and the embedded surfaces with real processes:
 #   - cli-smoke: exit codes, conflict refusal, environment isolation, atomic writes
 #   - mcp-smoke: JSON-RPC handshake, read-only default, environment binding, import fidelity
+#   - federation-smoke: two leaf hubs + an aggregating hub (`--registry --no-self`) and the stdio
+#     federator as real processes, so the federation bins and the registry gates are exercised
+#     (T33's Compose image smoke stays a conditional/manual gate; this leg needs no Docker daemon)
 #   - pack-smoke: every path of the exports map exists, imports and is published
 #   - install-smoke: the package installs from a tarball and every documented subpath resolves by
 #     package specifier from the installed copy; the git `prepare`-on-install leg is a non-blocking
@@ -156,6 +159,13 @@ jobs:
 
       - name: MCP smoke
         run: npm run smoke:mcp
+
+      - name: Federation smoke (aggregating hub + stdio federator)
+        # Two real leaf hubs, an aggregating hub (`--registry --no-self`) and the built federator over
+        # newline-delimited JSON-RPC: proves the federation start-up gates (registry 0600, identity,
+        # degraded peers) and that both bins run, not just that they typecheck. T33 (Compose image
+        # smoke) stays a conditional/manual gate — this leg needs no Docker daemon.
+        run: npm run smoke:federation
 
       - name: Packaging smoke
         run: npm run smoke:pack
@@ -327,3 +337,26 @@ jobs:
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/api/v1/bluepencil/notes)" = "401"
           docker exec bp-hub wget -q -O /dev/null http://127.0.0.1:8787/api/v1/bluepencil/health || true
           docker rm -f bp-hub
+
+      - name: Both bins are in the image
+        # FR-16.12–16.15 / plan risk R12: a hub-only image is only discovered when an MCP client
+        # tries to start the federator. This invokes the bins through the image's default ENTRYPOINT
+        # exactly like `docker run … bluepencil-federator` does. It is not a Compose/federation
+        # smoke (T33 stays a conditional/manual gate) — it only proves the image ships both bins.
+        #
+        # Asserting only an exit code is not enough: the entrypoint dispatches on the first argument,
+        # so dropping the `bluepencil-federator` wrapper would still make `docker run … bluepencil-federator
+        # --help` answer — with the *hub's* help. The banner must name the program that was asked for.
+        run: |
+          set -euo pipefail
+          federator_help="$(docker run --rm bluepencil-hub:ci bluepencil-federator --help)"
+          hub_help="$(docker run --rm bluepencil-hub:ci bluepencil-hub --help)"
+          federator_banner="$(printf '%s\n' "$federator_help" | sed -n '1p')"
+          hub_banner="$(printf '%s\n' "$hub_help" | sed -n '1p')"
+          printf 'federator: %s\nhub: %s\n' "$federator_banner" "$hub_banner"
+          # Real first lines: "bluepencil federator <version> — MCP over stdio, …" and
+          # "bluepencil hub <version> — static site + notes API on one port."
+          printf '%s\n' "$federator_banner" | grep -q '^bluepencil federator '
+          printf '%s\n' "$hub_banner" | grep -q '^bluepencil hub '
+          docker run --rm bluepencil-hub:ci bluepencil-federator --version
+          docker run --rm bluepencil-hub:ci bluepencil-hub --version
