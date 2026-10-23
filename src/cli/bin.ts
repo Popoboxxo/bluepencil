@@ -51,8 +51,9 @@ import {
 import type { Bundle, Environment, Note, NoteFilter, Session } from "../core/model";
 import { VERSION, createBlueprint } from "../index";
 import { createMemoryAdapter } from "../adapters/memory";
+import { runInstances } from "./instances";
 
-const EXIT = { ok: 0, usage: 1, conflict: 2, envMismatch: 3, invalid: 4 } as const;
+const EXIT = { ok: 0, usage: 1, conflict: 2, envMismatch: 3, invalid: 4, federation: 5 } as const;
 
 /** Who the CLI records as the exporter of the files it writes. */
 const EXPORTED_BY = `cli:${process.env.USER ?? "user"}`;
@@ -417,6 +418,9 @@ Usage:
       [--mode ...] [--dry-run] [--json] [--on-conflict ...] [--allow-env-mismatch]
   bluepencil notes <file>                      print the notes of a file as JSON
   bluepencil mcp --store <file> --environment dev [--app name] [--allow-write]
+  bluepencil instances validate --registry <file> [--json] [--allow-insecure]  offline registry check
+  bluepencil instances list     --registry <file> [--json] [--allow-insecure]  id/app/base/mode, never secrets
+  bluepencil instances health   --registry <file> [--json] [--check] [--timeout <ms>] [--allow-insecure]
   bluepencil --version | --help
 
 Conflicts (merge/import):
@@ -434,10 +438,16 @@ Reports (--json):
 Read path: a document without "schemaVersion" is migrated to the current schema, everything else
 is validated exactly as written — invalid input is refused with exit 4.
 
+Instances: --allow-insecure admits http and private IPs in the registry (link-local and metadata
+stay blocked). validate/list stay offline — the flag only changes the URL policy, never DNS;
+health may resolve DNS and probe over HTTP.
+
 Debugging: --debug rethrows an unexpected error with its stack trace instead of one line.
 
-Environment: BLUEPENCIL_ENVIRONMENT, BLUEPENCIL_STORE (defaults for mcp).
-Exit codes: 0 ok, 1 usage, 2 conflicts (refused), 3 environment mismatch, 4 invalid input.`;
+Environment: BLUEPENCIL_ENVIRONMENT, BLUEPENCIL_STORE (defaults for mcp),
+BLUEPENCIL_REGISTRY (default for instances --registry).
+Exit codes: 0 ok, 1 usage, 2 conflicts (refused), 3 environment mismatch, 4 invalid input,
+5 federation degraded (instances health: an instance is unreachable or unverified).`;
 
 async function main(argv: string[]): Promise<void> {
   if (argv.includes("--version") || argv[0] === "version") {
@@ -445,6 +455,15 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
   const { command, positionals, flags } = parseArgv(argv);
+  // `instances` owns its own flags (`--registry`, `--check`, `--timeout`) and exit codes; running
+  // it through the note-set option validator would misread them as CLI-wide options.
+  if (command === "instances") {
+    // Never `process.exit()` here: a piped stdout is flushed asynchronously, so an explicit exit
+    // truncates any JSON report larger than the pipe chunk (64 KiB). Setting the code and returning
+    // lets the event loop drain stdout before the process ends.
+    process.exitCode = await runInstances(argv.slice(1));
+    return;
+  }
   validateOptions(flags);
 
   switch (command) {

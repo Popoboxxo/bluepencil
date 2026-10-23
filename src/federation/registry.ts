@@ -32,7 +32,7 @@
 
 import { readFile, stat as statFile } from "node:fs/promises";
 
-import { FederationError } from "./errors";
+import { FederationError, type FederationErrorCode } from "./errors";
 import { INSTANCE_ID_PATTERN, isReservedInstance } from "./ids";
 import {
   UrlPolicyError,
@@ -871,6 +871,86 @@ function looksLikeLoadOptions(value: NodeJS.ProcessEnv | LoadRegistryOptions): b
 }
 
 /**
+ * Reads and parses a registry file after the permission gate, without any network access.
+ *
+ * Split out so the start-up loader (DNS on) and the offline CLI path
+ * ({@link loadRegistryFile}, DNS off) share one implementation of the parts that must never
+ * differ: the stat-before-read ordering (F-19), the 0600/owner check and the JSON parse error.
+ */
+async function readRegistryDocument(
+  path: string,
+  stat?: (path: string) => Promise<RegistryFileStat>,
+): Promise<unknown> {
+  /* F-19: stat/permission check FIRST. A registry that group or others can read must be rejected
+   * before its content is parsed or validated. */
+  const statFileFn = stat ?? ((target: string) => statFile(target));
+  let info: RegistryFileStat;
+  try {
+    info = await statFileFn(path);
+  } catch (error) {
+    throw new FederationError(
+      "invalid_registry",
+      `cannot read registry file ${path}: ${errorMessage(error)}`,
+    );
+  }
+
+  assertFilePermissions(path, info);
+
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    throw new FederationError(
+      "invalid_registry",
+      `cannot read registry file ${path}: ${errorMessage(error)}`,
+    );
+  }
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    throw new RegistryError([
+      {
+        path: "",
+        code: "invalid_json",
+        message: `Registry file is not valid JSON: ${errorMessage(error)}`,
+      },
+    ]);
+  }
+}
+
+/**
+ * Maps a loader failure onto the canonical start-up taxonomy (plan §7).
+ *
+ * `RegistryError` carries the precise validation findings, but a process exit code can only speak
+ * the canonical codes: a reserved id is `self_reference` (T47), a duplicate id is `id_collision`
+ * (T45), an unset credential is `missing_credential` and a policy-blocked URL stays
+ * `invalid_base_url`. Everything else is `invalid_registry`. The message aggregates the issues but
+ * never quotes a credential (NFR-22).
+ *
+ * A `FederationError` from the loader (unreadable file, unsafe permissions) already is canonical
+ * and passes through unchanged.
+ */
+export function registryStartupError(error: unknown): FederationError {
+  if (error instanceof FederationError) return error;
+  if (error instanceof RegistryError) {
+    const codes = new Set(error.issues.map((entry) => entry.code));
+    const code: FederationErrorCode = codes.has("reserved_id")
+      ? "self_reference"
+      : codes.has("duplicate_id")
+        ? "id_collision"
+        : codes.has("missing_env_var")
+          ? "missing_credential"
+          : codes.has("invalid_base_url")
+            ? "invalid_base_url"
+            : "invalid_registry";
+    return new FederationError(code, error.message);
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return new FederationError("invalid_registry", message);
+}
+
+/**
  * Reads, validates and resolves a registry file.
  *
  * Error contract: unreadable file or unsafe permissions/ownership → `FederationError
@@ -914,41 +994,7 @@ export async function loadRegistry(
 
   /* F-19: stat/permission check FIRST. A registry that group or others can read must be rejected
    * before its content is parsed or validated. */
-  const stat = options.stat ?? ((target: string) => statFile(target));
-  let info: RegistryFileStat;
-  try {
-    info = await stat(path);
-  } catch (error) {
-    throw new FederationError(
-      "invalid_registry",
-      `cannot read registry file ${path}: ${errorMessage(error)}`,
-    );
-  }
-
-  assertFilePermissions(path, info);
-
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch (error) {
-    throw new FederationError(
-      "invalid_registry",
-      `cannot read registry file ${path}: ${errorMessage(error)}`,
-    );
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (error) {
-    throw new RegistryError([
-      {
-        path: "",
-        code: "invalid_json",
-        message: `Registry file is not valid JSON: ${errorMessage(error)}`,
-      },
-    ]);
-  }
+  const parsed = await readRegistryDocument(path, options.stat);
 
   /* F-01: load-time DNS resolution closes the rebinding gap; validation stays offline otherwise.
    * The deadline keeps a hostile resolver from stalling start-up indefinitely. */
@@ -961,5 +1007,37 @@ export async function loadRegistry(
   });
   if (!result.ok) throw new RegistryError(result.issues);
 
+  return result.registry;
+}
+
+export interface LoadRegistryFileOptions {
+  /** Admits `http` and RFC1918/ULA targets for the offline URL check. Link-local stays blocked. */
+  allowInsecure?: boolean;
+}
+
+/**
+ * Offline registry loader for `bluepencil instances validate|list` (FR-16.15).
+ *
+ * Performs the same file permission gate, JSON parse and {@link validateRegistry} pass as
+ * {@link loadRegistry}, but **deliberately injects no DNS resolver**: the check classifies literal
+ * addresses only, so the command works without network access and cannot stall on a resolver. A
+ * hostname that rebinds to link-local space is therefore only caught at start-up, which is the
+ * documented asymmetry (the loader's job is to start a session; this one is a file check).
+ *
+ * The credential values are still resolved against `env` (default `process.env`), because a
+ * registry that names an unset variable is invalid regardless of connectivity. Nothing from the
+ * file is ever printed by this module.
+ */
+export async function loadRegistryFile(
+  path: string,
+  env?: NodeJS.ProcessEnv,
+  options: LoadRegistryFileOptions = {},
+): Promise<ResolvedRegistry> {
+  const parsed = await readRegistryDocument(path);
+  const result = await validateRegistry(parsed, {
+    allowInsecure: options.allowInsecure,
+    env,
+  });
+  if (!result.ok) throw new RegistryError(result.issues);
   return result.registry;
 }

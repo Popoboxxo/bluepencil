@@ -242,6 +242,57 @@ describe("parseHubArgs — federation flags", () => {
   });
 });
 
+describe("parseHubArgs — strict boolean flags (F-04)", () => {
+  const parse = (args: string[]): HubOptions | string =>
+    parseHubArgs(["--store", "notes.json", ...args]);
+
+  it("keeps every bare flag true", () => {
+    expect(optionsOf(parse(["--read-only", "--allow-write", "--allow-insecure"]))).toMatchObject({
+      readOnly: true,
+      allowWrite: true,
+      allowInsecure: true,
+    });
+    expect(optionsOf(parse(["--allow-env-mismatch", "--quiet"]))).toMatchObject({
+      allowEnvMismatch: true,
+      quiet: true,
+    });
+  });
+
+  it("parses --allow-write=false/true and rejects non-boolean values (no fail-open)", () => {
+    expect(optionsOf(parse(["--allow-write", "false"])).allowWrite).toBe(false);
+    expect(optionsOf(parse(["--allow-write=false"])).allowWrite).toBe(false);
+    expect(optionsOf(parse(["--allow-write=true"])).allowWrite).toBe(true);
+
+    expect(parse(["--allow-write=yes"])).toBe(
+      '--allow-write must be true or false (got "yes")',
+    );
+    expect(parse(["--allow-write", "yes"])).toBe(
+      '--allow-write must be true or false (got "yes")',
+    );
+  });
+
+  it("parses --read-only=false and --allow-insecure false", () => {
+    expect(optionsOf(parse(["--read-only=false"])).readOnly).toBe(false);
+    expect(optionsOf(parse(["--allow-insecure", "false"])).allowInsecure).toBe(false);
+  });
+
+  it("maps --include-self/--no-self values onto includeSelf", () => {
+    expect(optionsOf(parse(["--include-self=false"])).includeSelf).toBe(false);
+    expect(optionsOf(parse(["--include-self=true"])).includeSelf).toBe(true);
+    expect(optionsOf(parse(["--no-self=false"])).includeSelf).toBe(true);
+    expect(optionsOf(parse(["--no-self=true"])).includeSelf).toBe(false);
+
+    expect(String(parse(["--include-self=false", "--no-self=true"]))).toContain(
+      "--include-self and --no-self are mutually exclusive",
+    );
+  });
+
+  it("parses --allow-env-mismatch=false and --quiet=false", () => {
+    expect(optionsOf(parse(["--allow-env-mismatch=false"])).allowEnvMismatch).toBe(false);
+    expect(optionsOf(parse(["--quiet=false"])).quiet).toBe(false);
+  });
+});
+
 describe("GET {base}/config — identity and federation flag", () => {
   it("reports the default app and federates:false without a registry (T21, T82)", async () => {
     const { config } = await serve({ storePath: tempStorePath() });

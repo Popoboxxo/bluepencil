@@ -36,6 +36,7 @@ import {
 } from "node:http";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { hostname as osHostname } from "node:os";
+import { booleanFlag } from "../src/argv";
 import { isRecord } from "../src/core/adapter";
 import { toMarkdown } from "../src/core/export/markdown";
 import {
@@ -1168,7 +1169,9 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
     const next = argv[index + 1];
     return next !== undefined && !next.startsWith("--") ? next : undefined;
   };
-  const has = (flag: string): boolean => argv.includes(flag);
+  /** True iff the flag appears at all — used only for "both given" diagnostics. */
+  const present = (flag: string): boolean =>
+    argv.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
   /* F5: a present flag without a value must be a usage error. Treating it as absent silently
    * applied a default (or let a registry default win), so `--store x --registry` looked valid while
    * the caller's typo stayed invisible. `--flag=value` always counts as present. */
@@ -1266,13 +1269,35 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
   const registry = registryRaw;
 
   // `--include-self` and `--no-self` are opposites; silently letting the later one win would hide a
-  // scripted mistake. Unset means "let the registry defaults decide" (default true in the plan).
-  const includeSelfFlag = has("--include-self");
-  const noSelfFlag = has("--no-self");
-  if (includeSelfFlag && noSelfFlag) {
+  // scripted mistake. Both accept an explicit `=true|false` (the strict shared parser), so
+  // `--no-self=false` means "include self" instead of being misread as a bare presence check.
+  // `--no-self=false` → includeSelf true; `--include-self=false` → includeSelf false.
+  const includeSelfFlag = booleanFlag(argv, "--include-self");
+  if (typeof includeSelfFlag === "string") return includeSelfFlag;
+  const noSelfFlag = booleanFlag(argv, "--no-self");
+  if (typeof noSelfFlag === "string") return noSelfFlag;
+  if (present("--include-self") && present("--no-self")) {
     return "--include-self and --no-self are mutually exclusive";
   }
-  const includeSelf = includeSelfFlag ? true : noSelfFlag ? false : undefined;
+  const includeSelf = present("--include-self")
+    ? includeSelfFlag === true
+    : present("--no-self")
+      ? noSelfFlag === false
+      : undefined;
+
+  /* F-04: every boolean flag is parsed, not probed with `includes`. `--allow-write false` used to
+   * evaluate true (presence-only), which is a fail-open on the write lock and the network policy;
+   * a non-boolean value is now a usage error. */
+  const readOnlyFlag = booleanFlag(argv, "--read-only");
+  if (typeof readOnlyFlag === "string") return readOnlyFlag;
+  const allowWriteFlag = booleanFlag(argv, "--allow-write");
+  if (typeof allowWriteFlag === "string") return allowWriteFlag;
+  const allowInsecureFlag = booleanFlag(argv, "--allow-insecure");
+  if (typeof allowInsecureFlag === "string") return allowInsecureFlag;
+  const allowEnvMismatchFlag = booleanFlag(argv, "--allow-env-mismatch");
+  if (typeof allowEnvMismatchFlag === "string") return allowEnvMismatchFlag;
+  const quietFlag = booleanFlag(argv, "--quiet");
+  if (typeof quietFlag === "string") return quietFlag;
 
   const journalRaw = get("--journal") ?? process.env.BLUEPENCIL_JOURNAL;
   if (journalRaw !== undefined && !["auto", "git", "file", "none"].includes(journalRaw)) {
@@ -1348,7 +1373,7 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
     ...(base !== undefined ? { base } : {}),
     ...(root !== undefined ? { root } : {}),
     environment,
-    readOnly: has("--read-only"),
+    readOnly: readOnlyFlag ?? false,
     // `--auth-secret <value>` or the environment, never both: an unset secret means "no
     // authentication", so a typo in the flag must not silently fall back to that (#36).
     ...(authSecret !== undefined ? { authSecret } : {}),
@@ -1356,7 +1381,7 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
     ...(tokenTtlSeconds !== undefined ? { tokenTtlSeconds } : {}),
     ...(revokedTokens !== undefined ? { revokedTokens } : {}),
     ...(revokedPath !== undefined ? { revokedPath } : {}),
-    allowEnvMismatch: has("--allow-env-mismatch"),
+    allowEnvMismatch: allowEnvMismatchFlag ?? false,
     ...(mirror !== undefined ? { mirror } : {}),
     ...(cors !== undefined ? { cors } : {}),
     ...(journalRaw !== undefined ? { journal: journalRaw as "auto" | "git" | "file" | "none" } : {}),
@@ -1368,12 +1393,12 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
     ...(appName !== undefined ? { appName } : {}),
     ...(registry !== undefined ? { registry } : {}),
     ...(includeSelf !== undefined ? { includeSelf } : {}),
-    allowWrite: has("--allow-write"),
-    allowInsecure: has("--allow-insecure"),
+    allowWrite: allowWriteFlag ?? false,
+    allowInsecure: allowInsecureFlag ?? false,
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...(concurrency === undefined ? {} : { concurrency }),
     ...(limit === undefined ? {} : { limit }),
-    quiet: has("--quiet"),
+    quiet: quietFlag ?? false,
   };
 }
 

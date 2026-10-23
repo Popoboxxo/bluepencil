@@ -8,7 +8,8 @@
  * `./server` entry and existing consumers rely on, so splitting the implementation changed no
  * import path.
  */
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { SERVER_VERSION } from "./handler";
 import { HELP, StoreFileError, flushHubJournal, parseHubArgs, startHub } from "./hub";
 
@@ -68,8 +69,25 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
-const entry = process.argv[1];
-if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
+/**
+ * True when this module is the process entry point.
+ *
+ * npm installs `node_modules/.bin/<bin>` as a symlink, so `argv[1]` is the symlink while
+ * `import.meta.url` is Node's realpath of the target. Comparing the URL strings would therefore
+ * be false and the bin would exit 0 without doing anything — a silent no-op. Compare real paths
+ * instead; a failed resolution (missing file, broken link) means "not the entry point".
+ */
+function isEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
   // Only the real entry point starts a server; importing this module (tests) never does.
   void main(process.argv.slice(2));
 }

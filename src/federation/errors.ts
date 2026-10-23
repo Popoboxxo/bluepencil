@@ -299,3 +299,15 @@ export function toExitCode(
   if (row === undefined) return context === "runtime" ? 4 : 5;
   return row[context];
 }
+
+/**
+ * True for the failures a federator tolerates at start-up (plan §6/§7, T72/R6).
+ *
+ * A peer that is not up yet must not take the whole session down: it stays in `list_instances`
+ * with `ok:false`, makes aggregates `partial` and keeps `instances health` at exit 5. Every
+ * identity failure (`identity_mismatch`, `federates_missing`, `nested_federation`, …) is
+ * deliberately **not** degradable — starting against a mis-wired peer is worse than not starting.
+ */
+export function isDegradable(code: FederationErrorCode): boolean {
+  return code === "instance_unreachable" || code === "timeout";
+}

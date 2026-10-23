@@ -9,9 +9,9 @@
  * `FAIL <case>: <detail>`; the summary line counts them and the exit code is non-zero when any
  * case failed.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,6 +27,8 @@ if (!existsSync(CLI)) {
 // ---------------------------------------------------------------- workspace & fixtures
 
 const ISO = "2026-09-15T08:00:00.000Z";
+/** Credential fixture value for the federation registry — must never appear in CLI output (NFR-22). */
+const REGISTRY_FIXTURE_VALUE = "cli-smoke-registry-secret-7f3a1";
 /** A body that only the `done` note carries, so "is it hidden?" is unambiguous. */
 const DONE_MARKER = "SMOKE-DONE-MARKER must be hidden by --include-done=false";
 const KEEP_MARKER = "SMOKE-INCOMING-CONTENT applied by --on-conflict keep-incoming";
@@ -82,6 +84,10 @@ function liveNotes() {
 
 const files = {
   dev: join(WORKSPACE, "dev.json"),
+  registry: join(WORKSPACE, "registry.json"),
+  registryInsecure: join(WORKSPACE, "registry-insecure.json"),
+  registryBad: join(WORKSPACE, "registry-bad.json"),
+  registryShape: join(WORKSPACE, "registry-shape.json"),
   target: join(WORKSPACE, "target.json"),
   conflict: join(WORKSPACE, "conflict.json"),
   live: join(WORKSPACE, "live.json"),
@@ -122,6 +128,35 @@ function setUpWorkspace() {
   writeFileSync(files.truncated, text.slice(0, Math.floor(text.length / 2)), "utf8");
 
   mkdirSync(files.dir, { recursive: true });
+
+  /* Federation registry fixtures. `auth.env` is a reference; the value comes from the child's
+   * environment, and no `instances` command may ever print it (FR-16.15/NFR-22). */
+  writeJson(files.registry, {
+    schemaVersion: 1,
+    instances: [
+      {
+        id: "dev",
+        base: "http://127.0.0.1:1/api/v1/bluepencil",
+        app: "dev-app",
+        mode: "read",
+        auth: { env: "BP_CLI_SMOKE_SECRET" },
+      },
+    ],
+  });
+  chmodSync(files.registry, 0o600);
+  /* The documented Compose/lab shape: plain http on a private network (F-06). Offline the
+   * registry is only valid with --allow-insecure. */
+  writeJson(files.registryInsecure, {
+    schemaVersion: 1,
+    instances: [
+      { id: "hub-dev", base: "http://hub-dev:8787/api/v1/bluepencil", app: "dev-app" },
+    ],
+  });
+  chmodSync(files.registryInsecure, 0o600);
+  writeFileSync(files.registryBad, "{ this is not a registry", "utf8");
+  chmodSync(files.registryBad, 0o600);
+  writeJson(files.registryShape, { schemaVersion: 2 });
+  chmodSync(files.registryShape, 0o600);
 }
 
 /** Every case starts from the same dev baseline, so the cases stay independent. */
@@ -132,17 +167,92 @@ function resetTarget() {
 
 // ---------------------------------------------------------------- helpers
 
-function run(args, options = {}) {
-  const result = spawnSync(process.execPath, [CLI, ...args], {
-    cwd: root,
-    encoding: "utf8",
-    ...options,
-  });
+function passThrough(result) {
   return {
     status: result.status === null ? -1 : result.status,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",
   };
+}
+
+function run(args, options = {}) {
+  const result = spawnSync(process.execPath, [CLI, ...args], {
+    cwd: root,
+    encoding: "utf8",
+    ...options,
+    env: { ...process.env, BP_CLI_SMOKE_SECRET: REGISTRY_FIXTURE_VALUE, ...(options.env ?? {}) },
+  });
+  return passThrough(result);
+}
+
+/**
+ * Runs the CLI with its stdout piped into a second node process, the way `cli | consumer` does.
+ * `spawnSync` would buffer the whole stream for us and hide the write-after-exit truncation this
+ * case exists to catch, so both children run concurrently and the pipe is genuinely consumed.
+ */
+function runPipeline(args, consumerPath, timeoutMs = 20_000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, ...args], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, BP_CLI_SMOKE_SECRET: REGISTRY_FIXTURE_VALUE },
+    });
+    const consumer = spawn(process.execPath, [consumerPath], {
+      cwd: root,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let cliStderr = "";
+    let consumerStdout = "";
+    let consumerStderr = "";
+    child.stderr.setEncoding("utf8");
+    consumer.stdout.setEncoding("utf8");
+    consumer.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      cliStderr += chunk;
+    });
+    consumer.stdout.on("data", (chunk) => {
+      consumerStdout += chunk;
+    });
+    consumer.stderr.on("data", (chunk) => {
+      consumerStderr += chunk;
+    });
+    child.stdout.pipe(consumer.stdin);
+
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      consumer.kill("SIGKILL");
+      reject(new Error(`pipeline timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    let cliStatus = null;
+    let consumerStatus = null;
+    let settled = 0;
+    const done = () => {
+      settled += 1;
+      if (settled < 2) return;
+      clearTimeout(timer);
+      resolve({ cliStatus, consumerStatus, cliStderr, consumerStdout, consumerStderr });
+    };
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    consumer.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    /* Resolve on `close`, not `exit`: `exit` fires while stdout may still be draining through the
+     * pipe, which would compare an incomplete `consumerStdout` (F-05). `close` is emitted after the
+     * stdio streams are closed. `federation-smoke.mjs` follows the same rule. */
+    child.once("close", (code) => {
+      cliStatus = code === null ? -1 : code;
+      done();
+    });
+    consumer.once("close", (code) => {
+      consumerStatus = code === null ? -1 : code;
+      done();
+    });
+  });
 }
 
 function sha256(path) {
@@ -387,6 +497,161 @@ function cases() {
       }
       return undefined;
     },
+
+    "instances validate/list are offline and publish no secret": () => {
+      const validate = run(["instances", "validate", "--registry", files.registry]);
+      assertExit(validate, 0, "instances validate");
+      assert(validate.stdout.includes(": valid"), `validate: stdout is ${JSON.stringify(validate.stdout.trim())}`);
+
+      const validateJson = run(["instances", "validate", "--registry", files.registry, "--json"]);
+      assertExit(validateJson, 0, "instances validate --json");
+      const validated = parseJson(validateJson.stdout, "instances validate --json");
+      assert(validated.valid === true && validated.instances[0].id === "dev", `validate --json: ${JSON.stringify(validated)}`);
+
+      const list = run(["instances", "list", "--registry", files.registry, "--json"]);
+      assertExit(list, 0, "instances list --json");
+      const rows = parseJson(list.stdout, "instances list --json");
+      const row = rows[0];
+      assert(
+        rows.length === 1 &&
+          row.id === "dev" &&
+          row.app === "dev-app" &&
+          row.base === "http://127.0.0.1:1/api/v1/bluepencil" &&
+          row.mode === "read",
+        `list --json: unexpected row ${JSON.stringify(row)}`,
+      );
+      for (const result of [validate, validateJson, list]) {
+        assert(!result.stdout.includes(REGISTRY_FIXTURE_VALUE), "instances output leaked the credential value");
+        assert(!result.stderr.includes(REGISTRY_FIXTURE_VALUE), "instances stderr leaked the credential value");
+      }
+
+      const human = run(["instances", "list", "--registry", files.registry]);
+      assertExit(human, 0, "instances list");
+      assert(human.stdout.includes("dev") && human.stdout.includes("dev-app"), `list: stdout is ${JSON.stringify(human.stdout.trim())}`);
+      assert(!human.stdout.includes(REGISTRY_FIXTURE_VALUE), "instances list leaked the credential value");
+    },
+
+    "instances usage and invalid registry exit codes": () => {
+      const missing = run(["instances", "validate"]);
+      assertExit(missing, 1, "instances validate without --registry");
+      assertOneLineError(missing, "instances validate without --registry");
+      assert(missing.stderr.includes("--registry"), `stderr does not name --registry: ${JSON.stringify(missing.stderr.trim())}`);
+
+      const unknown = run(["instances", "bogus", "--registry", files.registry]);
+      assertExit(unknown, 1, "instances bogus");
+      assertOneLineError(unknown, "instances bogus");
+
+      for (const [label, path] of [
+        ["invalid JSON", files.registryBad],
+        ["invalid shape", files.registryShape],
+      ]) {
+        const result = run(["instances", "validate", "--registry", path]);
+        assertExit(result, 4, `instances validate (${label})`);
+        assert(!result.stdout.includes(REGISTRY_FIXTURE_VALUE), `instances validate (${label}) leaked the credential value`);
+      }
+
+      const badJson = run(["instances", "list", "--registry", files.registryBad]);
+      assertExit(badJson, 4, "instances list (invalid JSON)");
+      assertOneLineError(badJson, "instances list (invalid JSON)");
+    },
+
+    "instances health against a dead instance -> exit 5, no secret": () => {
+      for (const extra of [[], ["--json"], ["--json", "--check"]]) {
+        const label = `instances health ${extra.join(" ")}`.trim();
+        const result = run(["instances", "health", "--registry", files.registry, "--timeout", "500", ...extra]);
+        assertExit(result, 5, label);
+        assert(!result.stdout.includes(REGISTRY_FIXTURE_VALUE), `${label}: stdout leaked the credential value`);
+        assert(!result.stderr.includes(REGISTRY_FIXTURE_VALUE), `${label}: stderr leaked the credential value`);
+        if (extra.includes("--json")) {
+          const report = parseJson(result.stdout, label);
+          assert(report.ok === false, `${label}: ok must be false`);
+          assert(
+            report.instances.length === 1 && report.instances[0].id === "dev" && report.instances[0].ok === false,
+            `${label}: unexpected health rows ${JSON.stringify(report.instances)}`,
+          );
+        }
+      }
+    },
+
+    "instances accepts a lab http registry only with --allow-insecure (F-06)": () => {
+      const denied = run(["instances", "validate", "--registry", files.registryInsecure]);
+      assertExit(denied, 4, "instances validate (lab registry, no flag)");
+      assert(
+        /http/i.test(denied.stdout),
+        `validate: the issue does not explain the http rejection: ${JSON.stringify(denied.stdout.trim().slice(0, 160))}`,
+      );
+
+      const allowed = run([
+        "instances", "validate", "--registry", files.registryInsecure, "--allow-insecure",
+      ]);
+      assertExit(allowed, 0, "instances validate --allow-insecure");
+      assert(allowed.stdout.includes(": valid"), `validate --allow-insecure: ${JSON.stringify(allowed.stdout.trim())}`);
+
+      const listed = run([
+        "instances", "list", "--registry", files.registryInsecure, "--allow-insecure", "--json",
+      ]);
+      assertExit(listed, 0, "instances list --allow-insecure");
+      const rows = parseJson(listed.stdout, "instances list --allow-insecure");
+      assert(
+        rows.length === 1 && rows[0].base === "http://hub-dev:8787/api/v1/bluepencil",
+        `list --allow-insecure: unexpected rows ${JSON.stringify(rows)}`,
+      );
+
+      const invalid = run([
+        "instances", "validate", "--registry", files.registryInsecure, "--allow-insecure=yes",
+      ]);
+      assertExit(invalid, 1, "instances validate --allow-insecure=yes");
+      assertOneLineError(invalid, "instances validate --allow-insecure=yes");
+      assert(
+        invalid.stderr.includes("--allow-insecure must be true or false"),
+        `stderr does not name the flag: ${JSON.stringify(invalid.stderr.trim())}`,
+      );
+    },
+
+    "instances list --json survives a >64 KiB pipe": async () => {
+      /* 700 rows of pretty-printed JSON is comfortably past the 64 KiB pipe chunk that a
+       * `process.exit()` after writing truncates. The consumer is a real second process; parsing
+       * its input proves the CLI did not exit before stdout was flushed. */
+      const instances = Array.from({ length: 700 }, (_, index) => {
+        const suffix = String(index).padStart(3, "0");
+        return { id: `bulk-${suffix}`, base: `https://bulk-${suffix}.example`, app: "bulk" };
+      });
+      const large = join(WORKSPACE, "registry-large.json");
+      writeJson(large, { schemaVersion: 1, instances });
+      chmodSync(large, 0o600);
+
+      const consumer = join(WORKSPACE, "consume-json.mjs");
+      writeFileSync(
+        consumer,
+        [
+          'let text = "";',
+          'for await (const chunk of process.stdin) text += chunk;',
+          "let value;",
+          "try { value = JSON.parse(text); } catch (error) {",
+          '  console.error(`invalid json: ${String(error.message)}`);',
+          "  process.exit(1);",
+          "}",
+          "if (!Array.isArray(value) || value.length !== 700) {",
+          "  console.error(`unexpected payload: ${Array.isArray(value) ? value.length : typeof value}`);",
+          "  process.exit(1);",
+          "}",
+          'process.stdout.write("json ok\\n");',
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const piped = await runPipeline(
+        ["instances", "list", "--registry", large, "--json"],
+        consumer,
+      );
+      assert(piped.cliStatus === 0, `cli exited ${piped.cliStatus}: ${piped.cliStderr.trim().slice(0, 160)}`);
+      assert(
+        piped.consumerStatus === 0,
+        `consumer exited ${piped.consumerStatus}: ${piped.consumerStderr.trim().slice(0, 160)}`,
+      );
+      assert(piped.consumerStdout.includes("json ok"), `consumer stdout was ${JSON.stringify(piped.consumerStdout.trim())}`);
+    },
   };
 }
 
@@ -399,7 +664,7 @@ let total = 0;
 for (const [name, body] of Object.entries(cases())) {
   total += 1;
   try {
-    const skipOrDetail = body();
+    const skipOrDetail = await body();
     if (typeof skipOrDetail === "string") {
       console.log(`PASS ${name} (${skipOrDetail})`);
     } else {

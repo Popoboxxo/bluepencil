@@ -70,7 +70,9 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "bluepencil": "./dist/cli.js"
+    "bluepencil": "./dist/cli.js",
+    "bluepencil-hub": "./dist/server.js",
+    "bluepencil-federator": "./dist/federator.js"
   },
   "files": [
     "dist",
@@ -96,6 +98,7 @@
     "build:site": "node scripts/build-site.mjs",
     "smoke:cli": "node scripts/cli-smoke.mjs",
     "smoke:mcp": "node scripts/mcp-smoke.mjs",
+    "smoke:federation": "node scripts/federation-smoke.mjs",
     "smoke:pack": "node scripts/pack-smoke.mjs",
     "smoke:install": "node scripts/install-smoke.mjs",
     "smoke:install:git": "node scripts/install-smoke.mjs --only-git",
