@@ -1,6 +1,6 @@
 ---
 type: Plan
-status: rev-5
+status: rev-6
 topic: federation-0.10
 milestone: M5b
 target_version: 0.10.0
@@ -9,7 +9,7 @@ review: docs/plans/federation-0.10-review.md
 
 # Föderation / Hub-of-Hubs — Umsetzungsplan bluepencil 0.10.0
 
-**Status: Rev. 5 — an den implementierten Wave-1-Kern angeglichen (2026-10-22).**
+**Status: Rev. 6 — Shape (e) korrigiert: der Federator ist stdio-only und kein Compose-Dauerdienst; die Docker-Shape ist ein aggregierender Hub plus zwei Leaf-Hubs (2026-10-23).**
 **Review: `docs/plans/federation-0.10-review.md`** (Durchlauf 1: CHANGES_REQUESTED → umgesetzt; Durchlauf 2: CHANGES_REQUESTED → in Rev. 3/4 umgesetzt; Rev.-4-Entscheidungen siehe §12).
 
 ### Änderungslog
@@ -21,6 +21,7 @@ review: docs/plans/federation-0.10-review.md
 | 3 | 2026-10-22 | ID-Normalisierung auf `FR-6.15`/`NFR-22`; zweiter Review-Durchlauf (RVW2-01…RVW2-19, T71–T89 + Traceability + Wirksamkeit der Rev.-2-Fixes) vollständig eingearbeitet; §12 führt beide Durchläufe |
 | 4 | 2026-10-22 | Drei Nutzerentscheidungen: (1) fehlendes `federates` ist immer ein `federates_missing`-Startfehler; (2) ein einziges `--allow-insecure` ersetzt `--allow-plain-http`/`--allow-private-network` (Link-Local/Metadata bleiben immer blockiert); (3) Write-Opt-in mit zwei Schlössern (`mode:"write"` **und** `--allow-write`); Tests T90–T94. Zusätzlich Requirements-Schritt ausgeführt: `FR-6.15`, `FR-16.10`–`FR-16.15` und `NFR-22` in `docs/REQUIREMENTS.md` aufgenommen, `spec/` mit `npm run spec` regeneriert |
 | 5 | 2026-10-22 | Synchronisation mit dem implementierten Wave-1-Kern (`src/federation/{errors,registry,aggregate,client}.ts`): (1) `invalid_base_url` als kanonischer Code in §6-Union und §7-Exit-Tabelle (Start verweigert, Exit 4); (2) vier deprecated Alias-Schreibweisen in §6 dokumentiert (nicht kanonisch, Entfall in PR 4); (3) Aggregat-Reihenfolge auf den implementierten, globalen Review-Sort (`compareForReview`, `instance`-, qualifizierter `id`-Tie-Break) umgestellt — §6/§7/T18 konsistent; (4) `loadRegistry`-Overloads inkl. `allowInsecure`/`resolver`/`stat`, DNS-Auflösung standardmäßig beim Start, `defaults.concurrency`/`defaults.limit` mit Clamp und Konstanten; (5) DNS-Check-to-Connect-Restrisiko (TOCTOU/Rebinding) in §11 als dokumentiertes Restrisiko aufgenommen. Keine Code-, Test-, REQUIREMENTS- oder `spec/`-Änderung |
+| 6 | 2026-10-23 | Shape (e) korrigiert: der Federator ist stdio-only und kein Compose-Dauerdienst; Docker-Shape ist ein aggregierender Hub (`bluepencil-hub --store aggregator.json --registry … --no-self`) plus zwei Leaf-Hubs. Der Federator bleibt lokaler stdio-Modus am Agenten (`docker run -i --rm … bluepencil-federator` nur als Beispiel eines angehängten Clients). §9/§10: Federator-only ist kein HTTP-Dienst und hat kein `/config`; `includeSelf` ist dort No-op. Keine Code-/Test-/Requirements-Änderung. |
 
 > **Charakter:** interner Umsetzungsplan, keine Implementierung. Dieses Dokument enthält keinen
 > Code und ändert `README.md` nicht; der zugehörige Requirements-Schritt wurde ausgeführt
@@ -689,15 +690,17 @@ liefert eine leere Liste bzw. `resource_unsupported` (T73). **Keine** Änderung 
 ```ts
 const EXIT = { ok: 0, usage: 1, conflict: 2, envMismatch: 3, invalid: 4, federation: 5 } as const;
 
-// bluepencil instances validate --registry <file> [--json]
-// bluepencil instances list     --registry <file> [--json]
-// bluepencil instances health   --registry <file> [--timeout 3000] [--json]
+// bluepencil instances validate --registry <file> [--allow-insecure] [--json]
+// bluepencil instances list     --registry <file> [--allow-insecure] [--json]
+// bluepencil instances health   --registry <file> [--timeout 3000] [--allow-insecure] [--json]
 ```
 `validate`/`list` lesen nur die Datei; `health` ruft `/config` und `/health`. `--registry` oder
 `BLUEPENCIL_REGISTRY`; fehlt beides → Usage (1). Ungültige Registry → 4. `health`: alle ok → 0,
 mindestens eine unhealthy/partial/identity mismatch/startup-unreachable → 5. Die **kanonische
 Tabelle in §7** ist maßgeblich; `mode_denied`/`read_only` sind keine Health-Fälle. `--json` ist
 stabil und enthält keine Env-Werte (T42–T45, T72). Die bestehenden Commands bleiben unverändert.
+Alle drei Commands akzeptieren zusätzlich `--allow-insecure`; `validate`/`list` bleiben offline,
+das Flag lockert nur die URL-Policy für Lab-/Compose-Registries.
 ### `package.json`, `scripts/build.mjs`
 
 ```json
@@ -718,7 +721,7 @@ stabil und enthält keine Env-Werte (T42–T45, T72). Die bestehenden Commands b
 `dist/federation.js`, ESM, Node 20) und `federator` (`server/federator.ts` →
 `dist/federator.js`, ESM, Node 20, Shebang prüfen). Der bestehende `server`-Job bleibt
 `server/index.ts` → `dist/server.js`. `npm run smoke:federation` und
-`npm run smoke:instances` werden in `verify` aufgenommen (T33).
+`npm run smoke:cli` (enthält die `instances`-Fälle) werden in PR 8 in `verify` aufgenommen (T33).
 ## 7. Semantik-Tabelle
 ### Reads, Writes, Sessions
 
@@ -835,7 +838,7 @@ zitiert.
 | T30 | `e2e.cli_instances_health` | `instances health` gegen zwei Hubs, einer down → Exit 5, Ausgabe ohne Secrets |
 | T31 | `e2e.browser_writes_one_hub` | Browser/Element schreibt in genau einen Hub; keine Registry-Anfrage |
 | T32 | `e2e.federator_no_browser_endpoint` | Federator hat keinen `/notes`/`/config`-HTTP-Endpunkt; nur stdio |
-| T33 | `e2e.docker_compose_federator` | **bedingter CI-/Manual-Gate** (Docker-Umgebung nötig): Compose startet; `instances health` im Federator-Container grün |
+| T33 | `e2e.docker_compose_aggregator` | **bedingter CI-/Manual-Gate** (Docker-Umgebung nötig): Compose startet den aggregierenden Hub plus zwei Leaf-Hubs; `instances health` gegen die Leaf-Hubs ist grün; der Federator wird als one-shot `docker run -i --rm … bluepencil-federator` angebunden (kein Compose-Dauerdienst). |
 | T34 | `security.registry_literal_secret_rejected` | literale Tokens werden vor jedem Netzaufruf abgelehnt (Secret-Scan-Fall) |
 | T35 | `security.tool_output_no_secret` | `list_instances`/`list_notes`/Fehler enthalten keine Tokens/Env-Werte |
 | T36 | `security.error_no_secret` | 401/403/5xx-Meldungen sind redigiert; kein Authorization-Header im Body |
@@ -958,10 +961,10 @@ die §10-Gates werden daraus abgeleitet. Jede Test-ID T01–T94 kommt genau einm
 | `docs/HERMES.md` | von „Hermes-Anleitung“ zu „Beispiel: Hermes“; Abschnitt „any MCP client“ voranstellen; Federator-Registrierung als Beispiel; Tool-Tabelle um `list_instances` |
 | `docs/ARCHITECTURE.md` | §4 Backend-Abstraktion; §5 `/config` app/federates; **neu §5d Federation** (Module, `/notes` vs `/mcp`, Env-Isolation); §5c CLI `instances`; §6 Bookmarklet unverändert |
 | `docs/INTEGRATION.md` | „Choosing a mode“ um Föderation ergänzen; Auth pro Instanz; Security-Notes (keine Browser-Registry, ein Schreibziel) |
-| `docs/DOCKER.md` | Federator-Service, Registry-Mount, `BLUEPENCIL_REGISTRY`, `--read-only`, `--allow-write`, `--allow-insecure` nur im privaten Netz (HTTP + private IPs; Link-Local/Metadata bleiben immer blockiert); Grenzen (kein TLS, ein Writer pro Store) |
+| `docs/DOCKER.md` | Aggregierender Hub plus zwei Leaf-Hubs, Registry-Mount, `BLUEPENCIL_REGISTRY`, one-shot `docker run -i --rm … bluepencil-federator` als angehängter MCP-Client, `--read-only`, `--allow-write`, `--allow-insecure` nur im privaten Netz (HTTP + private IPs; Link-Local/Metadata bleiben immer blockiert); Grenzen (kein TLS, ein Writer pro Store) |
 | `docs/EMBED.md` | Endpoint-Tabelle: `/notes` ist und bleibt lokal; `/mcp` ist kein Browser-Endpunkt; kein `instance`-Attribut |
 | `docs/RELEASING.md` | 0.10.0-Assets um `bluepencil-federator` ergänzen; Reihenfolge Build → Verify → Tag; keine Schema-/Store-Format-Änderung |
-| `.github/workflows/*` | `smoke:federation` und `smoke:instances` in CI; Docker-/Compose-Job als **bedingter** Gate (nicht blockierend ohne Docker) |
+| `.github/workflows/*` | `smoke:federation` und `smoke:cli` in CI; Docker-/Compose-Job (aggregierender Hub + zwei Leaf-Hubs) als **bedingter** Gate (nicht blockierend ohne Docker); der Federator-Gate ist ein one-shot `docker run -i`. |
 | `docs/BUILD-SYNC.md` | Version 0.10.0 in `package.json` + `extension/manifest.json`; Federator-Bin ist kein Element-Bundle, `verify:sync` bleibt Element-fokussiert |
 ### SVG
 
@@ -1054,7 +1057,7 @@ block even the dev write and is stronger than `--allow-write`. `includeSelf` is 
 absent here: it only applies to a **combined hub**, not to a pure federator. `--allow-insecure`
 would be needed only for non-loopback `http` or private IPs and never unlocks link-local/metadata.
 
-**(e) Docker Compose: Federator + zwei Hubs, read-only**
+**(e) Docker Compose: aggregierender Hub + zwei Leaf-Hubs, read-only**
 
 ```yaml
 services:
@@ -1071,28 +1074,44 @@ services:
               "--environment", "staging", "--name", "staging-web", "--auth-secret", "${STAGING_SECRET}"]
     volumes: ["staging-data:/data"]
 
-  federator:
+  hub-aggregator:
     image: ghcr.io/popoboxxo/bluepencil:0.10.0
-    entrypoint: ["bluepencil-federator"]
-    command: ["--registry", "/etc/bluepencil/federation.json",
-              "--read-only", "--allow-insecure"]   # http + private Docker net; link-local/metadata stay blocked
+    entrypoint: ["bluepencil-hub"]
+    command: ["--store", "/data/aggregator.json",
+              "--registry", "/etc/bluepencil/federation.json",
+              "--no-self", "--read-only", "--allow-insecure"]   # http + private Docker net; link-local/metadata stay blocked
     volumes: ["./federation.json:/etc/bluepencil/federation.json:ro"]
-    environment:
-      BP_DEV_TOKEN: "${DEV_SECRET}"
-      BP_STAGING_TOKEN: "${STAGING_SECRET}"
     depends_on: [hub-dev, hub-staging]
 
 volumes:
   dev-data: {}
   staging-data: {}
 ```
-`federation.json` uses `http://hub-dev:8787/api/v1/bluepencil` and
+`federation.json` for the aggregator uses `http://hub-dev:8787/api/v1/bluepencil` and
 `http://hub-staging:8787/api/v1/bluepencil`; `--allow-insecure` is required because these are
-non-loopback `http` targets in a private network. It must not be exposed outside the private
-Docker network; link-local (`169.254.0.0/16`, `fe80::/10`) and metadata targets remain blocked
-even with the flag. Hubs < 0.10 without `federates` are not federable (`federates_missing`). The
-federator has `--read-only`; the hubs still accept browser writes on their own `/notes` (the
-browser never talks to the federator). The image must contain the `bluepencil-federator` bin; PR 8
+non-loopback `http` targets in a private network. The aggregator's own store is intentionally
+empty, so `--no-self` keeps `self` out of the aggregate; `/notes` on the aggregator stays local
+(empty) — **only `/mcp` aggregates**. No port is published for `hub-aggregator` in this shape; an
+MCP client attaches to `http://hub-aggregator:8787/api/v1/bluepencil/mcp` from inside the private
+Docker network (publish `8788:8787` only if a client outside that network must attach). It must
+not be exposed outside the private Docker network; link-local (`169.254.0.0/16`, `fe80::/10`) and
+metadata targets remain blocked even with the flag. Hubs < 0.10 without `federates` are not
+federable (`federates_missing`). The leaf hubs still accept browser writes on their own `/notes`
+(the browser never talks to the aggregator).
+
+**The pure federator is not a Compose service.** It is the local stdio process the agent starts;
+Compose cannot keep it alive without an attached MCP client. An attached-client example:
+
+```bash
+docker run -i --rm --network bluepencil_default \
+  -v ./federation.json:/etc/bluepencil/federation.json:ro \
+  ghcr.io/popoboxxo/bluepencil:0.10.0 bluepencil-federator \
+  --registry /etc/bluepencil/federation.json --read-only --allow-insecure
+```
+
+`-i` keeps stdin open; without an attached client the process exits on stdin EOF. A federator-only
+process is **not** an HTTP service and has **no `/config`**; `includeSelf` is a documented no-op
+there. The image must contain both the `bluepencil-hub` and `bluepencil-federator` bins; PR 8
 verifies the Dockerfile/entrypoint (currently hub-only, **zu verifizieren**).
 ## 10. PR-Reihenfolge, Aufwand, DoD
 ### PRs
@@ -1107,8 +1126,10 @@ verifies the Dockerfile/entrypoint (currently hub-only, **zu verifizieren**).
 | 6 | **Federator + CLI:** `server/federator.ts`, `dist/federator.js`, `bluepencil-federator`, `instances`, `federates_missing`-Startfehler, Startup-Degraded | PR 5 | mittel–hoch | T27, T28, T30, T32, T42–T49, T70, T72, T73, T90 |
 | 7 | **Doku:** README, MCP/FEDERATION, HERMES/ARCHITECTURE/INTEGRATION/DOCKER/RELEASING/BUILD-SYNC, CI, SVG, fünf Shapes | PR 6 | niedrig | T31, T63, T64; Link-/SVG-Review |
 | 8 | **Härtung + Release:** Security-Suite, Redaction, Docker-Compose, Version 0.10.0, CHANGELOG, `verify`-Kette | PR 7 | mittel | T33 (bedingt), T35–T37, T81; `secret-scan`, `verify` |
-### Aufwand (Referenz: `effort-estimator`, Textverweis — keine eigene Schätzung)
 
+**Federator-only ist kein HTTP-Dienst und hat kein `/config`; `includeSelf` ist dort ein No-op.**
+
+### Aufwand (Referenz: `effort-estimator`, Textverweis — keine eigene Schätzung)
 | PR | PT |
 |---|---:|
 | 1 Backend-Fundament | 2,0 |
