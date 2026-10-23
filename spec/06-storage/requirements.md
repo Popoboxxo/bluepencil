@@ -226,3 +226,18 @@ requires-trace-from: []
 Runnable as a container from an image this repository builds: the repository carries a Dockerfile and a compose file, and the release publishes the image; the container binds beyond loopback (or it would be unreachable), generates its credential on the first start, keeps it in the data volume so a restart does not invalidate clients, and prints what to copy — one volume, one command, no install step at container start
 
 *Acceptance criteria:* `docker compose up -d` starts a hub that answers `GET {base}/config` with a generated credential and a network binding, without a credential being handed in; the image is built and run by the pipeline on every change
+
+## FR-6.15 /config reports app and federates, without secrets: GET {base}/config additionally retur…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+/config reports app and federates, without secrets: GET {base}/config additionally returns app (string) and federates (boolean); federates is true exactly when the process aggregates a registry; every registered instance must report federates — if the field is missing the federation start fails with federates_missing, so children below 0.10 are not federatable; the body carries no tokens, secrets or environment values; older clients ignore the fields; the hub's --app sets app
+
+*Acceptance criteria:* The body contains `app` and `federates` and no credential material; a hub without a registry answers `federates:false`; a registered instance whose `/config` lacks `federates` aborts the start with `federates_missing`

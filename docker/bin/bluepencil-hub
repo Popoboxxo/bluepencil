@@ -1,0 +1,17 @@
+#!/bin/sh
+#
+# `bluepencil-hub` inside the image — the same bin name `package.json` declares.
+#
+# The default ENTRYPOINT (`bluepencil-entrypoint`) already derives the mandatory `--store` and the
+# network flags from `BLUEPENCIL_*`, generates a credential when none was handed in, and passes
+# extra arguments through. This wrapper is for the cases where that default is overridden:
+#
+#   - Compose: `entrypoint: ["bluepencil-hub"]` for an aggregating hub that supplies its own
+#     `--store`/`--host`/`--registry` flags;
+#   - `docker run --entrypoint bluepencil-hub …`.
+#
+# It appends nothing, so a `--store` in "$@" is passed exactly once. The default ENTRYPOINT stays the
+# documented way to run a plain hub (credential generated on first start, kept in the volume).
+set -eu
+
+exec node /app/server.js "$@"

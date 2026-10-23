@@ -12,3 +12,4 @@ export * from "./canonical";
 export * from "./bundle";
 export * from "./merge";
 export * from "./migrate";
+export * from "./order";

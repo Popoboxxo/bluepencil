@@ -338,3 +338,18 @@ requires-trace-from: []
 Build parity / single version: the MV3 extension ships the library's element bundle verbatim, so every behavioural change must rebuild both artefacts and bump the version in package.json (the single source of truth, mirrored by extension/manifest.json) — a shipped build must never describe a different binary than the code under review
 
 *Acceptance criteria:* CI proves the element-bundle identity (sha256) and fails a behavioural diff without a version bump: `npm run verify:sync` is green after `npm run build && npm run build:ext`, and a behavioural-surface diff without a version bump fails the `bump` job
+
+## NFR-22 No secrets in registry, logs or tool output: the registry transports only environment re…
+
+```attr
+prio: P0
+disposition: implemented
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+No secrets in registry, logs or tool output: the registry transports only environment references; list_instances, error messages, logs and CLI output contain no token values, authorization headers or environment values; the secret scan stays green; redaction is tested with several secrets and partial matches
+
+*Acceptance criteria:* The registry file holds environment variable names only; a configured token value never appears in any tool, log or CLI output, also not as a partial match; `npm run secret-scan` stays green

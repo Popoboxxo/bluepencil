@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "defaults": {
+    "includeSelf": false,
+    "timeoutMs": 3000,
+    "concurrency": 4,
+    "limit": 200
+  },
+  "instances": [
+    {
+      "id": "dev",
+      "base": "http://hub-dev:8787/api/v1/bluepencil",
+      "mode": "read",
+      "auth": {
+        "env": "BP_DEV_TOKEN"
+      }
+    },
+    {
+      "id": "staging",
+      "base": "http://hub-staging:8787/api/v1/bluepencil",
+      "mode": "read",
+      "auth": {
+        "env": "BP_STAGING_TOKEN"
+      }
+    }
+  ]
+}

@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 /**
- * bluepencil MCP server (FR-16).
+ * bluepencil MCP server over stdio (FR-16).
  *
- * A dependency-free JSON-RPC 2.0 server over stdio: agents read the note set, answer notes and
- * move bundles without a browser. It is a thin wrapper over `src/data` + the store, so MCP and
- * CLI behave identically for the same input (FR-15.5/16.7).
+ * This entry point owns only the store-specific setup: parse `--store/--environment/--app/
+ * --allow-write/--session-id`, validate the file before serving (F9), build the store and its
+ * persistence hooks, wrap them in the store backend and hand the loop to `stdio.ts` (shared with
+ * the 0.10 federator). The protocol handling — framing, notifications, sequential execution — lives
+ * in `stdio.ts` + `protocol.ts`, so the two doors into a note set cannot drift (FR-16.9).
  *
- * Usage:
- *   bluepencil mcp --store notes.bluepencil.json --environment dev [--app "my-tool"] [--allow-write]
- *
- * Safety:
+ * Safety (unchanged from 0.8):
  *   - read-only by default — write tools return a refusal unless `--allow-write` is passed (FR-16.2);
  *   - the session is bound to one store, one app and one environment; another environment's notes
  *     are neither listed, nor read by id, nor written (FR-16.3/NFR-18);
@@ -17,72 +16,14 @@
  *   - the store file is validated before the first byte is served (F9): an existing file that is
  *     not a valid note set is reported and exits 2 instead of being served as "no notes";
  *   - a write is only answered as success after it was read back from the file (F7).
- *
- * stdio hygiene:
- *   - MCP messages are newline-delimited JSON on stdout — diagnostics go to stderr;
- *   - a request without an `id` is a notification: it is executed, but a response frame is never
- *     written for it (JSON-RPC 2.0 forbids the id-less response such a frame would be).
- *
- * Protocol errors (JSON-RPC codes) are reserved for the protocol itself: unknown method
- * (-32601), unparsable input (-32700), unknown tool, resource or prompt (-32602 — the tool name
- * and the resource/prompt name are parameters of the call). Everything that is a *refusal* of a
- * tool rather than a malformed request — read-only session, environment binding, validation of an
- * argument, unresolved import conflict, a write that did not persist — is an `isError` tool result
- * with an actionable message, as the tool contract requires.
  */
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { createStore } from "../core/store";
-import { DEFAULT_ENVIRONMENT, isEnvironment, newId, type Environment } from "../core/model";
-import { createStorePersistence, validateStoredNoteSet, type ToolContext } from "./tools";
-import {
-  PARSE_ERROR,
-  handleRpc,
-  isNotificationId,
-  parseRpcPayload,
-  type RpcTransport,
-} from "./protocol";
+import { createStoreBackend } from "./backend";
+import { parseMcpArgs } from "./options";
+import { createStorePersistence, validateStoredNoteSet } from "./tools";
+import { runStdioServer } from "./stdio";
 import { VERSION } from "../version";
-
-for (const level of ["debug", "info", "log", "warn"] as const) {
-  // stdout belongs to the protocol — everything else goes to stderr.
-  console[level] = (...args: unknown[]) => {
-    process.stderr.write(`${args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ")}\n`);
-  };
-}
-
-interface ServerOptions {
-  storePath: string;
-  environment: Environment;
-  appName: string;
-  allowWrite: boolean;
-  sessionId: string;
-}
-
-function parseArgs(argv: string[]): ServerOptions | string {
-  const get = (flag: string): string | undefined => {
-    const withEquals = argv.find((arg) => arg.startsWith(`${flag}=`));
-    if (withEquals) return withEquals.slice(flag.length + 1);
-    const index = argv.indexOf(flag);
-    return index >= 0 ? argv[index + 1] : undefined;
-  };
-
-  const storePath = get("--store") ?? process.env.BLUEPENCIL_STORE ?? "";
-  if (!storePath) {
-    return "--store <path> is required (a .bluepencil.json bundle or a bare notes array)";
-  }
-  const environment = (get("--environment") ?? process.env.BLUEPENCIL_ENVIRONMENT ?? DEFAULT_ENVIRONMENT) as string;
-  if (!isEnvironment(environment)) {
-    return `--environment must be one of dev, staging, live (got "${environment}")`;
-  }
-  const allowWrite = argv.includes("--allow-write") || process.env.BLUEPENCIL_ALLOW_WRITE === "1";
-  return {
-    storePath,
-    environment,
-    appName: get("--app") ?? process.env.BLUEPENCIL_APP ?? "unknown-app",
-    allowWrite,
-    sessionId: get("--session-id") ?? process.env.BLUEPENCIL_SESSION ?? newId("s"),
-  };
-}
 
 let writeCounter = 0;
 
@@ -126,7 +67,7 @@ async function readStoreOrFail(path: string): Promise<string | null> {
 }
 
 async function main(): Promise<void> {
-  const parsed = parseArgs(process.argv.slice(2));
+  const parsed = parseMcpArgs(process.argv.slice(2));
   if (typeof parsed === "string") {
     failStartup(parsed, 1);
   }
@@ -147,86 +88,28 @@ async function main(): Promise<void> {
   });
 
   const store = createStore({ environment: options.environment, adapter });
-
   await store.reload();
 
-  const context: ToolContext = {
-    store,
+  const backend = createStoreBackend(store, {
     allowWrite: options.allowWrite,
     environment: options.environment,
     appName: options.appName,
+    persistence,
     clientName: "mcp-client",
     sessionId: options.sessionId,
-    persistence,
-  };
+  });
 
   process.stderr.write(
     `bluepencil mcp v${VERSION} — store=${options.storePath} env=${options.environment} ` +
       `writes=${options.allowWrite ? "enabled" : "read-only"} session=${options.sessionId}\n`,
   );
 
-  const send = (message: unknown): void => {
-    process.stdout.write(`${JSON.stringify(message)}\n`);
-  };
-  /**
-   * The stdio transport: stdout carries the protocol and nothing else, diagnostics go to stderr. The
-   * protocol handling itself lives in `protocol.ts`, shared with the hub's HTTP door (FR-16.8).
-   */
-  const transport: RpcTransport = {
-    reply: (id, result) => {
-      if (isNotificationId(id)) {
-        return;
-      }
-      send({ jsonrpc: "2.0", id, result });
-    },
-    fail: (id, code, message) => {
-      if (isNotificationId(id)) {
-        // This is the F13 defect: an id-less error frame is not a valid JSON-RPC message.
-        process.stderr.write(`bluepencil mcp: not answering a notification (${code} ${message})\n`);
-        return;
-      }
-      send({ jsonrpc: "2.0", id, error: { code, message } });
-    },
-    close: () => process.exit(0),
-  };
-
-  let buffer = "";
-  // Requests are handled in arrival order: one JSON-RPC response at a time, and no two tool calls
-  // (each of which may write the whole store file) run against each other.
-  let handling: Promise<void> = Promise.resolve();
-  const enqueue = (line: string): void => {
-    handling = handling.then(
-      () => handleLine(line),
-      () => handleLine(line),
-    );
-  };
-
-  process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (chunk: string) => {
-    buffer += chunk;
-    let index = buffer.indexOf("\n");
-    while (index >= 0) {
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      index = buffer.indexOf("\n");
-      if (line !== "") {
-        enqueue(line);
-      }
-    }
-  });
-
-  async function handleLine(line: string): Promise<void> {
-    const parsed = parseRpcPayload(line);
-    if (!parsed.ok) {
-      // An id cannot be recovered from unparsable input; a parse-error response carries id null.
-      send({ jsonrpc: "2.0", id: null, error: { code: PARSE_ERROR, message: parsed.message } });
-      return;
-    }
-    await handleRpc(parsed.request, context, transport);
-  }
-
-  process.stdin.on("end", () => {
-    void store.destroy().finally(() => process.exit(0));
+  await runStdioServer({
+    backend,
+    appName: options.appName,
+    allowWrite: options.allowWrite,
+    sessionId: options.sessionId,
+    persistence,
   });
 }
 

@@ -16,6 +16,17 @@
 # passed straight to the hub, e.g. `docker run … bluepencil --read-only`.
 set -eu
 
+# The image also ships the stdio federator. `docker run … bluepencil-federator …` must start that
+# bin rather than pass a stray positional argument to the hub, and it must do so *before* any of the
+# banner/credential work below: a federator's stdout is newline-delimited JSON-RPC and nothing else.
+# Only the two documented bins dispatch here, so every other first argument keeps its hub meaning
+# (`--read-only`, `--store …`, …). `docker run --entrypoint bluepencil-hub …` works the same way.
+if [ "$#" -gt 0 ]; then
+  case "$1" in
+    bluepencil-hub|bluepencil-federator) exec "$@" ;;
+  esac
+fi
+
 STORE="${BLUEPENCIL_STORE:-/data/notes.bluepencil.json}"
 PORT="${BLUEPENCIL_PORT:-8787}"
 BASE="${BLUEPENCIL_BASE:-/api/v1/bluepencil}"

@@ -882,6 +882,10 @@ describe("hub CLI", () => {
       environment: "dev",
       readOnly: false,
       allowEnvMismatch: false,
+      // Federation aggregate defaults stay absent unless the flag is given: `startHub` then
+      // applies registry.defaults > the built-in constants (CLI > registry > constant, FR-16.14).
+      allowWrite: false,
+      allowInsecure: false,
       quiet: false,
     });
   });
@@ -905,6 +909,12 @@ describe("hub CLI", () => {
       "notes.md",
       "--cors",
       "https://app.example",
+      "--timeout",
+      "4000",
+      "--concurrency",
+      "4",
+      "--limit",
+      "50",
       "--quiet",
     ]);
     expect(parsed).toEqual({
@@ -916,6 +926,11 @@ describe("hub CLI", () => {
       environment: "staging",
       readOnly: true,
       allowEnvMismatch: true,
+      allowWrite: false,
+      allowInsecure: false,
+      timeoutMs: 4000,
+      concurrency: 4,
+      limit: 50,
       mirror: "notes.md",
       cors: "https://app.example",
       quiet: true,

@@ -8,7 +8,8 @@
  *   3. dist/bluepencil.element.js single-file ES module registering <bluepencil-notes>
  *   4. dist/cli.js                Node CLI (inspect | validate | merge | export | import)
  *   5. dist/mcp.js                MCP server over stdio (read-only by default)
- *   6. dist/types/**              .d.ts declarations for every entry point
+ *   6. dist/federator.js          federator over stdio: MCP aggregated over a registry
+ *   7. dist/types/**              .d.ts declarations for every entry point
  *
  * No runtime dependencies are bundled: everything in dist/ is built from src/ only.
  */
@@ -225,6 +226,22 @@ const jobs = [
       ...shared,
       entryPoints: [join(root, "server/index.ts")],
       outfile: join(root, "dist/server.js"),
+      format: "esm",
+      platform: "node",
+      target: ["node20"],
+      minify: false,
+      banner: { js: banner },
+    },
+  },
+  {
+    // FR-16.14: the pure federator — MCP over stdio, no store, no HTTP. The entry file carries the
+    // shebang; esbuild keeps it above the banner, which is what makes the bin runnable.
+    name: "federator",
+    entry: join(root, "server/federator.ts"),
+    options: {
+      ...shared,
+      entryPoints: [join(root, "server/federator.ts")],
+      outfile: join(root, "dist/federator.js"),
       format: "esm",
       platform: "node",
       target: ["node20"],

@@ -19,6 +19,7 @@
  * one), `intent=feedback` is never implemented, and `needs_decision` is never marked done.
  */
 
+import { compareForReview } from "../data/order";
 import type { Note, NoteSource, NoteStatus } from "./model";
 import {
   BluepencilValidationError,
@@ -27,24 +28,6 @@ import {
   isExceptionNote,
   isImplementable,
 } from "./model";
-
-/** FR-4.6 priority: needs_decision first, then feedback, then open, then done. */
-function reviewPriority(note: Note): number {
-  if (note.status === "needs_decision") {
-    return 0;
-  }
-  if (note.intent === "feedback") {
-    return 1;
-  }
-  return note.status === "open" ? 2 : 3;
-}
-
-function compareText(a: string, b: string): number {
-  if (a < b) {
-    return -1;
-  }
-  return a > b ? 1 : 0;
-}
 
 /** Append a message and optionally patch the note; the input note is left untouched. */
 function withMessage(
@@ -209,17 +192,7 @@ export function implementableNotes(notes: Note[]): Note[] {
  * ties, so the order is total and deterministic.
  */
 export function sortForReview(notes: Note[]): Note[] {
-  return [...notes].sort((a, b) => {
-    const byPriority = reviewPriority(a) - reviewPriority(b);
-    if (byPriority !== 0) {
-      return byPriority;
-    }
-    const byCreated = compareText(a.createdAt, b.createdAt);
-    if (byCreated !== 0) {
-      return byCreated;
-    }
-    return compareText(a.id, b.id);
-  });
+  return [...notes].sort(compareForReview);
 }
 
 /** One-line list label: vocabulary, route (when known) and the first line of the body. */

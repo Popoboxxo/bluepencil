@@ -9,8 +9,8 @@ no "the second badge in the header".
 
 ```
 ┌─ your web app ───────────────────────────────────────────────┐
-│  …                    ⚠ note anchored here                   │
-│  [ element ]   ◇ design note: spacing is off   ✎ text note   │
+│  …                    ! note anchored here                   │
+│  [ element ]   <> design note: spacing is off   + text note  │
 └──────────────────────────────────────────────────────────────┘
         │
         ├─ export → Markdown / JSON  →  a developer or an agent works it off
@@ -19,9 +19,9 @@ no "the second badge in the header".
 
 ![The review layer on the vanilla fixture: five notes from a review round, the bar with its counters, the marker on the annotated element and the note list](docs/images/fixture-review.png)
 
-**Status:** `0.8.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
+**Status:** `0.10.0` — the review layer, the headless data library and the CLI/MCP surfaces are on
 `main`: the core model, anchoring (now including **transient container reveal**), capture, store and
-the four adapters (with a conformance suite); canonical, diffable bundles with
+the five adapters (with a conformance suite); canonical, diffable bundles with
 `merge`/`upsert`/`replace-session` and migrations; Markdown/JSON export; the collaboration protocol;
 the review layer with i18n and **four capture presets** (`text`, `design`, `bug`, `feature`), optional
 feature **priority**, per-mode visibility with a host ceiling (`modes`), Alt+click annotation of
@@ -30,27 +30,33 @@ the CLI, the MCP server (read-only by default) and the **hub** — one command, 
 **MCP over HTTP** so an agent reaches the same notes the browser writes, per-device signed tokens
 (shared secret or token, per-environment and revocable), a `GET {base}/config` that describes the
 running process without a credential, and a container image (`docker compose up -d`) that generates
-its own credential; a **Chromium MV3 extension** that mounts the
-layer in pages you do not build yourself, with its settings reaching the layer and its rounds kept in
-the extension's own storage; **opt-in composer dictation** (`voice`, off by default — a mic button
-that appends the browser's transcript without saving it); the vanilla fixture app with its seed
-bundle, 864 unit tests and the
-browser legs of the embed, end-to-end, round-trip, bookmarklet, parity and extension smokes.
+its own credential; a **Chromium MV3 extension** that mounts the layer in pages you do not build
+yourself, with its settings reaching the layer and its rounds kept in the extension's own storage;
+**opt-in composer dictation** (`voice`, off by default — a mic button that appends the browser's
+transcript without saving it); and `0.10.0` adds **federation as an agent-side layer**: a registry,
+an aggregating hub (`--registry`) and a separate stdio **federator** for one agent over several hubs.
+Browsers never federate — a browser still writes to exactly one hub. The vanilla fixture app, the
+unit suite and the browser legs of the embed, end-to-end, round-trip, bookmarklet, parity,
+extension and federation smokes are in the tree.
 
-Honest gaps: the E2E suite is hand-rolled over the CDP pipe rather than Playwright (NFR-4 says no
-test framework), token refresh is manual (an expired token is replaced by hand, and revocation is
-read at hub start), dictation leans on the browser's own Web Speech API (Chromium/Safari only — no
-Firefox support; Chromium may send audio to a browser service, so inject `voiceEngine` to stay
-offline), no import/merge surface in the UI, no bulk delete or retention control, i18n
-only `en`/`de`, and no npm publish — install from the tag
-(`npm i github:Popoboxxo/bluepencil#v0.8.0`; the `prepare` script builds `dist/` during install) or
-use the release artefacts: loader, layer, package tarball, the MV3 browser extension, one
-`SHA256SUMS` over all of them, and the hub image on `ghcr.io/popoboxxo/bluepencil`
-([docs/DOCKER.md](docs/DOCKER.md)). How a release is cut: [docs/RELEASING.md](docs/RELEASING.md).
-Milestones and their state are tracked in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), the history in
-[CHANGELOG.md](CHANGELOG.md). This repository is the home of the library; the interaction model
-itself is already proven in a production-used prototype (see
-[docs/CONCEPT.md](docs/CONCEPT.md#7-proven-prior-art)).
+Honest gaps in federation: there is **no cross-instance session merge** (each note keeps its own
+session); the aggregate is always bounded by `limit`; the extension has **one hub profile**, not a
+list; hubs older than `0.10` are not federatable and are refused with `federates_missing`, never
+silently reported as "no notes"; and `unverified` appears only when a peer's `/config` omits `app`
+(a missing `federates` is a start error, not a warning). Still true from earlier releases: no npm
+publish — install from the tag (`npm i github:Popoboxxo/bluepencil#v0.10.0`; the `prepare` script
+builds `dist/` during install) or use the release artefacts: loader, layer, package tarball, the MV3
+browser extension, one `SHA256SUMS` over all of them, and the hub image on
+`ghcr.io/popoboxxo/bluepencil` ([docs/DOCKER.md](docs/DOCKER.md)); token refresh is manual (an
+expired token is replaced by hand, and revocation is read at hub start); the E2E suite is hand-rolled
+over the CDP pipe rather than Playwright (NFR-4 says no test framework); dictation leans on the
+browser's own Web Speech API (Chromium/Safari only — no Firefox; Chromium may send audio to a browser
+service, so inject `voiceEngine` to stay offline); no import/merge surface in the UI; no bulk delete
+or retention control; i18n only `en`/`de`. How a release is cut:
+[docs/RELEASING.md](docs/RELEASING.md). Milestones and their state are tracked in
+[docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), the history in [CHANGELOG.md](CHANGELOG.md). This
+repository is the home of the library; the interaction model itself is already proven in a
+production-used prototype (see [docs/CONCEPT.md](docs/CONCEPT.md#7-proven-prior-art)).
 
 ## Why the name
 
@@ -82,13 +88,17 @@ node scripts/serve-example.mjs
 | `dist/bluepencil.element.iife.js` | classic script — the browser extension's MAIN world | global `bluepencilElement` |
 | `dist/attach.js` (classic) and `dist/attach.esm.js` (bundler) | the one-tag attach loader | `window.bluepencilAttach` |
 | `dist/cli.js` | CLI in CI, scripts and offline exchange | `bluepencil …` (or `node dist/cli.js …`) |
-| `dist/mcp.js` | MCP server over stdio, read-only by default | `node dist/mcp.js --store …` |
-| `dist/server.js` | the reference hub: static site *and* notes API on one port | `node dist/server.js --store …` |
+| `dist/mcp.js` | MCP server over stdio, one store, read-only by default | `node dist/mcp.js --store …` |
+| `dist/server.js` | the reference hub: static site *and* notes API on one port | `node dist/server.js --store …`, bin `bluepencil-hub` |
+| `dist/federator.js` | MCP server over stdio across several hubs; **no store of its own** | `bluepencil-federator --registry …` |
+| bin `bluepencil-hub` → `dist/server.js` | the hub under its installed name | `bluepencil-hub --store …` |
+| bin `bluepencil-federator` → `dist/federator.js` | the federator under its installed name | `bluepencil-federator --registry …` |
 
 `dist/bluepencil.js` is the code-split ES module build — the `chunk-*.js` files next to it are its
 internals, not entry points. `dist/bluepencil.core.js` is the NFR-3 size measurement (the built-in
 adapters aliased away), not something a host loads. `dist/types/**` holds the `.d.ts` declarations for
-every entry.
+every entry. The package declares three bins: `bluepencil`, `bluepencil-hub` and
+`bluepencil-federator`.
 
 The fixture page is a small dashboard that carries every requirement group — annotate text and
 design, select a quote, filter, reveal done notes, switch feedback-only mode, answer a decision
@@ -125,6 +135,294 @@ Next stops: [docs/INTEGRATION.md](docs/INTEGRATION.md) for the modes, host hooks
 admin debug pattern; [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#2-public-api-sketch) and
 [docs/INTERNAL-API.md](docs/INTERNAL-API.md) §9 for the full API.
 
+## The pieces
+
+bluepencil is not one program. It is a browser layer, a headless data library, a CLI, an MCP stdio
+server, a hub and a federator — and the piece you pick decides where the notes live and who can
+read them. This is the whole set in one frame; the table below says which store each one talks to.
+
+<img src="docs/images/federation-overview.svg" alt="bluepencil clients, hub and federator overview" width="100%">
+
+```text
+  IN THE PAGE (browser)                       OUTSIDE THE PAGE (Node · Docker · CI)
+
+  ┌────────────────────────────────┐
+  │ your web app                   │
+  │  init()  (page script)         │          ┌───────────────────────────────┐
+  │  <bluepencil-notes> element    │          │ bluepencil-hub                │
+  │  attach.js  (one tag)          │          │  /notes   ◀── browser         │
+  │  bookmarklet / IIFE build      │          │  /mcp     ◀── agent           │
+  │  MV3 extension                 │          │  /config  ──▶ describes it    │
+  └───────────────┬────────────────┘          └───────────────┬───────────────┘
+                  │ one adapter                               │ store file
+                  │ memory · localStorage ·                   │
+                  │ chromeStorage · file · http               │
+                  ├──────────────▶ your own backend ──────────┤
+                  │                (any HTTP API)             │
+                  └──────────────▶ hub /notes                 │
+                                                              │
+  ┌───────────────────────────────────────────────────────────┴────────────┐
+  │ bluepencil mcp        stdio · 9 tools  ──▶ one store file              │
+  │ bluepencil            CLI              ──▶ store file · import/export  │
+  │ bluepencil-federator  stdio · 10 tools ──▶ hub A + hub B (one level)   │
+  └──────────────────────────────────┬─────────────────────────────────────┘
+                                     │ stdio
+                                     ▼
+                            any MCP client / agent
+```
+
+| Client | Store | Network | Visible to agents |
+|---|---|---|---|
+| `init()` in your page script | the adapter you pass (`memory` by default) | none, or the one endpoint that adapter names | only when that store is a hub, or a file an agent can read |
+| `<bluepencil-notes>` element | the same adapters, selected by attributes | same as above | same as above |
+| `attach.js` (one tag) | the element it creates, so the same adapters | same as above | same as above |
+| bookmarklet / IIFE build | `localStorage` by default | none by default | only after an export |
+| MV3 extension | `chromeStorage`, the page, the tab, or one hub | the hub only when selected | the hub, yes; the local stores, no |
+| `bluepencil mcp` (stdio) | one store file | none | it *is* the agent surface |
+| `bluepencil` CLI | a store file or a bundle | none | writes the file or bundle an agent later reads |
+| `bluepencil-hub` | one store file (optionally a registry) | one HTTP port: `/notes`, `/mcp`, `/config` | yes, over `/mcp` |
+| `bluepencil-federator` | none — reads its peers | HTTP to every registry peer | yes, over stdio |
+| your own backend | your database | your HTTP API | yes, if it serves the store contract or you export from it |
+
+A **store** is one note set: a JSON file, a browser storage area, or your database. A **hub** adds
+one HTTP door in front of one store, so a browser and an agent read and write the same notes.
+**Federation** adds nothing to the browser: a separate agent-side process reads several hubs and
+presents them as one session. Browsers never join a registry, and `instance` is never a browser
+attribute — `environment` is.
+
+## Deployment shapes
+
+The five shapes below cover the range from "one reviewer, no server" to "one agent, several
+environments". Every snippet is meant to be copied; the deeper document has the full contract.
+
+| # | Shape | You need | Who reads the notes |
+|---|---|---|---|
+| 1 | Solo, no backend | nothing beyond the page | the browser; export by hand |
+| 2 | Embedded with your own backend | an HTTP API that serves the store contract | your app, and any agent you hand a bundle or an `/mcp` door to |
+| 3 | Self-hosted hub, one store | Docker (or `bluepencil-hub`) | a browser and an agent, same store |
+| 4 | Hub of hubs | two leaf hubs plus a registry | an agent; each browser still writes one leaf |
+| 5 | Offline exchange | the CLI | whoever receives the bundle |
+
+### 1. Solo, no backend
+
+The smallest round: no server, no account, and nothing leaves the browser. `memory` is the default
+and loses the round on reload, so choose `localStorage` when it must survive one.
+
+```text
+  browser (one origin)
+  ┌─────────────────────────────────┐
+  │ your page + the bluepencil layer│
+  │        │                        │
+  │        ▼                        │
+  │  memory / localStorage          │   nothing leaves the browser
+  └─────────────────────────────────┘
+```
+
+```html
+<script src="/dist/bluepencil.iife.js"></script>
+<script>
+  bluepencil.init({
+    adapter: "localStorage",             // "memory" is the default: gone on reload
+    getRoute: () => location.pathname + location.search,
+  });
+</script>
+```
+
+A `localStorage` round is namespaced per origin and can be exported as Markdown or a bundle. It is
+invisible to every agent until you export it. Deeper: [docs/INTEGRATION.md §3](docs/INTEGRATION.md#3-embedded-local-only).
+
+### 2. Embedded with your own backend
+
+You keep the data; bluepencil only speaks the documented store contract. Any backend that implements
+`{base}/notes`, `{base}/notes/{id}`, `{base}/notes/{id}/messages`, `{base}/sessions` and `{base}/health`
+works — the adapter maps transport only and adds no business logic.
+
+```text
+  browser ── /api/bluepencil/notes ──▶ your backend ──▶ your database
+     ▲                                      │
+     └───────── the store contract ─────────┘
+  agent ── bundle export, or an /mcp door you add ──▶ the same records
+```
+
+```ts
+import { init } from "bluepencil";
+import { createHttpAdapter } from "bluepencil/adapters/http";
+
+const bp = init({
+  enabled: () => currentUser.roles.includes("admin"),
+  adapter: createHttpAdapter({
+    endpoint: "/api/bluepencil",                        // the base, not the /notes path
+    headers: () => ({ Authorization: `Bearer ${getToken()}` }),
+  }),
+  identity: { getUser: () => ({ id: currentUser.id, name: currentUser.displayName }) },
+  getRoute: () => location.pathname + location.search,
+});
+bp.enable();
+```
+
+The endpoint is the base URL: the adapter appends `/notes`, `/notes/{id}`, `/notes/{id}/messages`,
+`/sessions` and `/health`. Deeper: [docs/INTEGRATION.md §2](docs/INTEGRATION.md#2-embedded-http-adapter) and
+[docs/EMBED.md §4](docs/EMBED.md#4-the-store-contract).
+
+### 3. Self-hosted hub, one store
+
+One container, one store, one environment. The browser and the agent use different doors of the same
+process: `/notes` for the page, `/mcp` for the agent, `/config` to describe it without a credential.
+
+```text
+  browser ── /notes ──┐
+                     ├──▶ bluepencil-hub ──▶ /data/dev.json
+  agent ──── /mcp ───┘         │
+                               └── /config (name, app, environment, federates)
+```
+
+```yaml
+services:
+  hub:
+    image: ghcr.io/popoboxxo/bluepencil:0.10.0
+    ports: ["127.0.0.1:8787:8787"]
+    volumes: ["bluepencil-notes:/data"]
+    environment:
+      BLUEPENCIL_NAME: dev-hub
+      BLUEPENCIL_STORE: /data/dev.json
+      BLUEPENCIL_APP: my-web-tool
+      BLUEPENCIL_ENVIRONMENT: dev
+      BLUEPENCIL_AUTH_SECRET: "${BLUEPENCIL_AUTH_SECRET:?set one}"
+volumes:
+  bluepencil-notes:
+```
+
+```bash
+export BLUEPENCIL_AUTH_SECRET="$(openssl rand -hex 32)"
+docker compose up -d
+curl -s http://127.0.0.1:8787/api/v1/bluepencil/config
+```
+
+```html
+<bluepencil-notes
+  endpoint="http://127.0.0.1:8787/api/v1/bluepencil"
+  environment="dev"
+  app="my-web-tool"
+  session="review-2026-10-23"></bluepencil-notes>
+```
+
+The same process without Docker is `bluepencil-hub --store ./dev.json --app my-web-tool
+--environment dev --host 127.0.0.1 --port 8787`. Deeper: [docs/DOCKER.md](docs/DOCKER.md).
+
+### 4. Hub of hubs
+
+Federation here is one level: leaf hubs stay exactly as in shape 3, and one aggregator makes their
+`/mcp` doors look like one session. The browser never talks to the aggregator; it keeps writing to
+its own leaf.
+
+```text
+  browser ── /notes ──▶ hub-dev     ──▶ dev.json
+  browser ── /notes ──▶ hub-staging ──▶ staging.json
+
+  agent ── stdio ──▶ federator ──/config,/mcp──▶ hub-dev
+                        │
+                        └──────────────────────▶ hub-staging
+
+  aggregating hub: agent ── /mcp ──▶ hub-aggregator ──▶ hub-dev, hub-staging
+```
+
+```bash
+cd examples/federation
+cp .env.example .env
+printf 'BP_DEV_TOKEN=%s\nBP_STAGING_TOKEN=%s\n' \
+  "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" >> .env
+chmod 600 .env
+chmod 600 instances.json      # any group/world bit is invalid_registry
+# host uid != 1000: set BLUEPENCIL_UID/BLUEPENCIL_GID in .env and let that user own instances.json
+docker compose up -d
+docker compose logs -f hub-aggregator
+```
+
+The registry is the whole configuration. Bases are **API bases**, including `/api/v1/bluepencil`:
+
+```json
+{
+  "schemaVersion": 1,
+  "defaults": { "includeSelf": false, "timeoutMs": 3000, "concurrency": 4, "limit": 200 },
+  "instances": [
+    { "id": "dev",     "base": "http://hub-dev:8787/api/v1/bluepencil",
+      "mode": "read", "auth": { "env": "BP_DEV_TOKEN" } },
+    { "id": "staging", "base": "http://hub-staging:8787/api/v1/bluepencil",
+      "mode": "read", "auth": { "env": "BP_STAGING_TOKEN" } }
+  ]
+}
+```
+
+The full file, with the container names this compose project uses, is
+[examples/federation/instances.json](examples/federation/instances.json).
+
+```yaml
+# hub-aggregator, from examples/federation/docker-compose.yml
+entrypoint: ["/usr/local/bin/bluepencil-hub"]
+command: ["--store", "/tmp/aggregator.json", "--host", "0.0.0.0", "--port", "8787",
+          "--base", "/api/v1/bluepencil", "--name", "hub-aggregator", "--app", "my-web-tool",
+          "--registry", "/etc/bluepencil/instances.json",
+          "--no-self", "--read-only", "--allow-insecure"]
+```
+
+`--allow-insecure` is required because the peers are plain `http` on a private Docker network; it
+still blocks link-local and cloud-metadata targets. The aggregator publishes only
+`127.0.0.1:8790`, and its own store is intentionally empty, so `--no-self` keeps `self` out of the
+aggregate. A refused start exits `4` (`invalid_registry`, `invalid_base_url`, `federates_missing`,
+`self_reference`, `nested_federation`, `identity_mismatch`, `missing_credential`); an unreachable peer does not stop
+the session — the aggregate is `partial: true` and `bluepencil instances health` exits `5`. Check a
+registry before starting anything with
+`bluepencil instances validate --registry ./instances.json --allow-insecure`.
+
+The federator is **stdio only** and is not a compose service. A client starts it per session:
+
+```bash
+docker run -i --rm --network bluepencil-federation \
+  --user "$(id -u):$(id -g)" \
+  --env-file .env \
+  --no-healthcheck \
+  -v "$PWD/instances.json:/etc/bluepencil/instances.json:ro" \
+  ghcr.io/popoboxxo/bluepencil:0.10.0 bluepencil-federator \
+  --registry /etc/bluepencil/instances.json --read-only --allow-insecure
+```
+
+`--env-file .env` reads the registry credentials from the Compose `.env` file (uncomment and fill the
+token lines in `.env.example`); `--no-healthcheck` turns off the image's `HEALTHCHECK`, which probes
+the hub's `/config` — a federator has no HTTP endpoint and would otherwise sit at `unhealthy`
+forever.
+
+Deeper: [docs/FEDERATION.md §14](docs/FEDERATION.md#14-deployment-shapes).
+
+### 5. Offline exchange
+
+A bundle is the exchange format: schema-versioned JSON with an environment tag, validated and
+merged by the same code the UI and MCP use. Rehearse first; a conflict refuses the write instead of
+overwriting.
+
+```text
+  browser / hub ──export──▶ live.bundle.json ──merge──▶ dev.bluepencil.json
+                                   │                          │
+                                   └── dry run: conflicts ────┘  (nothing written)
+```
+
+```bash
+# 1. take a dev set out of a store as a portable bundle
+bluepencil export dev.bluepencil.json --format json --out review.bundle.json
+
+# 2. rehearse against the target: report conflicts, write nothing
+bluepencil merge team.bluepencil.json review.bundle.json --dry-run --json
+
+# 3. apply only after the report is clean (both sides are dev)
+bluepencil import review.bundle.json team.bluepencil.json --mode upsert --on-conflict keep-incoming
+
+# 4. promote dev → live deliberately: --environment re-tags the incoming notes
+bluepencil merge live.bluepencil.json dev.bluepencil.json \
+  --environment live --allow-env-mismatch --out live.promoted.json
+```
+
+`--mode` is `merge`, `upsert` or `replace-session`; an unresolved conflict exits `2` and writes
+nothing. Deeper: [docs/PROTOCOL.md §8](docs/PROTOCOL.md#8-environments-and-exchange-fr-14).
+
 ## Ways to put it on a page
 
 Getting the layer *in* and deciding where the notes *live* are two separate choices, and the second
@@ -137,23 +435,67 @@ one is what makes a round local to one browser or shared with a server.
 | **One tag, any host** | `dist/attach.js` plus `data-*` attributes; it defines `<bluepencil-notes>` and mounts it | static page, CMS, Home Assistant resource — nothing to build, nothing to call |
 | **The element alone** | `dist/bluepencil.element.min.js` and a `<bluepencil-notes …>` tag you place yourself | you want to control when and where it mounts, and to read its events |
 | **Bookmarklet** | a bookmark pointing at the IIFE build | the page is not yours and you cannot deploy it — see the CSP notes in [INTEGRATION §4](docs/INTEGRATION.md#4-bookmarklet-no-deploy) |
-| **Self-hosted hub** | `node dist/server.js --store notes.json --root <dir>` | you want persistence and one shared store without writing a backend |
+| **Self-hosted hub** | `bluepencil-hub --store notes.json --root <dir>` | you want persistence and one shared store without writing a backend |
+| **Hub with a registry** | `bluepencil-hub --store … --registry ./instances.json` | one hub whose `/mcp` door also reads leaf hubs — see [Deployment shapes](#deployment-shapes) |
 | **Chromium extension** | load `extension/dist` unpacked — see the next section | any page, without editing it |
 | **Headless** | the `bluepencil` CLI, `node dist/mcp.js`, `bluepencil/data` | CI, scripts and agents, against the same data and validators as the UI |
+| **Agent over several hubs** | `bluepencil-federator --registry ./instances.json` | one agent session must read and write several hubs; no browser involved |
 
 Where the notes land is a separate switch, the adapter:
 
 | Adapter | Survives | Notes |
 |---|---|---|
 | `memory` | nothing — it is the default | the layer is an overlay, not a store |
-| `localStorage` | a reload, in that browser | namespaced `bluepencil:<host>:<instance>:v1`; the bookmarklet's default; partitioned per origin |
+| `localStorage` | a reload, in that browser | namespaced `bluepencil:<host>:<instance>:v1` (`<instance>` is a store key, not a browser attribute); the bookmarklet's default; partitioned per origin |
 | `chromeStorage` | a reload, in that browser profile, across every site | the extension's default, and the reason that adapter exists |
 | `file` | whatever the host's I/O does | needs an injected `{ read, write }` — `createFileAdapter({ … })`, because there is no sensible default file to write to |
-| `http` | a server | speaks the documented contract, so *any* backend works; `dist/server.js` implements it |
+| `http` | a server | speaks the documented contract, so *any* backend works; `bluepencil-hub` implements it |
 
 An HTTP store is also what makes a round visible to the MCP server, and the contract is small on
 purpose — ten endpoints, listed in [docs/EMBED.md](docs/EMBED.md#4-the-store-contract), which is also
 where the attribute table, the loader API and the update manifest live.
+
+## Connecting an agent
+
+Any MCP client works. Read the two paths as "one store" and "several hubs": `bluepencil mcp` serves
+one file, `bluepencil-federator` serves a registry, and a hub with `--registry` serves the same
+aggregate over HTTP. The full contract — tools, arguments, errors, strict flags — is
+[docs/MCP.md](docs/MCP.md).
+
+| Client | How to attach | Notes |
+|---|---|---|
+| **Any MCP client (stdio)** | spawn `bluepencil mcp --store … --environment dev --app …`, or `bluepencil-federator --registry …`, with an argv array | the normative shape; read-only by default |
+| **Claude Desktop** | an entry in `claude_desktop_config.json` | restart the app after editing |
+| **opencode** | an `mcp` entry in `opencode.json` or the global config | `"type": "local"`, `command` as an array |
+| **Hermes** (one example) | the wrapper plus `BLUEPENCIL_*` environment variables | nothing in bluepencil requires Hermes; worked example in [docs/HERMES.md](docs/HERMES.md) |
+| **Custom / HTTP hub** | `POST {base}/mcp` with JSON-RPC 2.0 | no sessions, no SSE; one JSON answer per request |
+
+A single-store stdio session exposes **9** tools. A federation surface exposes **10** — the same set
+plus `list_instances`; a federation exposes **no resources**. A hub without `--registry` exposes the
+same 9 tools; a hub with `--registry` aggregates only on `/mcp`, while `/notes` stays local.
+
+```json
+{
+  "mcpServers": {
+    "bluepencil": {
+      "command": "bluepencil",
+      "args": ["mcp", "--store", "/srv/reviews/dev.bluepencil.json",
+               "--environment", "dev", "--app", "my-web-tool"]
+    },
+    "bluepencil-federation": {
+      "command": "bluepencil-federator",
+      "args": ["--registry", "/srv/reviews/instances.json"]
+    }
+  }
+}
+```
+
+Both are **read-only by default**. A write needs `--allow-write`, and only three spellings enable it:
+`--allow-write`, `--allow-write=true`, or `BLUEPENCIL_ALLOW_WRITE=1` for the stdio single store.
+`--allow-write=false` (or `--allow-write false`) leaves writes off; an unparsable value —
+`--allow-write 1`, `--allow-write 0`, `--allow-write=yes` — is a usage error (exit `1`). A federated
+write needs **two** locks: `mode: "write"` on the target instance **and** `--allow-write` on the
+session. `--read-only` wins over both.
 
 ## Capture modes
 
@@ -232,7 +574,7 @@ value is replaced by the documented default rather than stored.
 
 | Field | Values | What it decides |
 |---|---|---|
-| Environment | `dev`, `staging`, `prod` | the badge the layer shows on each note |
+| Environment | `dev`, `staging`, `live` | the badge the layer shows on each note. A stored `prod` is migrated to `live` on load — `prod` was never a value the layer accepted (and is not offered in the options page) |
 | App name | free text | what the layer calls the app; empty falls back to the page's own title |
 | Language | `auto`, `en`, `de` | `auto` follows the browser |
 | Author | "ask me once, then remember", "take it from the page" | how the note's author is established. Neither is verified — the store has no authentication of its own |
@@ -288,11 +630,11 @@ phases, the revocation file and why the environment variable beats the flag — 
 
 `file:///*` is deliberately **not** requested, and `<all_urls>` is not used.
 
-**Known gap:** the settings do not reach the layer yet
-([#53](https://github.com/Popoboxxo/bluepencil/issues/53)). The worker writes them onto
-`<bluepencil-notes>` with a `data-` prefix, which is the *loader's* vocabulary — not the element's — so
-the layer falls back to its default `memory` store and a round taken with the extension does not
-survive a reload.
+The worker converts the options into the element's own attribute vocabulary in one place
+(`extension/src/handoff.ts`), so the settings reach the layer: environment, app name, language,
+author identity, route, store and credential. A hub that reports `federates: true` is still **one
+write target** — `federates` describes the hub's `/mcp` door and does not change where the extension
+writes. The extension has one hub profile in `0.10.0`.
 
 ## Documentation
 
@@ -304,11 +646,14 @@ survive a reload.
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | Normative rules for human + agent collaboration (implement / feedback / decision requests) |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | Integration modes, host hooks, theming, security notes, admin debug mode |
 | [docs/EMBED.md](docs/EMBED.md) | One-tag attach: attribute reference, loader/update API, the store's endpoint table, the gate recipe |
+| [docs/MCP.md](docs/MCP.md) | The agent contract: stdio and HTTP `/mcp`, the 9-vs-10 tools, read-only default and the strict `--allow-write`, exit codes, client recipes |
+| [docs/FEDERATION.md](docs/FEDERATION.md) | Topology, registry schema, URL/secret policy, write semantics, startup, threat model and deployment shapes |
+| [docs/HERMES.md](docs/HERMES.md) | **Worked example:** Hermes Agent as one MCP client — the contract itself is in `docs/MCP.md` |
+| [docs/plans/federation-0.10.md](docs/plans/federation-0.10.md) | The 0.10 federation plan: PR sequence, test mapping, deployment shapes, rollback |
 | [docs/INTERNAL-API.md](docs/INTERNAL-API.md) | Frozen module boundaries and the public API sketch for M1 (`0.1.0`) |
 | [docs/EXTENSION.md](docs/EXTENSION.md) | The Chromium MV3 extension: build, install, and how it gets past a page's CSP |
 | [docs/DOCKER.md](docs/DOCKER.md) | Running the hub as a container: compose, environment variables, the generated credential, honest limits |
-| [docs/HERMES.md](docs/HERMES.md) | Registering the MCP server in a host, and the environment binding it runs under |
-| [docs/RELEASING.md](docs/RELEASING.md) | How a release is cut: preflight, the tag-triggered workflow, the five assets |
+| [docs/RELEASING.md](docs/RELEASING.md) | How a release is cut: preflight, the tag-triggered workflow, the assets |
 | [examples/vanilla/README.md](examples/vanilla/README.md) | The fixture app: smoke commands, hook inventory, seed bundle, manual checklist |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) §8 | Environment tagging, bundle exchange rules, promotion between dev and live |
 
@@ -335,6 +680,8 @@ human reads them in the UI. In a live system it is admin-only and invisible to e
 **Be readable by agents.** An **MCP interface** is a required part of the final tool (not a
 nice-to-have): an agent can list open notes, answer one, mark it done, and move bundles —
 read-only by default, writes on explicit opt-in, always bound to one app *and* one environment.
+When one environment is not enough, the agent attaches a **federator**: the same tools over several
+hubs, with each note tagged by the instance it came from. Browser clients never take part in that.
 
 **Let notes travel.** Sets of notes move between environments as portable bundles —
 `schema`-versioned JSON with an environment tag, importable with `merge` / `upsert` /
@@ -365,6 +712,10 @@ so CI, scripts and agents use exactly the same data and validators as the UI.
   page. The hub is where that credential is checked — one shared secret (`--auth-secret`) or
   signed, expiring, revocable per-device tokens (`--token-key`, minted with `bluepencil token`);
   [docs/INTEGRATION.md](docs/INTEGRATION.md) §5 has both.
+* **The registry holds references, not secrets.** A federation registry names an environment
+  variable (`auth: { "env": "BP_DEV_TOKEN" }`), never a token, and must be mode `0600`; any
+  group/world bit refuses the start with `invalid_registry`. The federator never presents a browser
+  endpoint and is stdio-only.
 * **Dictation is opt-in and text-only (FR-21).** The `voice` opt-in adds a mic button to the composer;
   only the transcript text is kept — no audio is stored, and the core makes no request of its own.
   Chromium's Web Speech API may still send audio to a browser service, so a host that must avoid that
@@ -386,14 +737,15 @@ so CI, scripts and agents use exactly the same data and validators as the UI.
   code and that copy in step.
 
 The pipeline keeps these claims checkable. `npm run verify` is the local umbrella (its row below lists
-the chain); the CLI/MCP smokes, the secret scan and the spec regeneration/check are CI-side. CI
-(`.github/workflows/ci.yml`) runs the whole set as five jobs: `spec`, `verify`, `parity`, `install`
-and `image`.
+the chain, including the CLI, MCP and federation smokes); the secret scan and the spec
+regeneration/check are CI-side. CI (`.github/workflows/ci.yml`) runs the whole set as six jobs:
+`spec`, `bump`, `verify`, `parity`, `install` and `image`.
 
 | Script | File | Scope |
 | --- | --- | --- |
 | `smoke:cli` | `scripts/cli-smoke.mjs` | exit codes, conflict refusal, environment isolation, atomic writes |
 | `smoke:mcp` | `scripts/mcp-smoke.mjs` | JSON-RPC handshake, read-only default, environment binding, import fidelity |
+| `smoke:federation` | `scripts/federation-smoke.mjs` | the aggregating hub and the stdio federator: registry 0600/identity gates, degraded peers, 9-vs-10 tools |
 | `smoke:pack` | `scripts/pack-smoke.mjs` | every path of the exports map exists, imports and is published |
 | `smoke:install` | `scripts/install-smoke.mjs` | the package installs from a tarball and every documented subpath resolves by package specifier (`smoke:install:git` is a non-blocking diagnostic) |
 | `smoke:embed` | `scripts/embed-smoke.mjs` | the hub HTTP contract, the element against a running API, and the one-tag attach loader in a real browser |
@@ -406,7 +758,12 @@ and `image`.
 | `secret-scan` | `scripts/secret-scan.mjs` | scans the tree for committed secrets |
 | `spec` | `scripts/build-reqmd-spec.py` | regenerate `spec/` from `docs/REQUIREMENTS.md` |
 | `spec:check` | `reqmd check spec/` | validate the generated spec; CI also fails on drift (`git status spec/`) |
-| `verify` | — | typechecks (root + extension), unit tests, builds (library + extension), size guard, and the pack/install/embed/e2e/round-trip/bookmarklet/parity/ext/webstore smokes |
+| `verify` | — | typechecks (root + extension), unit tests, builds (library + extension), size guard, then `smoke:cli`, `smoke:mcp`, `smoke:federation`, and the pack/install/embed/e2e/round-trip/bookmarklet/parity/ext/webstore smokes |
+
+The CI `verify` job runs the same `npm run verify` chain in the same order and finishes with the
+secret scan; no step of that chain is local-only or CI-only. The `image` job builds the image and
+starts each wrapper bin, asserting each bin's **own** banner (`bluepencil-hub --version`,
+`bluepencil-federator --version`) — an image that ships only the hub fails there.
 
 ## License
 

@@ -146,3 +146,93 @@ requires-trace-from: []
 Two doors, one store: the HTTP MCP endpoint and the notes API of one process share one store and one write path — no second file handle, no second truth
 
 *Acceptance criteria:* A note written through MCP is visible in the notes API of the same process without a restart, and the other way round
+
+## FR-16.10 Registry validation: loadRegistry rejects literal secrets, unknown fields, duplicate and…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+Registry validation: loadRegistry rejects literal secrets, unknown fields, duplicate and reserved IDs, non-http(s) URLs, URLs carrying userinfo, query or fragment, link-local and metadata targets, and a missing auth environment variable; http is accepted only for loopback or with --allow-insecure; private ranges (RFC1918/ULA) only with --allow-insecure; link-local (169.254.0.0/16, fe80::/10) and metadata targets are always blocked, also with --allow-insecure; a registry loads completely or not at all; error codes are stable
+
+*Acceptance criteria:* Every rejected class answers its stable error code and loads no instance; `--allow-insecure` admits `http` and private ranges but never a link-local or metadata target; a registry with one invalid entry is rejected as a whole
+
+## FR-16.11 list_instances, the instance parameter and qualified IDs: a new read tool list_instances…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+list_instances, the instance parameter and qualified IDs: a new read tool list_instances reports the known instances; instance filters list_notes; a qualified ID instance/noteId is split at the first /; self is a read alias that can be formatted, while all and * are selectors only and never a format target; formatting and parsing round-trip; the output carries no auth data
+
+*Acceptance criteria:* Parse and format round-trip for qualified IDs including `self`; `all` and `*` are rejected as format targets; `list_notes` with an unknown instance reports the error instead of returning notes; `list_instances` answers without credentials and without auth headers
+
+## FR-16.12 Aggregate reads with timeout, partial-failure envelope and limit: list_notes without ins…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+Aggregate reads with timeout, partial-failure envelope and limit: list_notes without instance reads all instances in parallel; every instance has a timeout; a dead instance yields an error entry instead of an empty overall answer; the result carries partial and errors; limit (default 200, maximum 1000) bounds the answer and truncated marks truncation; the order is deterministic; defaults.timeoutMs and the limit clamp are covered by tests
+
+*Acceptance criteria:* One unreachable instance yields `partial:true` plus an error entry while the notes of the healthy instances are returned; `limit:5000` is clamped to 1000 and sets `truncated`; two runs over an unchanged registry return the same order; a configured `defaults.timeoutMs` is honoured
+
+## FR-16.13 Write routing without fan-out, mode, --allow-write and --read-only: every write names ex…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+Write routing without fan-out, mode, --allow-write and --read-only: every write names exactly one instance; there are two locks — the registry's mode: "write" is only the upper bound and the federation session must additionally set --allow-write; without --allow-write every federated write, including self, is refused with mode_denied; a global --read-only wins; all and * as a write target are fanout_denied; bulk_remove without an instance is instance_required; environment is never rewritten; there is no environment promotion; allow_env_mismatch is rejected in federation mode; the write response carries the qualified ID
+
+*Acceptance criteria:* A registry entry with `mode: "write"` still refuses a write in a session started without `--allow-write`; `--read-only` overrides `--allow-write`; a write aimed at `all` or `*` fails with `fanout_denied` and touches no instance; `bulk_remove` without `instance` fails with `instance_required`; a forwarded write keeps the note's `environment`; `allow_env_mismatch` is refused with `invalid_argument`; the response names the target instance and the qualified note ID
+
+## FR-16.14 Combined hub, federate-only process, includeSelf and the lab flag: a hub started with --…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+Combined hub, federate-only process, includeSelf and the lab flag: a hub started with --registry aggregates in /mcp (itself plus the registry) while /notes stays local; /config always reports federates; a pure federator has no /notes endpoint; defaults.includeSelf defaults to true and --no-self excludes the own instance; --include-self on a pure federator is a usage error; list_instances contains self only when includeSelf is set; the own instance is writable exactly when allowWrite, no --read-only, the instance is not read-only and includeSelf holds; without --allow-write even self is read-only; --allow-insecure is the single lab flag for http and private ranges, while link-local and metadata targets stay blocked
+
+*Acceptance criteria:* A hub with `--registry` lists own and registered notes over `/mcp` while `/notes` still serves only its own store; a federator answers no `/notes` request; `--no-self` removes `self` from `list_instances`; `--include-self` on a federator exits as a usage error; without `--allow-write` a write to `self` is `mode_denied`; `--allow-insecure` admits `http` and private ranges but never a link-local or metadata target
+
+## FR-16.15 bluepencil instances with the subcommands validate, list and health: validate and list w…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+bluepencil instances with the subcommands validate, list and health: validate and list work without network access; health checks /config and /health of every instance; exit codes are stable; --json is a stable shape; the output contains no secrets; an instance unreachable at startup degrades the aggregate and makes health exit 5
+
+*Acceptance criteria:* `validate` and `list` derive their result from the registry file alone; `health` reports per-instance reachability and exits 0 when all instances are healthy and 5 when one is unreachable; `--json` emits the same fields on every run; no token value appears in any output

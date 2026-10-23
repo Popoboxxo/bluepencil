@@ -18,12 +18,16 @@
  *   - `exit` cannot stop the hub: a caller must never be able to shut down the service it is talking
  *     to (the protocol core refuses it over this door).
  */
+import type { Environment } from "../src/core/model";
 import type { Store } from "../src/core/store";
 import { createStore } from "../src/core/store";
+import type { McpBackend } from "../src/mcp/backend";
 import { VERSION } from "../src/version";
+import { createStoreBackend } from "../src/mcp/backend";
 import {
   createStorePersistence,
   TOOL_DEFINITIONS,
+  type McpPersistence,
   type StoreFileIo,
   type ToolContext,
 } from "../src/mcp/tools";
@@ -83,6 +87,39 @@ function needsWrite(body: string): boolean {
 /** The request headers, as `node:http` hands them over. */
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
+/* ------------------------------------------------------------------------------------------------
+ * Backend injection (FR-16.14, PR 5b)
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * Everything the host may need to build a non-default backend for one request. The hub uses it to
+ * wrap this request's `Store` in an in-process `SelfSource` and add the pre-built registry peers;
+ * a host that passes no factory keeps the 0.8 single-store path byte-identically (T26/T56).
+ */
+export interface McpBackendFactoryInput {
+  store: Store;
+  persistence: McpPersistence;
+  clientName: string;
+  sessionId: string;
+  appName: string;
+  environment: Environment;
+  now?: () => string;
+}
+
+export type McpBackendFactory = (
+  input: McpBackendFactoryInput,
+) => Promise<McpBackend> | McpBackend;
+
+export interface McpRouteOptions {
+  /** Builds the backend for this request; absent means `createStoreBackend`. */
+  backendFactory?: McpBackendFactory;
+  /**
+   * Runs after the exchange and before the store is destroyed. The hub deliberately does **not**
+   * use this to close federation peers: those clients are shared across requests.
+   */
+  onBackendClose?: (backend: McpBackend) => Promise<void> | void;
+}
+
 /** The client name a request carries, if any — the notes record it (FR-16.4). */
 function clientNameOf(headers: RequestHeaders): string {
   const value = headers["x-bluepencil-client"];
@@ -108,6 +145,7 @@ export async function handleMcpRoute(
   request: ServerRequest,
   context: HandlerContext,
   io: StoreFileIo,
+  options: McpRouteOptions = {},
 ): Promise<ServerResponse | null> {
   const base = normalizeBase(context.base);
   const path = requestPath(request.url);
@@ -183,15 +221,45 @@ export async function handleMcpRoute(
   const store: Store = createStore({ adapter, environment: context.environment });
   await store.reload();
 
+  const appName = context.appName ?? "bluepencil hub";
+  const clientName = clientNameOf(headers);
+  const sessionId = sessionIdOf(headers);
+  const backend =
+    options.backendFactory === undefined
+      ? createStoreBackend(store, {
+          // A read-only hub refuses writes here as well, and it does so the way MCP requires: as a
+          // refusal of the tool (`isError`), not as a broken protocol message.
+          allowWrite: context.readOnly !== true,
+          environment: context.environment,
+          appName,
+          persistence,
+          clientName,
+          sessionId,
+          ...(context.now === undefined ? {} : { now: context.now }),
+        })
+      : await options.backendFactory({
+          store,
+          persistence,
+          clientName,
+          sessionId,
+          appName,
+          environment: context.environment,
+          ...(context.now === undefined ? {} : { now: context.now }),
+        });
+
+  // A federated backend owns its own two locks and has no single environment binding (FR-16.13/
+  // 16.14). The tool layer reads both facts from the backend, so only the single-store path gets
+  // the hub's environment.
+  const federated = backend.kind === "federation";
   const toolContext: ToolContext = {
-    store,
-    // A read-only hub refuses writes here as well, and it does so the way MCP requires: as a refusal
-    // of the tool (`isError`), not as a broken protocol message.
+    backend,
+    // Federation enforces `--allow-write`/`--read-only`/`mode` itself; the tool layer must not add a
+    // second, differently worded refusal. `--read-only` still wins through the backend.
     allowWrite: context.readOnly !== true,
-    environment: context.environment,
-    appName: context.appName ?? "bluepencil hub",
-    clientName: clientNameOf(headers),
-    sessionId: sessionIdOf(headers),
+    ...(federated ? {} : { environment: context.environment }),
+    appName,
+    clientName,
+    sessionId,
     persistence,
     ...(context.now === undefined ? {} : { now: context.now }),
   };
@@ -202,7 +270,11 @@ export async function handleMcpRoute(
       process.stderr.write(`bluepencil server: mcp ${message}\n`);
     });
   } finally {
-    await store.destroy();
+    try {
+      await options.onBackendClose?.(backend);
+    } finally {
+      await store.destroy();
+    }
   }
 
   if (response === null || isNotificationId(parsed.request.id)) {

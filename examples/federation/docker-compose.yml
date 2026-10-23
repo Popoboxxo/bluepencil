@@ -1,0 +1,185 @@
+# Federated example: one aggregating hub + two leaf hubs (plan §9 shape (e), PR 8).
+#
+#   cp .env.example .env          # image tag, ports, names — no secrets in the repo
+#   chmod 600 instances.json      # the registry is a security boundary, see below
+#   chown 1000:1000 instances.json  # the containers run as uid 1000 (`node`)
+#   docker compose up -d
+#   docker compose logs -f hub-aggregator
+#
+# What this shape is:
+#
+#   hub-dev, hub-staging   two independent stores of record, each with its own volume and port. The
+#                          browser talks to these directly (the browser never talks to the aggregator),
+#                          so `/notes` stays single-environment exactly as in a non-federated hub.
+#   hub-aggregator         a hub with `--registry --no-self`: only its `/mcp` door fans out. It has no
+#                          notes volume, because it is not a store of record — its `/notes` stays empty.
+#
+# `instances.json` (created next to this file) is the registry and must use the container names
+# **including the API base path**: `http://hub-dev:8787/api/v1/bluepencil` and
+# `http://hub-staging:8787/api/v1/bluepencil`, with `auth: {"env": "…"}` references only — never a
+# literal token. A bare origin (`http://hub-dev:8787`) is not the API base: the hub answers
+# `404 unknown endpoint /config — the API lives under /api/v1/bluepencil` and the aggregator exits 4
+# (`not_found`). This compose file assumes the registry references `BP_DEV_TOKEN` / `BP_STAGING_TOKEN`;
+# if it uses other names, change the two entries under `hub-aggregator.environment` to match. The same
+# variables are the leaves' shared secrets, so one value drives both ends.
+#
+# The registry file gate (`src/federation/registry.ts`) is fail-closed and runs before the file is
+# read:
+#   * any group/world bit → `invalid_registry`: "Registry file … must not be accessible by group or
+#     others (expected 0600, got …)" (that is why `chmod 600` above is not optional; `0644` from a
+#     plain `git checkout` fails);
+#   * a file not owned by the container user → `invalid_registry`: "Registry file … must be owned by
+#     the current user (uid 1000)" (that is why `chown 1000:1000` above — or `BLUEPENCIL_UID` set to
+#     `id -u` — is not optional on a host whose uid differs from the container's `node` user).
+# Either failure is a start-up failure (exit 4), so `docker compose ps` shows the aggregator
+# restarting and `docker compose logs hub-aggregator` shows the "must not be accessible by group or
+# others" / "must be owned by the current user" line. That is intentional: a silently ignored
+# registry would turn a fan-out into an unnoticed partial answer. (`restart: on-failure:5` stops the
+# loop after five attempts instead of spinning forever; fix the file, then `docker compose up -d`.)
+# On a host whose file sharing rewrites bind-mount modes (some Docker Desktop setups), copy the
+# registry into a named volume instead; the gate is identical.
+#
+# `--allow-insecure` is required because the leaves are plain `http` on a private Docker network.
+# It admits http and RFC1918/ULA targets only; link-local (`169.254.0.0/16`, `fe80::/10`) and cloud
+# metadata targets stay blocked. The aggregator's port is published on host loopback only, so the
+# aggregate is not reachable from outside this machine unless you deliberately change that. Do not
+# put the aggregator on a public interface: it has no credential here.
+#
+# The federator is deliberately NOT a service. It is the local stdio process an MCP client starts per
+# session (Compose cannot keep it alive without an attached client; without stdin it exits at EOF).
+# Start it with the client attached, on this network:
+#
+#   docker run -i --rm --network bluepencil-federation --user "$(id -u):$(id -g)" \
+#     -v ./instances.json:/etc/bluepencil/instances.json:ro \
+#     -e BP_DEV_TOKEN -e BP_STAGING_TOKEN \
+#     ghcr.io/popoboxxo/bluepencil:0.10.0 bluepencil-federator \
+#     --registry /etc/bluepencil/instances.json --read-only --allow-insecure
+#
+# `--user "$(id -u):$(id -g)"` matters for the same 0600/owner gate: the image's `node` user is uid
+# 1000, so on a host with another uid the mounted registry must be owned by the *process* user.
+#
+# Swap `--read-only` for `--allow-write` to permit federated writes; a target still needs
+# `mode: "write"` in the registry, so writes need both locks (plan decision 3).
+
+name: bluepencil-federation
+
+services:
+  hub-dev:
+    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.10.0}
+    container_name: ${BLUEPENCIL_DEV_NAME:-bluepencil-hub-dev}
+    restart: unless-stopped
+    ports:
+      - "${BLUEPENCIL_DEV_PORT:-8787}:8787"
+    volumes:
+      - dev-data:/data
+    environment:
+      # The default ENTRYPOINT turns these into --store/--base/--host and generates a credential if
+      # the secret were absent. It is present here because the aggregator must authenticate.
+      BLUEPENCIL_STORE: /data/dev.json
+      BLUEPENCIL_NAME: dev-web
+      BLUEPENCIL_APP: my-web-tool
+      BLUEPENCIL_ENVIRONMENT: dev
+      BLUEPENCIL_AUTH_SECRET: "${BP_DEV_TOKEN:?BP_DEV_TOKEN is required (see .env.example)}"
+    healthcheck:
+      # `/config` needs no credential (FR-6.10), so this probe works on an authenticated hub.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8787/api/v1/bluepencil/config"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+  hub-staging:
+    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.10.0}
+    container_name: ${BLUEPENCIL_STAGING_NAME:-bluepencil-hub-staging}
+    restart: unless-stopped
+    ports:
+      - "${BLUEPENCIL_STAGING_PORT:-8788}:8787"
+    volumes:
+      - staging-data:/data
+    environment:
+      BLUEPENCIL_STORE: /data/staging.json
+      BLUEPENCIL_NAME: staging-web
+      BLUEPENCIL_APP: my-web-tool
+      BLUEPENCIL_ENVIRONMENT: staging
+      BLUEPENCIL_AUTH_SECRET: "${BP_STAGING_TOKEN:?BP_STAGING_TOKEN is required (see .env.example)}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8787/api/v1/bluepencil/config"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+  hub-aggregator:
+    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.10.0}
+    container_name: ${BLUEPENCIL_AGGREGATOR_NAME:-bluepencil-hub-aggregator}
+    # A broken registry (mode/owner, identity mismatch) is a configuration error, not a transient
+    # fault: retry a few times so `docker compose logs` has the line, then stay down instead of
+    # spinning forever. The leaves keep restarting on transient failures.
+    restart: on-failure:5
+    # The bin wrapper, not the credential-bootstrapping entrypoint: the aggregator supplies its own
+    # --store/--host/--port and has no volume to keep a generated secret in. Nothing is appended to
+    # the command, so `--store` below appears exactly once.
+    #
+    # Because the wrapper bypasses `entrypoint.sh`, its `--host 0.0.0.0` default is gone too: the hub
+    # itself binds `127.0.0.1` unless told otherwise, so `--host 0.0.0.0 --port 8787 --base …` must
+    # stay in the command below. Without them the published `127.0.0.1:8790` could not reach the
+    # aggregate (and the healthcheck would be the only thing that still worked).
+    entrypoint: ["/usr/local/bin/bluepencil-hub"]
+    # The registry gate compares the file's owner with the *process* uid. The image's `node` user is
+    # uid 1000; on a host with a different uid, set BLUEPENCIL_UID/BLUEPENCIL_GID to `id -u`/`id -g`
+    # (and let that user own the 0600 registry file) instead of chowning the file to 1000.
+    user: "${BLUEPENCIL_UID:-1000}:${BLUEPENCIL_GID:-1000}"
+    command:
+      - "--store"
+      - "/tmp/aggregator.json"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8787"
+      - "--base"
+      - "/api/v1/bluepencil"
+      - "--name"
+      - "hub-aggregator"
+      - "--app"
+      - "my-web-tool"
+      - "--registry"
+      - "/etc/bluepencil/instances.json"
+      - "--no-self"
+      # Pure view over the leaves: no credential means any container on this network could POST to
+      # `/notes` and write an ephemeral (/tmp) store that only makes the aggregate lie. Reads — `/notes`
+      # GET, `/config`, the `/mcp` aggregate — are unaffected. Federated writes already need
+      # `--allow-write` plus `mode: "write"` in the registry, so this is the second lock, not the first.
+      - "--read-only"
+      - "--allow-insecure"
+    ports:
+      # Host loopback only: the aggregate must not be exposed outside this machine.
+      - "127.0.0.1:${BLUEPENCIL_AGGREGATOR_PORT:-8790}:8787"
+    volumes:
+      # Read-only registry. Its 0600 mode and uid 1000 ownership are the hub's own gates; see the
+      # header for the two `invalid_registry` failures they produce.
+      - "./instances.json:/etc/bluepencil/instances.json:ro"
+    environment:
+      # Credential *references* resolved by the registry; the values are the leaves' shared secrets.
+      # No literal token is written here — Compose passes the host environment through.
+      BP_DEV_TOKEN: "${BP_DEV_TOKEN:?BP_DEV_TOKEN is required (see .env.example)}"
+      BP_STAGING_TOKEN: "${BP_STAGING_TOKEN:?BP_STAGING_TOKEN is required (see .env.example)}"
+    depends_on:
+      hub-dev:
+        condition: service_healthy
+      hub-staging:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8787/api/v1/bluepencil/config"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+volumes:
+  dev-data:
+  staging-data:
+
+networks:
+  default:
+    # Pinned so the federator one-liner above has a stable network name.
+    name: ${BLUEPENCIL_NETWORK:-bluepencil-federation}

@@ -15,6 +15,35 @@
 | **Bookmarklet** | none (drag a link) | The page is not yours / you cannot deploy |
 | **Self-hosted hub** | one command | Static sites, presentations, team reviews |
 
+### Deployment shapes at a glance
+
+These are the five topologies from [FEDERATION.md §14](FEDERATION.md#14-deployment-shapes). The
+README's [`Deployment shapes`](../README.md#deployment-shapes) section tells the same story from the
+user's side; the two lists line up as follows:
+
+* **1** = README shape 1 (*solo* — one store, no HTTP fan-out);
+* **2** = README shape 3 (*self-hosted hub*);
+* **3** and **4** = README shape 4 (*hub of hubs*, once through a registry and once through the
+  stdio federator);
+* **5** = README shape 4 written out concretely (two leaves plus an aggregator).
+
+README shapes 2 (*embedded with your own backend*) and 5 (*offline exchange*) are host and CLI
+patterns, not federation topologies, so they have no row here. The registry, write locks and threat
+model are in [FEDERATION.md](FEDERATION.md).
+
+| # | Shape | One line |
+|---|---|---|
+| 1 | **Single store, stdio MCP** | One JSON file and an agent; no HTTP server at all. |
+| 2 | **Single hub + browser** | One hub is the store of record; the browser writes through `/notes`. |
+| 3 | **Hub with a registry** (read-only aggregate) | `/mcp` reads several hubs; `/notes` stays on the local store. |
+| 4 | **Federator + several hubs** | A stdio agent session over several leaf hubs; no local store, no HTTP. |
+| 5 | **Compose: two leaves + aggregator** | Two independent stores of record plus one aggregating hub for an agent. |
+
+Every shape has an agent side, including shape 2: its hub exposes `/mcp` with the same 9 tools as a
+single store, and shapes 3–5 add the federation surface (10 tools, including `list_instances`). What
+none of them changes is the browser: it **always writes to exactly one hub** — no shape adds an
+`instance` attribute or a multi-hub browser profile.
+
 ## 2. Embedded (HTTP adapter)
 
 ```ts
@@ -35,8 +64,8 @@ const bp = init({
 
 The adapter speaks the contract in [ARCHITECTURE.md §5](ARCHITECTURE.md#5-http-contract-reference-server)
 (list, create, update, thread message, bulk delete, sessions, health — the endpoints are listed in
-`src/adapters/http.ts`). That contract is written down but has **no reference implementation yet**:
-the `server/` package is an M2 deliverable (§5). Any backend that implements the endpoints works today.
+`src/adapters/http.ts`). The reference implementation is the hub in §5; any backend that implements
+the documented endpoints works.
 
 ## 3. Embedded, local only
 
@@ -75,6 +104,27 @@ node dist/server.js --store notes.json --root examples/vanilla --port 8787
 Flags: `--store <json>` (required), `--port 8787`, `--host 127.0.0.1`, `--base /api/v1/bluepencil`,
 `--root <static dir>`, `--environment dev|staging|live`, `--read-only`, `--allow-env-mismatch`,
 `--mirror notes.md`, `--cors <origin|*>`, `--quiet`. The HTTP contract is ARCHITECTURE §5.
+
+**The hub remains the store of record.** `/notes` reads and writes exactly one JSON file in one
+environment. Federation does not move, mirror or merge that store; it only widens the agent door
+(`/mcp`). A browser client that points at a hub sees that hub's notes and nothing else.
+
+### The aggregating hub — what it is, and what it is not
+
+Adding `--registry <file>` turns `/mcp` into an aggregate over the listed instances. It is for an
+**agent** that must read (and, with both write locks, write) several environments in one MCP
+session: the tool results carry `instance`/`app` and qualified ids.
+
+It is **not** a second store of record and not a browser backend. `/notes`, `/sessions`, `/bundle`
+and `/health` keep operating on the hub's own local store; only `/mcp` fans out. With `--no-self`
+that store is deliberately empty, so `/notes` on the aggregator returns nothing — which is the
+point: the browser must talk to the leaf hubs directly. The aggregate is read-only unless the
+session has `--allow-write` *and* a target has `mode: "write"`; there is no write fan-out.
+
+`/config` reports `federates: true` whenever a registry is configured, even if a peer started
+degraded. The registry `base` values must include the API path
+(`http://hub-dev:8787/api/v1/bluepencil`), and the file must be mode `0600`. See
+[FEDERATION.md](FEDERATION.md) for the registry contract.
 
 ### Authentication — and when it is needed
 
@@ -153,7 +203,7 @@ Host-side checklist:
    `get_note`, `export_bundle` and `inspect_bundle`; `create_note`, `reply`, `set_status`,
    `set_intent` and `import_bundle` only in a session started with `--allow-write`. There is no
    bulk-delete tool — filtered deletion is M2 (FR-8.2). Registration and environment binding are in
-   [HERMES.md](HERMES.md).
+   [MCP.md](MCP.md#client-recipes); [HERMES.md](HERMES.md) is one worked example among several.
 6. **Never load the layer for end users**: build-time flag *and* the role gate. Prove it with a
    test that asserts the layer is absent when the flag is off.
 
