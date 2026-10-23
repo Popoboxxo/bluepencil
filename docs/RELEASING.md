@@ -54,6 +54,21 @@ Assets: `attach.js`, `bluepencil.element.min.js`, `bluepencil-<version>.tgz`,
 `bluepencil-extension-<version>.zip` (unpack it and load the folder as an unpacked MV3 extension) and
 `SHA256SUMS`.
 
+## 0.10.0 — federation
+
+The release still ships the **same four assets plus `SHA256SUMS`**. The federator is deliberately
+**not** a release asset: it ships in two other places — inside the container image as the
+`bluepencil-federator` bin, and through the installed package's bins (`dist/federator.js`, declared
+as `"bluepencil-federator"` in `package.json`). Do not add a fifth artefact for it.
+
+The image now contains **both** wrapper bins: `bluepencil-hub` (the default entrypoint target) and
+`bluepencil-federator` (stdio). The `image` CI job starts both with `--version`, so a hub-only image
+fails before the tag is cut.
+
+`release-preflight` requires the version to be **identical** in three places:
+`package.json`, `extension/manifest.json` and the `## [<version>]` section in `CHANGELOG.md`. A
+disagreement stops the release before anything is published.
+
 Re-running the workflow (`workflow_dispatch` with an existing tag) **updates** the release instead of
 failing, so a half-written release is recoverable.
 

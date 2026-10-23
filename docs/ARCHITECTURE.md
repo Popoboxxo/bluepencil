@@ -26,6 +26,16 @@ bluepencil/
 │  │  ├─ merge.ts          #   merge/upsert/replace-session + conflict report (FR-14.3/14.4)
 │  │  └─ canonical.ts      #   deterministic serialization (NFR-17)
 │  ├─ cli/                 # `bluepencil inspect|validate|merge|export|import` (FR-15.2)
+│  ├─ mcp/                 # MCP tool layer over a transport-neutral backend (backend.ts)
+│  ├─ federation/          # agent-side multi-hub layer (FR-16.10–16.15)
+│  │  ├─ registry.ts       #   registry shape, validation, resolution (file, mode 0600)
+│  │  ├─ ids.ts            #   qualified ids (`instance/noteId`), reserved names
+│  │  ├─ net-policy.ts     #   base-URL + SSRF policy (`--allow-insecure`, link-local always blocked)
+│  │  ├─ client.ts         #   one instance over HTTP (no redirects, timeout, redaction)
+│  │  ├─ aggregate.ts      #   read fan-out, per-instance failures, deterministic order
+│  │  ├─ backend.ts        #   `McpBackend` over N instances; routing + the two write locks
+│  │  ├─ errors.ts         #   one error taxonomy → MCP result, exit code, log line
+│  │  └─ index.ts          #   internal module barrel, bundled into the bins (no package export)
 │  ├─ adapters/
 │  │  ├─ memory.ts         # ephemeral
 │  │  ├─ local-storage.ts  # survives reload, bookmarklet default
@@ -43,7 +53,7 @@ bluepencil/
 │  ├─ react/               # optional wrapper (peer dependency)
 │  ├─ element/             # custom-element build (<bluepencil-notes>) for hosts w/o a bundler
 │  └─ index.ts             # public API: init(), mount(), enable(), disable(), destroy()
-├─ server/                 # reference self-hosted server (hub mode)
+├─ server/                 # reference hosts: hub.ts (HTTP) + federator.ts (stdio), thin over src/
 ├─ bookmarklet/            # loader generator + usage docs
 ├─ examples/
 │  ├─ vanilla/             # plain HTML fixture app (all FR groups)
@@ -61,7 +71,9 @@ bluepencil/
 
 Build outputs: **ESM** (`import { init } from "bluepencil"`), **IIFE** (`window.bluepencil`),
 and the **bookmarklet** loader. Subpath exports for adapters so tree-shaking keeps the core
-small (`bluepencil/adapters/http`).
+small (`bluepencil/adapters/http`). The Node entry points are built separately: `dist/server.js`
+(hub), `dist/federator.js` (stdio federator), `dist/cli.js` and `dist/mcp.js`; `server.js` and
+`federator.js` are also the `bluepencil-hub` / `bluepencil-federator` bins.
 
 ## 2. Public API (sketch)
 
@@ -210,6 +222,22 @@ Implementation rules:
 * Adapters are interchangeable; the same conformance test suite runs against all of them
   (FR-6.1, NFR-11).
 
+### The MCP backend abstraction (FR-16.9)
+
+The MCP tools do not talk to a `Store` directly. They talk to `McpBackend` in
+`src/mcp/backend.ts` — a transport-neutral interface for list/get/create/update/message/remove,
+sessions, export/import and `list_instances`. There are exactly two implementations:
+
+| Implementation | `kind` / `scope` | Used by |
+|---|---|---|
+| `createStoreBackend` | `store` / `single` | `bluepencil mcp` over stdio, and a hub without `--registry` |
+| `createFederatedBackend` | `federation` / `aggregate` | an aggregating hub (`/mcp`) and the stdio federator |
+
+The same tool handlers and the same response shapes serve all three hosts, so a tool behaves
+identically whether it is reached over stdio, over a hub's `POST /mcp`, or through a federated
+aggregate. Note logic still lives once in `src/core/**` + `src/data/**`; the backend only decides
+*where* a call goes (FR-15.3).
+
 ## 5. HTTP contract (reference server)
 
 ```
@@ -219,7 +247,7 @@ GET    /api/v1/bluepencil/notes/{id}            # read one note (?environment= g
 PATCH  /api/v1/bluepencil/notes/{id}            # status, intent, body
 POST   /api/v1/bluepencil/notes/{id}/messages   # append thread message (author_type, kind)
 POST   /api/v1/bluepencil/notes/bulk-delete     # filter + confirm token
-GET    /api/v1/bluepencil/export?format=md|json
+GET    /api/v1/bluepencil/bundle                # canonical bundle JSON (agents/exports)
 GET    /api/v1/bluepencil/sessions
 GET    /api/v1/bluepencil/health
 ```
@@ -288,12 +316,74 @@ group are all thin layers over it — one implementation, one set of validators 
 
 ```
 src/data/   schema.ts  bundle.ts  merge.ts  canonical.ts  migrate.ts   # no DOM, no deps
-src/cli/    bin: bluepencil  inspect | validate | merge | export | import
+src/cli/    bin: bluepencil  inspect | validate | merge | export | import | instances
 ```
+
+`bluepencil instances list|validate|health` operates on a federation registry offline (see §5d);
+`health` is the only one that probes peers.
 
 Guarantees: no runtime dependencies (FR-15.4), runs in plain Node (NFR-… FR-15.4), canonical
 output for diffing and hashing (NFR-17), and bundles readable by a 20-line script without the
 library (NFR-19).
+
+## 5d. Federation (FR-16.10–16.15)
+
+Federation is an **agent-side** layer over hubs. A browser client still writes to exactly one hub;
+an agent can read and write several hubs through one MCP session. The full registry schema, the
+threat model and the deployment shapes are in [FEDERATION.md](FEDERATION.md); the tool-level
+contract is in [MCP.md](MCP.md). This section records where the code lives and the invariants the
+architecture depends on.
+
+**Roles.**
+
+| Role | Process | Store | Surface |
+|---|---|---|---|
+| Leaf hub | `bluepencil-hub` | one environment (store of record) | `/notes`, `/config`, `/health`, `/mcp` |
+| Aggregating hub | `bluepencil-hub --registry` | still local | `/notes` local; `/mcp` aggregates |
+| Federator | `bluepencil-federator` | none | stdio MCP only; no `/config` |
+| MCP client / agent | any MCP client | none | one hub `/mcp` or the federator's stdio |
+
+`src/federation/` is split by concern: `registry.ts` (file shape, validation, resolution, the 0600
+gate), `ids.ts` (qualified ids and reserved names), `net-policy.ts` (base-URL and SSRF policy),
+`client.ts` (one peer over HTTP), `aggregate.ts` (read fan-out), `backend.ts` (the federated
+`McpBackend`), `errors.ts` (one error taxonomy → MCP result, exit code, log). `server/hub.ts` and
+`server/federator.ts` are thin hosts: they parse the CLI, load the registry and wire the backend.
+
+**Registry → resolved instances.** The registry is the only place an operator declares which
+instances a session may talk to, so it is a security boundary. It is read once at start-up, before
+the socket is bound (hub) or before the first protocol frame (federator). A `base` must include the
+API path — `http://hub-dev:8787/api/v1/bluepencil`, not the bare origin. The file must be mode
+`0600` (`(mode & 0o077) !== 0` is `invalid_registry`) and owned by the process user; credentials are
+references (`auth.env`), never values. Validation collects every issue and refuses the whole
+registry — no partial load. Each resolved instance becomes one `InstanceClient`; `self`, when
+present, is an in-process source over the hub's own store.
+
+**The aggregate envelope.** Reads fan out to the selected instances, each note is returned as a
+copy tagged with `instance` (and `app`) and a qualified id `instance/noteId`, and the merged set is
+ordered deterministically by the review comparator with an instance tie-break. A slow or broken
+peer is a **value**, not an exception: the result carries `partial: true` and one error entry per
+failed instance, so healthy notes survive. `limit` caps the aggregate, not each peer. Writes are
+routed to exactly one target; there is no write fan-out.
+
+**One level only.** The registry is a flat list. A peer that reports `federates:true` is refused
+with `nested_federation`; a self-entry is `self_reference`; `self` / `all` / `*` are reserved.
+On a pure federator `--no-self` is an accepted no-op and `--include-self` is a usage error (there
+is no local store). A peer that does not report `federates` at all is a pre-0.10 hub and is refused
+strictly with `federates_missing` (exit 4) — never a silent empty result. `federates:false` is the
+normal leaf value.
+
+**The two write locks.** A federated write needs the session lock (`--allow-write`, strict:
+`--allow-write`, `--allow-write=true` or `BLUEPENCIL_ALLOW_WRITE=1`) **and** a writable target
+(`mode: "write"` in the registry, or a writable `self`). Without the session lock even a
+`mode: "write"` entry is read-only; `--read-only` wins over both. The backend owns this decision —
+the inner store backend is always constructed writable so it cannot report the wrong authority.
+
+**Why `/notes` stays single-environment while `/mcp` aggregates.** `/notes` is the browser-facing
+store of record: one hub, one environment, unchanged semantics. Federation only widens the agent
+door. On an aggregating hub `/notes`, `/sessions`, `/bundle` and `/health` keep operating on the
+local store; with `--no-self` that store is deliberately empty, so `/notes` stays local and empty.
+Pointing a browser at an aggregate would break the single-writer assumption, so there is no
+`instance` attribute and no browser federation in v1.
 
 ## 6b. Runtime lifecycle, shadow DOM, multi-instance
 
@@ -429,6 +519,11 @@ D8 **runtime activation in arbitrary products** — which is why this document n
 * **M4** — `0.4.0`: MCP tool group (thin wrapper over `bluepencil/data`) + protocol doc +
   retention option.
 * **M5** — `0.5.0`: product integration guide (RBAC, audit, purge) with a worked example.
+* **M5b** — `0.10.0`: **delivered** — federation as an agent-side layer over hubs: the
+  `src/federation/` module, a transport-neutral `McpBackend`, `/mcp` aggregates over a registry,
+  the stdio `bluepencil-federator`, `/config` reports `app` and `federates`, the two write locks,
+  and one federation level (FR-6.15, FR-16.10–16.15, NFR-22). `/notes` and the browser path are
+  unchanged.
 * **M6** — `1.0.0`: i18n (en/de), a11y audit, docs site, API freeze (semver commitment).
 
 Each release: one tag, one changelog entry, one demo screenshot/GIF in the README.

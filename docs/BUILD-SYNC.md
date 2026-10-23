@@ -81,9 +81,10 @@ legs or jobs that must be exercised for that change. Job and script names are th
 
 | Changed paths | Legs / jobs that must pass |
 |---|---|
-| `src/**`, `src/element/**` | `build`, `build:ext`, `verify:sync`, `size`; every browser/behaviour smoke — `smoke:pack`, `smoke:install`, `smoke:embed`, `smoke:e2e`, `smoke:parity`, `smoke:ext`, `smoke:webstore`, `smoke:round-trip`; `image` |
+| `src/**`, `src/element/**` | `build`, `build:ext`, `verify:sync`, `size`; every browser/behaviour smoke — `smoke:pack`, `smoke:install`, `smoke:embed`, `smoke:e2e`, `smoke:parity`, `smoke:ext`, `smoke:webstore`, `smoke:round-trip`, `smoke:federation`; `image` |
 | `extension/src/**`, `extension/manifest.json`, `extension/options.html` | `build`, `build:ext`, `verify:sync`; `smoke:ext`, `parity`, `smoke:webstore` |
-| `server/**` | `build` (`server` entry → `dist/server.js`); `smoke:cli`, `smoke:mcp`, `smoke:embed`, `smoke:round-trip` (all drive the hub); `image` (Docker build + run) |
+| `server/**` | `build` (`server` entry → `dist/server.js`, `federator` entry → `dist/federator.js`); `smoke:cli`, `smoke:mcp`, `smoke:federation`, `smoke:embed`, `smoke:round-trip` (all drive the hub); `image` (Docker build + run, both wrapper bins) |
+| `src/federation/**` | `build` (`federator` job → `dist/federator.js`, `bluepencil-federator` bin); `smoke:federation`, `smoke:mcp`, `smoke:cli`; `image` (both wrapper bins start) |
 | `scripts/**` (build tooling) | `build`, `build:ext`, `verify:sync` |
 | `.github/workflows/**` | every job — a workflow change can invalidate any leg |
 | `docs/REQUIREMENTS.md`, `spec/**` | `spec` job |
@@ -94,18 +95,32 @@ legs or jobs that must be exercised for that change. Job and script names are th
 merge is branch protection. Use it to decide what to run before pushing — and treat a colour it does
 not name as something to think about, not as license to skip a leg.
 
+### 0.10.0 — the federator
+
+Version `0.10.0` lives in `package.json` and `extension/manifest.json` (and in the `CHANGELOG.md`
+section). The federator bin is **not** an element bundle: `scripts/build.mjs` has a separate
+`federator` job that emits `dist/federator.js` from `server/federator.ts`, declared as
+`"bluepencil-federator"` in `package.json`. `verify:sync` stays element-focused — it pins the element
+IIFE and the extension, not the federator — so do not add `dist/federator.js` to its hash.
+`smoke:federation` is the check that proves the bin and the start-up gates (registry `0600`,
+identity, `federates_missing`, degraded peers); it runs in the `verify` job after `smoke:mcp`.
+
 ## Required status checks (recommendation)
 
 Recommendation for branch protection on `main`: make **`verify`**, **`parity`** and **`image`** the
 required status checks.
 
-- `verify` is the broad gate — typecheck, unit tests, build, `size`, every smoke and the
-  `verify:sync` identity check.
+- `verify` is the broad gate — typecheck, unit tests, build, `size`, every smoke (including
+  `smoke:federation` after `smoke:mcp`) and the `verify:sync` identity check.
 - `parity` is not redundant with `verify`: it is a dedicated job that builds both arrival paths
   (the one-tag embed loader and the built MV3 extension) and fails red on any behavioural divergence.
   It is the only check that proves the same layer behaves identically however it reaches the page.
 - `image` is likewise non-redundant: it builds the Docker image *and runs it*, so a shipped artefact
-  that secretly needs its own install step fails here rather than on release day.
+  that secretly needs its own install step fails here rather than on release day. It also starts both
+  wrapper bins (`bluepencil-hub --version`, `bluepencil-federator --version`), which is the R12 gate.
+
+`smoke:federation` has no separate CI job: it is a step inside `verify` (after `smoke:mcp`), so
+requiring `verify` is what makes it a required check.
 
 The other jobs (`spec`, `bump`, `install`) stay valuable but need not be required: `spec` fails fast
 on a malformed requirement block, `bump` only applies to pull requests, and `install` covers the

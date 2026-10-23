@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="620" viewBox="0 0 1000 620" role="img" aria-labelledby="fedTitle fedDesc">
+  <title id="fedTitle">bluepencil federation overview</title>
+  <desc id="fedDesc">Three panels: a single hub, a hub with a registry, and a stdio federator. Solid blue arrows are allowed paths. Dashed red arrows mark forbidden paths: browser to federation, nested federation, and an instance named self.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2a63e8"/>
+    </marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b3261e"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1000" height="620" fill="#ffffff"/>
+  <g font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">
+
+    <!-- Panel 1: single hub -->
+    <rect x="18" y="18" width="316" height="536" rx="12" fill="#f4f5f8" stroke="#d7dae2"/>
+    <text x="32" y="44" font-size="18" font-weight="600" fill="#14161c">1 · Single hub</text>
+    <text x="32" y="64" font-size="13" fill="#5a6072">one store, one environment</text>
+
+    <rect x="94" y="86" width="164" height="40" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="176" y="104" font-size="15" font-weight="600" fill="#14161c" text-anchor="middle">Browser / element</text>
+    <text x="176" y="119" font-size="12.5" fill="#5a6072" text-anchor="middle">one hub only</text>
+
+    <line x1="176" y1="126" x2="176" y2="154" stroke="#2a63e8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <text x="184" y="144" font-size="12.5" fill="#5a6072">/notes</text>
+
+    <rect x="72" y="158" width="208" height="54" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="176" y="180" font-size="15" font-weight="600" fill="#14161c" text-anchor="middle">Hub (bluepencil-hub)</text>
+    <text x="176" y="198" font-size="12.5" fill="#5a6072" text-anchor="middle">store of record · /config</text>
+
+    <line x1="176" y1="212" x2="176" y2="240" stroke="#2a63e8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <text x="184" y="230" font-size="12.5" fill="#5a6072">atomic write</text>
+
+    <rect x="86" y="242" width="180" height="44" rx="8" fill="#eef2ff" stroke="#2a63e8"/>
+    <text x="176" y="262" font-size="14" font-weight="600" fill="#14161c" text-anchor="middle">notes.bluepencil.json</text>
+    <text x="176" y="277" font-size="12.5" fill="#5a6072" text-anchor="middle">one environment</text>
+
+    <text x="94" y="324" font-size="13" fill="#5a6072">No registry. /notes and /mcp</text>
+    <text x="94" y="340" font-size="13" fill="#5a6072">read and write the same store.</text>
+    <text x="94" y="370" font-size="13" font-weight="600" fill="#14161c">The browser never federates.</text>
+
+    <!-- Panel 2: hub with registry -->
+    <rect x="342" y="18" width="316" height="536" rx="12" fill="#f4f5f8" stroke="#d7dae2"/>
+    <text x="356" y="44" font-size="18" font-weight="600" fill="#14161c">2 · Hub with registry</text>
+    <text x="356" y="64" font-size="13" fill="#5a6072">one HTTP door per hub</text>
+
+    <rect x="374" y="82" width="252" height="48" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="500" y="102" font-size="14.5" font-weight="600" fill="#14161c" text-anchor="middle">instances.json (0600)</text>
+    <text x="500" y="118" font-size="12.5" fill="#5a6072" text-anchor="middle">instances: dev, staging</text>
+
+    <line x1="500" y1="130" x2="500" y2="158" stroke="#2a63e8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <text x="508" y="148" font-size="12.5" fill="#5a6072">read once</text>
+
+    <rect x="430" y="160" width="140" height="54" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="500" y="182" font-size="14.5" font-weight="600" fill="#14161c" text-anchor="middle">Hub --registry</text>
+    <text x="500" y="199" font-size="12.5" fill="#5a6072" text-anchor="middle">aggregating</text>
+
+    <rect x="356" y="238" width="104" height="42" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="408" y="256" font-size="14" font-weight="600" fill="#14161c" text-anchor="middle">Browser</text>
+    <text x="408" y="271" font-size="12" fill="#5a6072" text-anchor="middle">one hub</text>
+
+    <rect x="540" y="238" width="104" height="42" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="592" y="256" font-size="14" font-weight="600" fill="#14161c" text-anchor="middle">MCP client</text>
+    <text x="592" y="271" font-size="12" fill="#5a6072" text-anchor="middle">/mcp only</text>
+
+    <line x1="456" y1="238" x2="432" y2="208" stroke="#2a63e8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <text x="410" y="226" font-size="12" fill="#5a6072">/notes</text>
+
+    <line x1="544" y1="238" x2="568" y2="208" stroke="#2a63e8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <text x="552" y="228" font-size="12" fill="#5a6072">/mcp</text>
+
+    <rect x="356" y="332" width="120" height="46" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="416" y="352" font-size="14" font-weight="600" fill="#14161c" text-anchor="middle">dev hub</text>
+    <text x="416" y="367" font-size="12" fill="#5a6072" text-anchor="middle">peer hub</text>
+
+    <rect x="514" y="332" width="130" height="46" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="579" y="352" font-size="14" font-weight="600" fill="#14161c" text-anchor="middle">staging hub</text>
+    <text x="579" y="367" font-size="12" fill="#5a6072" text-anchor="middle">peer hub</text>
+
+    <path d="M 480 214 L 480 300 L 416 300 L 416 332" fill="none" stroke="#2a63e8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <text x="426" y="294" font-size="12" fill="#5a6072">peer</text>
+    <path d="M 520 214 L 520 300 L 579 300 L 579 332" fill="none" stroke="#2a63e8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <text x="548" y="294" font-size="12" fill="#5a6072">peer</text>
+
+    <path d="M 356 258 L 350 258 L 350 108 L 374 108" fill="none" stroke="#b3261e" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrow-red)"/>
+    <text x="358" y="142" font-size="11.5" font-weight="600" fill="#b3261e">not allowed</text>
+    <text x="358" y="156" font-size="11.5" fill="#b3261e">browser to registry</text>
+
+    <text x="356" y="410" font-size="13" fill="#5a6072">The browser's /notes sees only the</text>
+    <text x="356" y="426" font-size="13" fill="#5a6072">hub's own store. Only /mcp aggregates.</text>
+    <text x="356" y="456" font-size="13" font-weight="600" fill="#14161c">An aggregating hub cannot be a peer.</text>
+
+    <!-- Panel 3: federator -->
+    <rect x="666" y="18" width="316" height="536" rx="12" fill="#f4f5f8" stroke="#d7dae2"/>
+    <text x="680" y="44" font-size="18" font-weight="600" fill="#14161c">3 · Federator (stdio)</text>
+    <text x="680" y="64" font-size="13" fill="#5a6072">no store · no HTTP · no /config</text>
+
+    <rect x="698" y="82" width="252" height="48" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="824" y="102" font-size="14.5" font-weight="600" fill="#14161c" text-anchor="middle">instances.json (0600)</text>
+    <text x="824" y="118" font-size="12.5" fill="#5a6072" text-anchor="middle">dev, staging</text>
+
+    <rect x="680" y="148" width="96" height="34" rx="8" fill="#fdeceb" stroke="#b3261e"/>
+    <text x="728" y="170" font-size="12.5" font-weight="600" fill="#b3261e" text-anchor="middle">id: self</text>
+    <line x1="720" y1="148" x2="720" y2="130" stroke="#b3261e" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrow-red)"/>
+    <text x="680" y="194" font-size="10.5" font-weight="600" fill="#b3261e">not allowed: self_reference</text>
+
+    <rect x="680" y="200" width="116" height="42" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="738" y="217" font-size="13.5" font-weight="600" fill="#14161c" text-anchor="middle">Agent / MCP client</text>
+    <text x="738" y="232" font-size="12" fill="#5a6072" text-anchor="middle">stdio only</text>
+
+    <rect x="810" y="192" width="146" height="56" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="883" y="213" font-size="13" font-weight="600" fill="#14161c" text-anchor="middle">bluepencil-federator</text>
+    <text x="883" y="230" font-size="12" fill="#5a6072" text-anchor="middle">stdio · 10 tools</text>
+
+    <line x1="796" y1="221" x2="810" y2="221" stroke="#2a63e8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <line x1="860" y1="130" x2="872" y2="192" stroke="#2a63e8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <text x="878" y="162" font-size="12" fill="#5a6072">read once</text>
+
+    <rect x="680" y="302" width="120" height="46" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="740" y="322" font-size="14" font-weight="600" fill="#14161c" text-anchor="middle">dev hub</text>
+    <text x="740" y="337" font-size="12" fill="#5a6072" text-anchor="middle">/notes · /mcp</text>
+
+    <rect x="830" y="302" width="120" height="46" rx="8" fill="#ffffff" stroke="#2a63e8"/>
+    <text x="890" y="322" font-size="14" font-weight="600" fill="#14161c" text-anchor="middle">staging hub</text>
+    <text x="890" y="337" font-size="12" fill="#5a6072" text-anchor="middle">/notes · /mcp</text>
+
+    <line x1="845" y1="248" x2="740" y2="302" stroke="#2a63e8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <text x="770" y="280" font-size="12" fill="#5a6072">/notes</text>
+    <line x1="900" y1="248" x2="890" y2="302" stroke="#2a63e8" stroke-width="1.6" marker-end="url(#arrow)"/>
+    <text x="906" y="280" font-size="12" fill="#5a6072">/mcp</text>
+
+    <rect x="830" y="380" width="120" height="44" rx="8" fill="#fdeceb" stroke="#b3261e"/>
+    <text x="890" y="399" font-size="12.5" font-weight="600" fill="#b3261e" text-anchor="middle">peer with</text>
+    <text x="890" y="414" font-size="12" fill="#b3261e" text-anchor="middle">federates:true</text>
+    <path d="M 956 220 L 972 220 L 972 402 L 950 402" fill="none" stroke="#b3261e" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrow-red)"/>
+    <text x="890" y="444" font-size="11.5" font-weight="600" fill="#b3261e" text-anchor="middle">not allowed (nested_federation)</text>
+
+    <text x="680" y="474" font-size="13" fill="#5a6072">Writes need both locks; reads survive a</text>
+    <text x="680" y="490" font-size="13" fill="#5a6072">dead peer as partial:true.</text>
+
+    <!-- Legend -->
+    <line x1="18" y1="580" x2="48" y2="580" stroke="#2a63e8" stroke-width="1.8" marker-end="url(#arrow)"/>
+    <text x="58" y="584" font-size="13" fill="#14161c">allowed path</text>
+    <line x1="190" y1="580" x2="220" y2="580" stroke="#b3261e" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#arrow-red)"/>
+    <text x="230" y="584" font-size="13" fill="#14161c">not allowed</text>
+    <text x="360" y="584" font-size="13" fill="#5a6072">Colour is secondary; the labels carry the contract.</text>
+  </g>
+</svg>

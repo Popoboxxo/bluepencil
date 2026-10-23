@@ -10,7 +10,7 @@
 
 | Mode | When | Effort |
 |---|---|---|
-| **Whole system, own backend** | You already have (or will build) an endpoint that implements the store contract (§4 below) | Implement the 7 endpoints, then add the loader snippet |
+| **Whole system, own backend** | You already have (or will build) an endpoint that implements the store contract (§4 below) | Implement the 10 endpoints, then add the loader snippet |
 | **Whole system, no backend** / **single-file deck** | A quick review round, no server wanted; or a self-contained presentation file | One `<script>` tag; notes persist in `localStorage` |
 | **Bundled hub** | Static sites, quick demos, teams that want persistence without writing a backend | One command: `node dist/server.js …` (see §4) |
 
@@ -292,6 +292,12 @@ journal entry's `actor` and the `Actor:` trailer of a `git`-journal commit (FR-1
 true` required for bulk-delete (else `400`); unknown note id → `404`;
 malformed JSON → `400`; wrong content type → `415`; wrong method →
 `405`.
+
+Federation does not change this surface. The browser and the embed/attach layer never federate and
+never carry an `instance` attribute: every note call goes to exactly one `endpoint` and one
+`environment`. A hub started with `--registry` serves the aggregate on `/mcp` (the agent door),
+while `/notes` stays bound to that hub's single environment — an embedded page sees no change. See
+[FEDERATION.md](FEDERATION.md).
 
 Full HTTP contract reference: [ARCHITECTURE.md §5](ARCHITECTURE.md#5-http-contract-reference-server).
 
