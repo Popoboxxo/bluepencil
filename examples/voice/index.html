@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bluepencil — voice dictation fixture</title>
+<meta name="description" content="Fixture host page for FR-21: composer dictation with a host-injected recogniser (no microphone, no mocks of the product).">
+<!--
+  Voice fixture host page (FR-21.1–21.8, FR-21.6).
+
+  This page plays the role of a host application that wants dictation but already owns a
+  recogniser of its own (a local Whisper worker, a vendor SDK, …). It injects a *fake* engine
+  factory through `mount({ voice, voiceEngine })`; the library never sees the real Web Speech
+  API and never touches a microphone. The fake engine is a real implementation of the
+  `VoiceEngine` contract from `src/ui/voice.ts` — it is not a mock of the library.
+
+  What the page exposes for the smoke test (`scripts/voice-smoke.mjs`):
+    window.__voiceEngines       every engine the factory created, in creation order
+    window.__voiceFactoryCalls  how often the factory ran (0 until the mic is used)
+    window.__emit(text, final)  dispatch a transcript through the newest engine's onResult
+    window.__bp                 the mounted instance (notes(), disable(), destroy(), …)
+    window.__voiceEnabled       whether dictation was opted into for this page load
+
+  `?voice=0` is the control run: the host stayed out, so there must be no mic button, no status
+  region and no factory call at all (FR-21.1).
+
+  Conventions: no inline event-handler attributes, no framework, every visible string is a text
+  node (FR-9.3), and the page only depends on the built IIFE under `/dist/`.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+
+    --vf-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --vf-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    --vf-bg: #f3f5f8;
+    --vf-surface: #ffffff;
+    --vf-ink: #151a20;
+    --vf-muted: #59636f;
+    --vf-line: #d8dde4;
+    --vf-accent: #1f4fd8;
+    --vf-radius: 12px;
+    --vf-gap: 16px;
+
+    /* The host points the layer's tokens at its own palette (INTEGRATION §8). */
+    --bp-accent: var(--vf-accent);
+    --bp-surface: var(--vf-surface);
+    --bp-ink: var(--vf-ink);
+    --bp-muted: var(--vf-muted);
+    --bp-line: var(--vf-line);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --vf-bg: #101318;
+      --vf-surface: #171b22;
+      --vf-ink: #eef1f5;
+      --vf-muted: #9aa4b0;
+      --vf-line: #2b323b;
+      --vf-accent: #8fb0ff;
+      --bp-surface: var(--vf-surface);
+    }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 0 0 4rem;
+    font-family: var(--vf-font);
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--vf-ink);
+    background: var(--vf-bg);
+  }
+
+  h1, h2 { line-height: 1.2; margin: 0 0 .5rem; }
+  h1 { font-size: 1.75rem; }
+  h2 { font-size: 1.0625rem; }
+  p { margin: 0 0 .75rem; }
+  code { font-family: var(--vf-mono); font-size: .875em; }
+
+  .vf-shell {
+    max-width: 44rem;
+    /* The layer docks its bar at the top edge; keep the annotatable content clear of it. */
+    margin: 0 auto;
+    padding: 6.5rem 1.25rem 0;
+  }
+
+  .vf-eyebrow {
+    margin: 0 0 .25rem;
+    color: var(--vf-muted);
+    font-size: .75rem;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .vf-card {
+    margin: 0 0 var(--vf-gap);
+    padding: 1.5rem;
+    background: var(--vf-surface);
+    border: 1px solid var(--vf-line);
+    border-radius: var(--vf-radius);
+  }
+
+  .vf-card h1,
+  .vf-card p {
+    /* A comfortable click target for the real mouse click that opens the composer. */
+    padding: .25rem .5rem;
+    margin-left: -.5rem;
+    border-radius: 6px;
+  }
+
+  .vf-card h1:hover,
+  .vf-card p:hover { background: color-mix(in srgb, var(--vf-accent) 8%, transparent); }
+
+  .vf-hint {
+    color: var(--vf-muted);
+    font-size: .8125rem;
+  }
+
+  .vf-hint li + li { margin-top: .25rem; }
+</style>
+</head>
+<body>
+<main class="vf-shell">
+  <p class="vf-eyebrow">bluepencil fixture</p>
+
+  <section class="vf-card" aria-labelledby="vf-heading">
+    <h1 id="vf-heading" data-vf-target="heading">Voice dictation fixture</h1>
+    <p id="vf-paragraph" data-vf-target="paragraph">
+      Pick the text annotation mode in the layer bar, then click this paragraph. The composer
+      opens with a microphone button that drives the host-injected recogniser.
+    </p>
+  </section>
+
+  <section class="vf-card">
+    <h2>What this page proves</h2>
+    <ul class="vf-hint">
+      <li>Final transcripts are appended to the composer, interim results only reach the live region.</li>
+      <li>Nothing is saved automatically — a human still presses Save.</li>
+      <li>With <code>?voice=0</code> there is no microphone, no status region and no recogniser.</li>
+    </ul>
+  </section>
+</main>
+
+<!-- The browser build; the page is served from the repository root, so the path stays relative. -->
+<script src="../../dist/bluepencil.iife.js"></script>
+<script>
+(() => {
+  "use strict";
+
+  /**
+   * The host-injected recogniser factory (FR-21.6).
+   *
+   * It implements the minimal `VoiceEngine` surface: `lang` / `continuous` / `interimResults`
+   * are written by the library before `start()`, and the callbacks are installed by it too.
+   * The counters are the observable evidence the smoke test checks — not library internals.
+   */
+  const engines = [];
+  window.__voiceEngines = engines;
+  window.__voiceFactoryCalls = 0;
+
+  function createFakeEngine() {
+    const engine = {
+      // Written by the library before start(); declared here so the shape is explicit.
+      lang: "",
+      continuous: false,
+      interimResults: false,
+      onResult: null,
+      onError: null,
+      onEnd: null,
+      starts: 0,
+      stops: 0,
+      aborts: 0,
+      start() {
+        engine.starts += 1;
+      },
+      stop() {
+        engine.stops += 1;
+      },
+      abort() {
+        engine.aborts += 1;
+      },
+    };
+    return engine;
+  }
+
+  function voiceFactory() {
+    window.__voiceFactoryCalls += 1;
+    const engine = createFakeEngine();
+    engines.push(engine);
+    return engine;
+  }
+
+  /**
+   * Dispatch one transcript through the newest engine, exactly as a real recogniser would.
+   * `final` is the only difference between the interim preview and the appended text.
+   */
+  window.__emit = function emit(transcript, final) {
+    const engine = engines[engines.length - 1];
+    if (!engine || typeof engine.onResult !== "function") return false;
+    engine.onResult({ transcript: String(transcript), final: final === true });
+    return true;
+  };
+
+  window.__voiceFactory = voiceFactory;
+
+  const params = new URLSearchParams(window.location.search);
+  // Opt-in default: absent query means on; `?voice=0` is the deliberate opt-out control run.
+  const voiceEnabled = params.get("voice") !== "0";
+  window.__voiceEnabled = voiceEnabled;
+
+  window.__bp = window.bluepencil.mount({
+    adapter: "memory",
+    language: "en",
+    voice: voiceEnabled,
+    voiceEngine: voiceFactory,
+    app: { name: "bluepencil-voice-fixture", buildRef: "voice-fixture" },
+  });
+})();
+</script>
+</body>
+</html>

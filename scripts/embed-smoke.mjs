@@ -871,7 +871,13 @@ async function main() {
     mirror: workspace.mirror,
     environment: "dev",
   });
-  const context = { ...workspace, ...server, browser: null, browserPath: findChrome() };
+  const context = {
+    ...workspace,
+    ...server,
+    browser: null,
+    // `BP_NO_BROWSER=1` skips only the browser leg; the jsdom legs still run against the hub.
+    browserPath: process.env.BP_NO_BROWSER === "1" ? null : findChrome(),
+  };
   // CI sets this: the real-browser round is the only leg that exercises the shipped `attach.js`
   // as a script tag, so a pipeline must fail when it cannot run rather than skip quietly.
   const browserRequired = process.env.BP_REQUIRE_BROWSER === "1";
