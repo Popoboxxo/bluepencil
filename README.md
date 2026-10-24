@@ -37,7 +37,9 @@ transcript without saving it); and `0.10.0` adds **federation as an agent-side l
 an aggregating hub (`--registry`) and a separate stdio **federator** for one agent over several hubs.
 Browsers never federate — a browser still writes to exactly one hub. The vanilla fixture app, the
 unit suite and the browser legs of the embed, end-to-end, round-trip, bookmarklet, parity,
-extension and federation smokes are in the tree.
+extension and federation smokes are in the tree; `smoke:components` binds those surfaces into one
+matrix, while `smoke:auth`, `smoke:hermes`, `smoke:voice` and `smoke:docker` cover the auth gate,
+the Hermes wrapper, dictation and the container/Compose shape.
 
 Honest gaps in federation: there is **no cross-instance session merge** (each note keeps its own
 session); the aggregate is always bounded by `limit`; the extension has **one hub profile**, not a
@@ -625,7 +627,6 @@ phases, the revocation file and why the environment variable beats the flag — 
 | `activeTab` | inject only into the tab you asked for; the grant expires when you leave |
 | `scripting` | inject the layer and the bridge |
 | `storage` | `chrome.storage.local` |
-| `tabs` | resolve the active tab's URL |
 | `http://*/*`, `https://*/*` | host access, granted up front |
 
 `file:///*` is deliberately **not** requested, and `<all_urls>` is not used.
@@ -643,6 +644,7 @@ writes. The extension has one hub profile in `0.10.0`.
 | [docs/CONCEPT.md](docs/CONCEPT.md) | Problem, users, use cases, core concepts, anchoring, deployment modes, non-goals, roadmap |
 | [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) | Functional and non-functional requirements with priorities and acceptance criteria |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module layout, data model, storage adapters, HTTP contract, bookmarklet, test strategy |
+| [docs/E2E-COVERAGE.md](docs/E2E-COVERAGE.md) | The machine-checked map of component E2E coverage: runner manifest, coverage IDs, prerequisites and skip policy |
 | [docs/PROTOCOL.md](docs/PROTOCOL.md) | Normative rules for human + agent collaboration (implement / feedback / decision requests) |
 | [docs/INTEGRATION.md](docs/INTEGRATION.md) | Integration modes, host hooks, theming, security notes, admin debug mode |
 | [docs/EMBED.md](docs/EMBED.md) | One-tag attach: attribute reference, loader/update API, the store's endpoint table, the gate recipe |
@@ -738,8 +740,9 @@ so CI, scripts and agents use exactly the same data and validators as the UI.
 
 The pipeline keeps these claims checkable. `npm run verify` is the local umbrella (its row below lists
 the chain, including the CLI, MCP and federation smokes); the secret scan and the spec
-regeneration/check are CI-side. CI (`.github/workflows/ci.yml`) runs the whole set as six jobs:
-`spec`, `bump`, `verify`, `parity`, `install` and `image`.
+regeneration/check are CI-side. CI (`.github/workflows/ci.yml`) runs the whole set as seven jobs:
+`spec`, `bump`, `verify`, `parity`, `install`, `image` and `docker-smoke`; `docker-smoke` is
+`workflow_dispatch`-only and not a pull-request gate.
 
 | Script | File | Scope |
 | --- | --- | --- |
@@ -755,13 +758,22 @@ regeneration/check are CI-side. CI (`.github/workflows/ci.yml`) runs the whole s
 | `smoke:ext` | `extension/smoke.mjs` | the built MV3 extension in a real Chrome (MAIN-world injection, strict CSP, chromeStorage persistence, same-origin navigation, hub round-trip, options page) |
 | `smoke:parity` | `tests/e2e/parity.e2e.mjs` | the same layer via the one-tag loader and via the MV3 extension must produce identical observations |
 | `smoke:webstore` | `scripts/webstore-compliance.mjs` | manifest ↔ shipped code ↔ dashboard copy against the Chrome Web Store policies |
+| `smoke:components` | `scripts/components-e2e.mjs` | the binding matrix over every component; `--list` runs the coverage gate, `--no-browser`/`--no-docker` skip prerequisites |
+| `smoke:auth` | `scripts/auth-smoke.mjs` | signed tokens, revocation, the shared secret and the token-gated HTTP `/mcp` door |
+| `smoke:hermes` | `scripts/hermes-wrapper-smoke.mjs` | the documented Hermes wrapper path over stdio, including the read-only default and the write opt-in |
+| `smoke:voice` | `scripts/voice-smoke.mjs` | opt-in dictation with an injected engine in a real browser |
+| `smoke:docker` | `scripts/docker-smoke.mjs` | the container image and the Compose federation shape (requires a Docker daemon) |
 | `secret-scan` | `scripts/secret-scan.mjs` | scans the tree for committed secrets |
 | `spec` | `scripts/build-reqmd-spec.py` | regenerate `spec/` from `docs/REQUIREMENTS.md` |
 | `spec:check` | `reqmd check spec/` | validate the generated spec; CI also fails on drift (`git status spec/`) |
-| `verify` | — | typechecks (root + extension), unit tests, builds (library + extension), size guard, then `smoke:cli`, `smoke:mcp`, `smoke:federation`, and the pack/install/embed/e2e/round-trip/bookmarklet/parity/ext/webstore smokes |
+| `verify` | — | `typecheck` (root + extension), unit tests, `build` (library + extension), `verify:sync`, the size guard, then `smoke:components -- --no-docker` — the component matrix, which includes the auth, Hermes and voice suites; Docker is excluded by `--no-docker` |
 
-The CI `verify` job runs the same `npm run verify` chain in the same order and finishes with the
-secret scan; no step of that chain is local-only or CI-only. The `image` job builds the image and
+The CI `verify` job first runs `smoke:components -- --list` as a coverage gate (the documented
+matrix and the runner manifest must agree), then runs the individual steps: typechecks, unit tests,
+build, size guard and the CLI, MCP, auth, Hermes, federation, pack, embed, e2e, bookmarklet, voice,
+webstore, extension and round-trip smokes. It is not the same one-line `npm run verify` chain — the
+matrix gate and the individual steps are separate, `parity`, `install` and `image` are separate
+jobs, and `docker-smoke` runs only on `workflow_dispatch`. The `image` job builds the image and
 starts each wrapper bin, asserting each bin's **own** banner (`bluepencil-hub --version`,
 `bluepencil-federator --version`) — an image that ships only the hub fails there.
 

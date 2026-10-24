@@ -138,6 +138,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Components manifest + coverage gate
+        # `--list` runs the bidirectional gate (docs/E2E-COVERAGE.md vs the runner manifest) and
+        # exits without executing a suite, so a drifted component/coverage list fails fast and the
+        # documented matrix cannot rot unnoticed.
+        run: npm run smoke:components -- --list
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -159,6 +165,12 @@ jobs:
 
       - name: MCP smoke
         run: npm run smoke:mcp
+
+      - name: Auth smoke (signed tokens, revocation, HTTP MCP door)
+        run: npm run smoke:auth
+
+      - name: Hermes wrapper smoke (documented stdio path)
+        run: npm run smoke:hermes
 
       - name: Federation smoke (aggregating hub + stdio federator)
         # Two real leaf hubs, an aggregating hub (`--registry --no-self`) and the built federator over
@@ -191,6 +203,13 @@ jobs:
           # A missing browser has to fail here rather than turn the leg into a silent no-op.
           BP_REQUIRE_BROWSER: "1"
         run: npm run smoke:bookmarklet
+
+      - name: Voice dictation smoke (injected engine, real browser)
+        env:
+          # The injected engine only exists in the browser; a missing browser must fail this leg
+          # rather than turn the dictation path into a silent no-op.
+          BP_REQUIRE_BROWSER: "1"
+        run: npm run smoke:voice
 
       - name: Build extension (MV3)
         run: npm run build:ext
@@ -360,3 +379,29 @@ jobs:
           printf '%s\n' "$hub_banner" | grep -q '^bluepencil hub '
           docker run --rm bluepencil-hub:ci bluepencil-federator --version
           docker run --rm bluepencil-hub:ci bluepencil-hub --version
+
+  docker-smoke:
+    # The federated Compose shape (auth, hub, leaf hubs, MCP door) is exercised on demand via
+    # `workflow_dispatch` only. It is intentionally NOT a required CI gate: it needs a Docker daemon
+    # and image pulls, so the push/PR pipeline must stay independent of it. Manual/optional only.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Docker Compose smoke (federated shape, on demand)
+        env:
+          # Opt-in run: a missing Docker daemon must fail instead of skipping the leg silently.
+          BP_REQUIRE_DOCKER: "1"
+        run: npm run smoke:docker

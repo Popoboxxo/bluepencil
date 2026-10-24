@@ -728,15 +728,15 @@ EOF. A federator has no `/config`, so `includeSelf` is a documented no-op there.
 ## 15. Rollback
 
 Federation is additive. There is no store-format change and no schema migration: notes stay in the
-same canonical bundles, and a 0.10 store is readable by 0.9. To return a hub to single-store
-behaviour:
+same canonical bundles, and a 0.10 store is readable by 0.8.0 (the pre-0.10 release) because no
+schema changed. To return a hub to single-store behaviour:
 
 1. Remove `--registry` (and `BLUEPENCIL_REGISTRY`) from the command line or Compose service.
    `loadHubFederation` then returns `undefined`, `/config` reports `federates:false`, and `/mcp`
    falls back to the normal store backend with the nine single-store tools.
 2. Stop the federator process. The leaf hubs are unaffected; they never depended on it.
-3. Leave the registry file in place if you like. A 0.9 hub ignores it; it contains no notes and no
-   state. Delete it when you no longer need the configuration.
+3. Leave the registry file in place if you like. A pre-0.10 hub (0.8.0) ignores it; it contains no
+   notes and no state. Delete it when you no longer need the configuration.
 4. Keep `--read-only` / `--allow-write` if they were already part of the deployment. They are
    independent flags and need no data migration.
 

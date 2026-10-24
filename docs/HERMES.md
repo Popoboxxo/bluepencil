@@ -30,8 +30,8 @@ The Markdown export always opens with the two **exception sections** (*open deci
 
 ## 2. MCP server, one store
 
-The smallest useful path: one store file, one app, one environment. This is unchanged from `0.9`
-except for the strict flag parsing.
+The smallest useful path: one store file, one app, one environment. This path is unchanged from
+`0.8.0` except for the strict flag parsing.
 
 ```bash
 npm run build
@@ -78,10 +78,15 @@ hermes config set mcp_servers.bluepencil.command "/opt/data/repos/bluepencil/scr
 hermes config set mcp_servers.bluepencil.env.BLUEPENCIL_STORE "/opt/data/reviews/my-tool.bluepencil.json"
 hermes config set mcp_servers.bluepencil.env.BLUEPENCIL_ENVIRONMENT "dev"
 hermes config set mcp_servers.bluepencil.env.BLUEPENCIL_APP "my-web-tool"
+hermes config set mcp_servers.bluepencil.env.BLUEPENCIL_MCP_ENTRY "/opt/data/repos/bluepencil/dist/mcp.js"
 hermes config set mcp_servers.bluepencil.sampling.enabled false
 hermes config set mcp_servers.bluepencil.timeout 60
 hermes mcp test bluepencil
 ```
+
+`BLUEPENCIL_MCP_ENTRY` overrides the wrapper's default `<repo>/dist/mcp.js`
+(`scripts/hermes-mcp-wrapper.sh`); set it when the wrapper runs from a checkout whose build lives
+elsewhere.
 
 Writes stay disabled because `BLUEPENCIL_ALLOW_WRITE` is simply **absent** — that is the safe
 default of the wrapper. Do not set it with `hermes config set … 1`: the value is stored as a YAML

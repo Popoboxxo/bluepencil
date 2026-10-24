@@ -479,6 +479,17 @@ two observations are compared, so a divergence is a real behavioural difference 
 fixture artefact. The runner prints a `case | embed | extension | parity` matrix and exits non-zero
 on any failure or divergence.
 
+`scripts/components-e2e.mjs` is the single manifest of E2E surfaces: 16 runner components map to 21
+coverage IDs, and each entry names its suite, its `requires` (build, browser, docker) and a hard
+timeout. `docs/E2E-COVERAGE.md` is the documented side of the same matrix; the runner checks both
+directions and fails on a documented-but-uncovered ID, an undocumented `covers` ID, or an `E2E entry`
+path that does not belong to a component covering that ID.
+
+Browser-gated components are skipped without Chrome and Docker-gated ones without a daemon, unless
+`BP_REQUIRE_BROWSER=1` / `BP_REQUIRE_DOCKER=1` turns the missing prerequisite into a failure. CI runs
+`smoke:components -- --list` as the coverage gate before the individual smoke steps; `npm run verify`
+runs the matrix with `--no-docker`, so the default chain never needs a Docker daemon.
+
 ## 10. Mapping from the proven prototype
 
 The reference prototype (vanilla JS + tiny stdlib server, ~700 lines) maps as follows:

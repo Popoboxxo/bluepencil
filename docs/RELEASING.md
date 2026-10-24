@@ -35,9 +35,12 @@ git push origin v<version>
 
 The workflow then:
 
-- runs `npm run verify` (typecheck, unit tests, build, size guard, every smoke — including the MV3
-  extension in a real Chrome), `npm run secret-scan` and the spec check **on the tagged commit**. A
-  tag is the one revision `ci.yml` never sees, because it listens to branches;
+- runs `npm run verify` (typecheck, unit tests, build, size guard, then `smoke:components --
+  --no-docker` — the component matrix, including the MV3 extension in a real Chrome) with
+  `BP_REQUIRE_BROWSER=1`, so a missing browser fails instead of skipping; then `npm run secret-scan`
+  and the spec check **on the tagged commit**. Docker is not in that chain; the container/Compose
+  shape is verified separately by the `docker-smoke` job (`workflow_dispatch`). A tag is the one
+  revision `ci.yml` never sees, because it listens to branches;
 - re-runs the preflight, so a tag that disagrees with the versions, or has no changelog section,
   stops before anything is published;
 - builds the assets, writes **one** `SHA256SUMS` over all five and verifies the set against it — a

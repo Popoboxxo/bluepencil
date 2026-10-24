@@ -81,7 +81,7 @@ legs or jobs that must be exercised for that change. Job and script names are th
 
 | Changed paths | Legs / jobs that must pass |
 |---|---|
-| `src/**`, `src/element/**` | `build`, `build:ext`, `verify:sync`, `size`; every browser/behaviour smoke — `smoke:pack`, `smoke:install`, `smoke:embed`, `smoke:e2e`, `smoke:parity`, `smoke:ext`, `smoke:webstore`, `smoke:round-trip`, `smoke:federation`; `image` |
+| `src/**`, `src/element/**` | `build`, `build:ext`, `verify:sync`, `size`; every browser/behaviour smoke — `smoke:pack`, `smoke:install`, `smoke:embed`, `smoke:e2e`, `smoke:parity`, `smoke:ext`, `smoke:webstore`, `smoke:round-trip`, `smoke:federation`, `smoke:auth`, `smoke:hermes`, `smoke:voice`; `smoke:components` (the matrix); `image` |
 | `extension/src/**`, `extension/manifest.json`, `extension/options.html` | `build`, `build:ext`, `verify:sync`; `smoke:ext`, `parity`, `smoke:webstore` |
 | `server/**` | `build` (`server` entry → `dist/server.js`, `federator` entry → `dist/federator.js`); `smoke:cli`, `smoke:mcp`, `smoke:federation`, `smoke:embed`, `smoke:round-trip` (all drive the hub); `image` (Docker build + run, both wrapper bins) |
 | `src/federation/**` | `build` (`federator` job → `dist/federator.js`, `bluepencil-federator` bin); `smoke:federation`, `smoke:mcp`, `smoke:cli`; `image` (both wrapper bins start) |
@@ -110,8 +110,9 @@ identity, `federates_missing`, degraded peers); it runs in the `verify` job afte
 Recommendation for branch protection on `main`: make **`verify`**, **`parity`** and **`image`** the
 required status checks.
 
-- `verify` is the broad gate — typecheck, unit tests, build, `size`, every smoke (including
-  `smoke:federation` after `smoke:mcp`) and the `verify:sync` identity check.
+- `verify` is the broad gate — typecheck, unit tests, build, `size`, the component matrix through
+  `smoke:components -- --no-docker` (including `smoke:federation` after `smoke:mcp`) and the
+  `verify:sync` identity check.
 - `parity` is not redundant with `verify`: it is a dedicated job that builds both arrival paths
   (the one-tag embed loader and the built MV3 extension) and fails red on any behavioural divergence.
   It is the only check that proves the same layer behaves identically however it reaches the page.
@@ -124,7 +125,9 @@ requiring `verify` is what makes it a required check.
 
 The other jobs (`spec`, `bump`, `install`) stay valuable but need not be required: `spec` fails fast
 on a malformed requirement block, `bump` only applies to pull requests, and `install` covers the
-installed-tarball resolution that the required set does not otherwise exercise.
+installed-tarball resolution that the required set does not otherwise exercise. `docker-smoke` is
+`workflow_dispatch`-only, never runs on a pull request, and is therefore not a required check; the
+Docker image/Compose shape is verified separately when that job is dispatched.
 
 **Optional `paths:` filter.** A pull request that touches only `docs/**` may skip the code legs via a
 workflow `paths:` filter, since no build artefact can change. The caveat is explicit and mandatory:

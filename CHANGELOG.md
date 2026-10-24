@@ -19,6 +19,17 @@ registry, aggregates the peers over MCP and never persists a note itself.
 **`bluepencil instances validate|list|health`.** `validate` and `list` are offline and never print a
 secret; `health` probes the registered peers and exits `5` when one is degraded.
 
+**`smoke:components` — a 16-component E2E binding matrix.** `scripts/components-e2e.mjs` is the
+single manifest of E2E surfaces: 16 runner components, 21 coverage IDs checked bidirectionally
+against `docs/E2E-COVERAGE.md`, per-component `requires` and hard timeouts. The new suites are
+`smoke:auth` (17 checks: signed tokens, revocation, the shared secret and the token-gated HTTP
+`/mcp` door), `smoke:hermes` (16: the documented wrapper path), `smoke:voice` (7: opt-in dictation)
+and `smoke:docker` (20: the image and the Compose federation shape). CI runs the matrix's `--list`
+coverage gate in the `verify` job; `docker-smoke` is an optional `workflow_dispatch` job.
+
+**`docs/E2E-COVERAGE.md` — the documented side of the matrix.** It maps each coverage ID to its
+public surface, suite, prerequisites and skip policy.
+
 **Docs and examples.** `docs/MCP.md`, `docs/FEDERATION.md` and
 `docs/images/federation-overview.svg`; the README sections `## The pieces`,
 `## Deployment shapes` and `## Connecting an agent`; `examples/federation/` with a registry
@@ -35,6 +46,11 @@ both bins start from the built image.
 
 **The federator is stdio-only in Docker.** It is not a compose daemon and has no port or `/config`;
 it is attached per client with `docker run -i --rm … bluepencil-federator`.
+
+**`npm run verify` now ends in `smoke:components -- --no-docker`.** The component matrix replaces
+the hand-listed smoke chain as the final step; the component suites (including auth, Hermes and
+voice) run through it, and Docker is excluded from the default chain because a missing daemon must
+not fail verification.
 
 **Every fatal federation start failure exits `4`.** They previously exited `1`, which disagreed
 with the federator and the CLI. That covers the enumerated start-refusal codes (`invalid_registry`,
@@ -54,6 +70,10 @@ and the extension environment value `prod` is folded into `live`.
 strict boolean (`--allow-write`, `=true`, or `BLUEPENCIL_ALLOW_WRITE=1` only); an unparseable value
 is a usage error. The option parsing moved to `src/mcp/options.ts` and is unit-tested.
 
+**The extension no longer requests the `tabs` permission.** `extension/manifest.json` declares only
+`scripting`, `storage` and `activeTab`; the URL the extension needs is covered by the http/https
+host permission, and re-adding `tabs` fails `smoke:webstore`.
+
 **A stale README claim was removed.** "Settings do not reach the layer" was superseded by
 `handoff.ts` and no longer described the code.
 
@@ -65,7 +85,10 @@ is a usage error. The option parsing moved to `src/mcp/options.ts` and is unit-t
 bundle sha256 `a4eb2e6b…`; the size guard is within every budget (core 40.5 kB gzip of 100, attach
 loader 3.3 of 8, IIFE 44.1 of 45, custom element 46.9 of 48); `npm run secret-scan` OK (2055 files,
 no credentials or review data). `npm run spec` regenerated **161 requirements** in **18 documents**
-(139 functional, 22 non-functional; 103 P0 / 48 P1 / 10 P2) with no change to `spec/`.
+(139 functional, 22 non-functional; 103 P0 / 48 P1 / 10 P2) with no change to `spec/`. `npm run
+verify` exits `0` with the **1227 unit tests**; the component E2E matrix is **16/16 PASS with
+Docker**, and the new suites report `smoke:auth` 17 checks, `smoke:hermes` 16, `smoke:voice` 7 and
+`smoke:docker` 20.
 
 ### Known gaps
 
