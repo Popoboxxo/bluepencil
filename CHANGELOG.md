@@ -1,3 +1,45 @@
+## [0.10.1] - 2026-10-24
+
+### Changed
+
+**Maintenance release: dev-dependency bumps only.** There is no runtime dependency (`dependencies`
+stays empty) and no user-facing behaviour changed; the shipped library, CLI, MCP server, hub,
+federator and extension are the same code as `0.10.0`.
+
+**`@asamuzakjp/dom-selector` 9.2.4 → 10.0.4 (transitive MAJOR).** This is jsdom's CSS selector
+engine, exercised by the `getComputedStyle` and selector-matching paths in the anchor tests. It is
+dev-only: `jsdom` is a devDependency, so consumers of the package are unaffected and no runtime code
+resolves it.
+
+**The other bumps.** `jsdom` 30.1.2 → 30.1.3, `vitest` 5.0.4 → 5.0.5, `undici` 8.11.2 → 8.12.3,
+`rolldown` 1.2.13 → 1.2.14, `postcss` 8.5.29 → 8.5.31 and `@oxc-project/types` 0.153.0 → 0.154.0.
+`package-lock.json` was updated by Dependabot in the same change.
+
+### Verified
+
+`npm run typecheck` and `npm run typecheck:ext` green; **1227 unit tests** in **53 files**
+(`npm test`). `npm run build` and `npm run build:ext` green; `npm run verify:sync` OK at version
+`0.10.1`, element bundle sha256 `bfc46325…`; the size guard is within every budget (core 40.5 kB
+gzip of 100, attach loader 3.3 of 8, IIFE 44.1 of 45, custom element 46.9 of 48); `npm run
+secret-scan` OK (2062 files, no credentials or review data). `npm run verify` exits `0`; the
+component E2E matrix reports **15 passed, 0 failed, 1 skipped** (`docker` skipped because `verify`
+runs `smoke:components -- --no-docker`). One earlier full run hit a 3 s timeout in
+`federation-client.test.ts` under parallel load; that file passes in isolation (42/42) and the
+repeated full run is green.
+
+### Known gaps
+
+- **Node engine mismatch for contributors.** `jsdom` 30.1.3 declares
+  `"node": "^22.22.2 || ^24.15.0 || >=26.0.0"` and `undici` 8.12.3 declares `"node": ">=22.19.0"`.
+  The same `^22.22.2 || ^24.15.0 || >=26.0.0` range is declared by `@asamuzakjp/dom-selector` 10.0.4
+  and `@asamuzakjp/css-color` 7.1.3, so the cause of the `EBADENGINE` warnings is unambiguous; the
+  warnings also name `jsdom` 30.1.3 and `undici` 8.12.3. Both top-level engine ranges are unchanged
+  from their previous versions (`jsdom` 30.1.2, `undici` 8.11.2) — only the versions moved. Meanwhile
+  `package.json` still declares `"engines": { "node": ">=20" }`, so contributors on older Node 22.x
+  (e.g. Node 22.17.0) see the warnings during install/verify.
+- **`reqmd` is not installed locally.** `npm run spec:check` cannot run in this environment (the
+  binary is installed in CI). `spec/` is unchanged by this release.
+
 ## [0.10.0] - 2026-10-23
 
 ### Added
