@@ -166,6 +166,20 @@ Minimal registry:
   `instance` and `app`. Writes need exactly one `instance` (or a qualified id) and are routed to
   that one store.
 
+| Flag | Default | Meaning |
+|---|---|---|
+| `--registry <path>` | `BLUEPENCIL_REGISTRY`; required | The registry file (mode `0600`). |
+| `--read-only` | off | Refuse every write, even with `--allow-write`. |
+| `--allow-write` | off | Second write lock; a target still needs `mode:"write"`. |
+| `--allow-insecure` | off | Allow plain `http` and private addresses in registry bases. |
+| `--timeout <ms>` | registry `timeoutMs`, else `3000` | Per-source timeout. |
+| `--concurrency <1..16>` | registry `concurrency`, else `8` | Parallel instance reads. |
+| `--limit <1..1000>` | registry `limit`, else `200` | Maximum notes in one aggregate. |
+| `--app "<text>"` | `bluepencil federator` | MCP app label. |
+| `--client-name "<text>"` | the app label | Provenance name sent to peers. |
+| `--session-id <id>` | generated | Session id recorded on writes. |
+| `--no-self` / `--include-self` | — | `--no-self` is a no-op; `--include-self` is a usage error (exit `1`). |
+
 ### The aggregating hub (`--registry`)
 
 A hub can keep its own browser-facing store and add a registry. Then `/notes` stays local and only

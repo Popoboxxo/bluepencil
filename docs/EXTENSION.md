@@ -164,7 +164,6 @@ it. See *Known gaps* in [CHANGELOG.md](../CHANGELOG.md) for the current list.
 | `activeTab` | inject only into the tab you clicked on |
 | `scripting` | inject the layer and the bridge |
 | `storage` | `chrome.storage.local` |
-| `tabs` | resolve the active tab's URL |
 | `http://*/*`, `https://*/*` | host access, granted up front |
 
 Host access is a deliberate, conservative **pre-grant**. Injection itself is on demand: the overlay only
