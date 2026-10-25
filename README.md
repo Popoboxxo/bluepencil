@@ -19,7 +19,7 @@ no "the second badge in the header".
 
 ![The review layer on the vanilla fixture: five notes from a review round, the bar with its counters, the marker on the annotated element and the note list](docs/images/fixture-review.png)
 
-**Status:** `0.10.1` — the review layer, the headless data library and the CLI/MCP surfaces are on
+**Status:** `0.10.2` — the review layer, the headless data library and the CLI/MCP surfaces are on
 `main`: the core model, anchoring (now including **transient container reveal**), capture, store and
 the five adapters (with a conformance suite); canonical, diffable bundles with
 `merge`/`upsert`/`replace-session` and migrations; Markdown/JSON export; the collaboration protocol;
@@ -70,8 +70,10 @@ a running application instead of a screenshot.
 
 There is no npm release yet — build it from the repository. The library itself has **no runtime
 dependencies**; the dev dependencies are for the build and the tests only. The toolchain needs
-**Node 22.12 or newer** — that is what Vitest 5 requires, and on an older release the test suite dies
-inside a transitive dependency with a message that names neither Node nor Vitest.
+**Node 22.22.2+, 24.15+ or 26+** — that is the range `jsdom` 30 declares
+(`^22.22.2 || ^24.15.0 || >=26.0.0`). On an older release `npm ci` prints `EBADENGINE` warnings for
+the test dependencies, and the suite may die inside one of them with a message that names neither
+Node nor Vitest.
 
 ```bash
 npm install              # dev dependencies; the `prepare` script then builds dist/

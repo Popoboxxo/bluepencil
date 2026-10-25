@@ -6,8 +6,10 @@ steps — the order below is the whole procedure.
 
 ## What it needs
 
-**Node 22.12 or newer** for everything below. Vitest 5 refuses to run on older releases, and it does
-so from inside a transitive dependency, so the error names neither Node nor Vitest. CI uses Node 22.
+**Node 22.22.2+, 24.15+ or 26+** for everything below — that is the range `jsdom` 30 declares
+(`^22.22.2 || ^24.15.0 || >=26.0.0`). On an older release `npm ci` prints `EBADENGINE` warnings and
+the suite may fail inside a transitive dependency, so the error names neither Node nor Vitest. CI
+uses Node 22.
 
 ## The five minutes before the tag
 
