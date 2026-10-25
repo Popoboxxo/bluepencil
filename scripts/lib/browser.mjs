@@ -2,7 +2,7 @@
  * The browser layer shared by the smoke and E2E suites (NFR-11): a dependency-free CDP client over
  * Chrome's **pipe** transport (`--remote-debugging-pipe`: NUL-delimited JSON on fd 3/4). No
  * WebSocket, no npm package — that is what keeps the real-browser legs inside the project's "no
- * runtime dependency" rule (NFR-4) and lets them run on the Node 20 that CI pins.
+ * runtime dependency" rule (NFR-4) and lets them run on the Node 22 that CI pins.
  *
  *   Browser.launch(executable, userDataDir, { width, height })  → attached page session
  *   browser.navigate(url) / evaluate(expr) / waitFor(expr)      → drive and observe the page

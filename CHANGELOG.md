@@ -1,3 +1,43 @@
+## [0.10.2] - 2026-10-25
+
+### Fixed
+
+**The declared Node engine now matches the dev toolchain.** `package.json` declared
+`"engines": { "node": ">=20" }`, but the dev toolchain does not run there: `jsdom` 30.1.3 declares
+`"node": "^22.22.2 || ^24.15.0 || >=26.0.0"` (the same range is declared by
+`@asamuzakjp/dom-selector` 10.0.4 and `@asamuzakjp/css-color` 7.1.3), and `undici` 8.12.3 declares
+`"node": ">=22.19.0"`.
+Installing on Node 22.17.0 therefore produced `EBADENGINE` warnings even though `>=20` claimed the
+tree was supported. The declaration is now `^22.22.2 || ^24.15.0 || >=26.0.0`.
+
+No runtime dependency, no runtime code and no shipped behaviour changed: `dependencies` stays
+empty and `src/**` is untouched by this release. Only the engine declaration, the release version
+and the documentation moved.
+
+**Apart from this correction, `0.10.2` is `0.10.1`.** `0.10.1` was the dev-dependency-only bump
+(`jsdom` 30.1.2 → 30.1.3, `vitest` 5.0.4 → 5.0.5, `undici` 8.11.2 → 8.12.3, `rolldown`
+1.2.13 → 1.2.14, `postcss` 8.5.29 → 8.5.31, `@oxc-project/types` 0.153.0 → 0.154.0, and the
+transitive `@asamuzakjp/dom-selector` 9.2.4 → 10.0.4). Its one flake was a 3 s timeout in
+`federation-client.test.ts` under parallel load; that file passes in isolation (42/42) and was
+green on the repeated full run — no new signal, so `0.10.2` does not chase it.
+
+### Verified
+
+All gates ran on Node **22.23.4** / npm **10.9.9** with the new range in place. `npm ci` completed with
+**no `EBADENGINE` warnings** (zero occurrences) — the concrete proof that the declaration now matches
+the tree. `npm run typecheck` and `npm run typecheck:ext` green; **1227 unit tests in 53 files**
+(`npm test`). `npm run build` and `npm run build:ext` green; `npm run verify:sync` OK at version
+`0.10.2`, element bundle sha256 `5b71f76b…`; the size guard is within every budget (core 40.5 kB gzip
+of 100, attach loader 3.3 of 8, IIFE 44.1 of 45, custom element 46.9 of 48); `npm run secret-scan`
+OK (2062 files, no credentials or review data). `npm run verify` exits `0`; the component E2E matrix
+reports **15 passed, 0 failed, 1 skipped** (`docker` skipped because `verify` runs
+`smoke:components -- --no-docker`).
+
+### Known gaps
+
+- **`reqmd` is not installed locally.** `npm run spec:check` cannot run in this environment (the
+  binary is installed in CI). `spec/` is unchanged by this release.
+
 ## [0.10.1] - 2026-10-24
 
 ### Changed

@@ -21,7 +21,7 @@
  *   User Data FAQ     https://developer.chrome.com/docs/webstore/program-policies/user-data-faq
  *   Privacy fields    https://developer.chrome.com/docs/webstore/cws-dashboard-privacy
  *
- * No dependencies (NFR-4); runs on Node >= 20 like every other smoke script here.
+ * No dependencies (NFR-4); runs on Node >= 22.22.2 like every other smoke script here.
  */
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
