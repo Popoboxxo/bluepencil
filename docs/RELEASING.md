@@ -59,6 +59,13 @@ Assets: `attach.js`, `bluepencil.element.min.js`, `bluepencil-<version>.tgz`,
 `bluepencil-extension-<version>.zip` (unpack it and load the folder as an unpacked MV3 extension) and
 `SHA256SUMS`.
 
+## 0.10.3 — MCP protocol-version negotiation
+
+A patch release: the MCP server answers a client's protocol-version proposal with the revision it
+speaks (`2024-11-05`) instead of refusing the handshake, and every later HTTP request still has to
+carry that revision. The assets are unchanged — the same four plus `SHA256SUMS`. The release notes
+are the `## [0.10.3]` section in [CHANGELOG.md](../CHANGELOG.md).
+
 ## 0.10.0 — federation
 
 The release still ships the **same four assets plus `SHA256SUMS`**. The federator is deliberately

@@ -95,12 +95,12 @@ legs or jobs that must be exercised for that change. Job and script names are th
 merge is branch protection. Use it to decide what to run before pushing — and treat a colour it does
 not name as something to think about, not as license to skip a leg.
 
-### 0.10.0 — the federator
+### Version bumps and the federator
 
-Version `0.10.0` lives in `package.json` and `extension/manifest.json` (and in the `CHANGELOG.md`
-section). The federator bin is **not** an element bundle: `scripts/build.mjs` has a separate
-`federator` job that emits `dist/federator.js` from `server/federator.ts`, declared as
-`"bluepencil-federator"` in `package.json`. `verify:sync` stays element-focused — it pins the element
+`package.json` and `extension/manifest.json` carry the release version (currently `0.10.3`), and the
+matching `## [<version>]` section in `CHANGELOG.md` has to agree. The federator bin is **not** an
+element bundle: `scripts/build.mjs` has a separate `federator` job that emits `dist/federator.js`
+from `server/federator.ts`, declared as `"bluepencil-federator"` in `package.json`. `verify:sync` stays element-focused — it pins the element
 IIFE and the extension, not the federator — so do not add `dist/federator.js` to its hash.
 `smoke:federation` is the check that proves the bin and the start-up gates (registry `0600`,
 identity, `federates_missing`, degraded peers); it runs in the `verify` job after `smoke:mcp`.

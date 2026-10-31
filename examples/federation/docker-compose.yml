@@ -52,7 +52,7 @@
 #   docker run -i --rm --network bluepencil-federation --user "$(id -u):$(id -g)" \
 #     -v ./instances.json:/etc/bluepencil/instances.json:ro \
 #     -e BP_DEV_TOKEN -e BP_STAGING_TOKEN \
-#     ghcr.io/popoboxxo/bluepencil:0.10.0 bluepencil-federator \
+#     ghcr.io/popoboxxo/bluepencil:0.10.3 bluepencil-federator \
 #     --registry /etc/bluepencil/instances.json --read-only --allow-insecure
 #
 # `--user "$(id -u):$(id -g)"` matters for the same 0600/owner gate: the image's `node` user is uid
@@ -65,7 +65,7 @@ name: bluepencil-federation
 
 services:
   hub-dev:
-    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.10.0}
+    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.10.3}
     container_name: ${BLUEPENCIL_DEV_NAME:-bluepencil-hub-dev}
     restart: unless-stopped
     ports:
@@ -89,7 +89,7 @@ services:
       start_period: 5s
 
   hub-staging:
-    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.10.0}
+    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.10.3}
     container_name: ${BLUEPENCIL_STAGING_NAME:-bluepencil-hub-staging}
     restart: unless-stopped
     ports:
@@ -110,7 +110,7 @@ services:
       start_period: 5s
 
   hub-aggregator:
-    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.10.0}
+    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.10.3}
     container_name: ${BLUEPENCIL_AGGREGATOR_NAME:-bluepencil-hub-aggregator}
     # A broken registry (mode/owner, identity mismatch) is a configuration error, not a transient
     # fault: retry a few times so `docker compose logs` has the line, then stay down instead of

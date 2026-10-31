@@ -46,7 +46,7 @@ session); the aggregate is always bounded by `limit`; the extension has **one hu
 list; hubs older than `0.10` are not federatable and are refused with `federates_missing`, never
 silently reported as "no notes"; and `unverified` appears only when a peer's `/config` omits `app`
 (a missing `federates` is a start error, not a warning). Still true from earlier releases: no npm
-publish — install from the tag (`npm i github:Popoboxxo/bluepencil#v0.10.0`; the `prepare` script
+publish — install from the tag (`npm i github:Popoboxxo/bluepencil#v0.10.3`; the `prepare` script
 builds `dist/` during install) or use the release artefacts: loader, layer, package tarball, the MV3
 browser extension, one `SHA256SUMS` over all of them, and the hub image on
 `ghcr.io/popoboxxo/bluepencil` ([docs/DOCKER.md](docs/DOCKER.md)); token refresh is manual (an
@@ -283,7 +283,7 @@ process: `/notes` for the page, `/mcp` for the agent, `/config` to describe it w
 ```yaml
 services:
   hub:
-    image: ghcr.io/popoboxxo/bluepencil:0.10.0
+    image: ghcr.io/popoboxxo/bluepencil:0.10.3
     ports: ["127.0.0.1:8787:8787"]
     volumes: ["bluepencil-notes:/data"]
     environment:
@@ -386,7 +386,7 @@ docker run -i --rm --network bluepencil-federation \
   --env-file .env \
   --no-healthcheck \
   -v "$PWD/instances.json:/etc/bluepencil/instances.json:ro" \
-  ghcr.io/popoboxxo/bluepencil:0.10.0 bluepencil-federator \
+  ghcr.io/popoboxxo/bluepencil:0.10.3 bluepencil-federator \
   --registry /etc/bluepencil/instances.json --read-only --allow-insecure
 ```
 
@@ -637,7 +637,7 @@ The worker converts the options into the element's own attribute vocabulary in o
 (`extension/src/handoff.ts`), so the settings reach the layer: environment, app name, language,
 author identity, route, store and credential. A hub that reports `federates: true` is still **one
 write target** — `federates` describes the hub's `/mcp` door and does not change where the extension
-writes. The extension has one hub profile in `0.10.0`.
+writes. The extension has a single hub profile.
 
 ## Documentation
 

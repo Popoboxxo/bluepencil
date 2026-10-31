@@ -93,7 +93,7 @@ curl -s http://127.0.0.1:8787/api/v1/bluepencil/config
   "name": "Dev hub",
   "app": "my-web-tool",
   "federates": false,
-  "version": "0.10.0",
+  "version": "0.10.3",
   "base": "/api/v1/bluepencil",
   "auth": "none",
   "readOnly": false,
@@ -118,6 +118,12 @@ curl -s http://127.0.0.1:8787/api/v1/bluepencil/mcp \
 A hub without a registry exposes the same 9 tools as `bluepencil mcp`. With `--registry`, the
 `/mcp` door aggregates (see below) while `/notes` stays local. A corrupt store file stops the hub
 with exit `2` before the socket is bound; it is never served as an empty set.
+
+`initialize` is the one message exempt from the `MCP-Protocol-Version` header gate: the header names
+the client's proposal, and the handshake answers with the revision this implementation speaks,
+`2024-11-05`, rather than echoing the proposal. Every later request must claim that revision; a
+different one is answered `400` naming both versions. The door is stateless and single-revision: a
+post-handshake request that omits the header is still accepted.
 
 ## Several stores
 

@@ -1,4 +1,4 @@
-## [0.10.3] - 2026-10-31
+## [0.10.3] - 2026-11-01
 
 ### Fixed
 
@@ -9,8 +9,8 @@ Hermes session directly to a running hub:
 The `MCP-Protocol-Version` header gate rejected **every** value but `2024-11-05` — including the
 value carried by the `initialize` request itself. That request is where the revision is agreed: the
 header names the client's *proposal*, and the hub's answer settles it. Refusing the proposal refused
-the negotiation, so a client speaking a newer revision could never reach the door at all (measured:
-Hermes sends `2025-11-25` and was answered `400 … this hub speaks 2024-11-05`).
+the negotiation, so a client speaking a newer revision could never reach the door at all (a Hermes
+session proposing `2025-11-25` was answered `400 … this hub speaks 2024-11-05`, #100).
 
 `initialize` was also answered by echoing whatever the client asked for. The hub thus *promised*
 revisions it does not implement — and a client that takes that promise seriously carries the echoed
@@ -21,15 +21,40 @@ continues with it or disconnects.
 The gate still applies to everything after the handshake, unchanged: `tools/list` and every other
 request with a foreign claimed revision are refused as before.
 
+### Changed
+
+**The stdio door changed with the HTTP door, because both run the same code.** `src/mcp/protocol.ts`
+is shared by `bluepencil mcp` (stdio) and `POST {base}/mcp` on the hub, so the stdio server now also
+answers `initialize` with `2024-11-05` instead of echoing the client's proposal. That is a
+wire-visible change for a stdio client that proposed another revision; no tool, resource or prompt
+changed.
+
+**Documentation moved to `0.10.3` and was checked against the code.** The image and install pins
+moved from `0.10.0` to `0.10.3` in `README.md`, `docs/DOCKER.md`, `docs/FEDERATION.md`, `docs/MCP.md`
+and `examples/federation/*`; `docs/BUILD-SYNC.md` and `docs/RELEASING.md` now name the current
+version. The public-API listings were corrected against `src/index.ts` (`docs/INTERNAL-API.md` and
+the directory tree in `docs/ARCHITECTURE.md`), and the non-existent CLI flags
+`--adapter`/`--endpoint` in `docs/ARCHITECTURE.md` were replaced by the real file-based CLI plus an
+explicit "Not implemented" note.
+
 ### Verified
 
-Measured against a real client (mcp SDK 2.3.0, the stack behind Hermes' HTTP transport): a probe
-server answering the counter-offer received `2024-11-05` — not its own proposal — on
-`notifications/initialized` and `tools/list`, i.e. the client adopts the hub's revision from the
-next message on. New unit coverage: the handshake with `2025-11-25` in header *and* body is
-accepted and answered `2024-11-05`; `tools/list` with `2025-11-25` stays refused; `ping` with the
-negotiated revision passes. The full gate test (a foreign revision on a non-handshake request → 400)
-is unchanged.
+The handshake behaviour is covered in `tests/unit/server-mcp.test.ts`: `initialize` with
+`2025-11-25` in header *and* body is accepted and answered `2024-11-05`; `tools/list` carrying
+`2025-11-25` after the handshake is still refused; `ping` with the negotiated revision passes; and
+the existing foreign-revision gate test (`1999-01-01` → `400`) is unchanged. The committed smoke
+scripts (`scripts/mcp-smoke.mjs`, `scripts/hermes-wrapper-smoke.mjs`) propose `2024-11-05`
+themselves, so they exercise the normal path, not the foreign-version one.
+
+Gates on Node **22.17.0** (below the declared engine range; the gates still ran): `npm run
+typecheck` and `npm run typecheck:ext` green; **1228 unit tests in 53 files** (`npm test`). `npm run
+build` and `npm run build:ext` green; `npm run verify:sync` OK at version `0.10.3`, element bundle
+sha256 `37050467…`; the size guard is within every budget (core 40.5 kB gzip of 100, attach loader
+3.3 of 8, IIFE 44.1 of 45, custom element 46.9 of 48); `npm run secret-scan` OK (2063 files, no
+credentials or review data); `npm run smoke:mcp` 23/23 checks passed; `npm run smoke:docker` 20/20
+cases passed; the component matrix reports **15 passed, 0 failed, 1 skipped** (`docker` skipped
+because it ran with `--no-docker`; `smoke:docker` covered that leg separately);
+`node scripts/release-preflight.mjs --tag v0.10.3` exits `0`.
 
 ### Known gaps
 
@@ -37,10 +62,20 @@ is unchanged.
   `--auth-secret`/`--token-key` still fails the preflight, and `x-bluepencil-auth` is still absent
   from `Access-Control-Allow-Headers`. This release only removes the transport-level blocker; it
   does not make the authenticated cross-origin pairing work.
-- The hub remains single-revision (`2024-11-05`). Accepting a proposal it could actually serve in a
-  future revision is a feature, not part of this fix.
-
----
+- **The MCP door is stateless and single-revision (`2024-11-05`).** Post-handshake requests with the
+  `MCP-Protocol-Version` header *absent* are still accepted — only a foreign *claimed* revision is
+  refused. Accepting a proposal the hub could actually serve in a future revision is a feature, not
+  part of this fix.
+- **A literal `null` JSON-RPC body answers `500`, not `400`.** `parseRpcPayload` treats
+  `JSON.parse("null")` as a parse success with a `null` request, and the first member access then
+  throws. The root cause is pre-existing in `src/mcp/protocol.ts` and affects both doors (stdio and
+  HTTP); it is not fixed in this release.
+- **`src/federation/client.ts` keeps its own `MCP_PROTOCOL_VERSION` constant** (`"2024-11-05"`)
+  instead of importing `PROTOCOL_VERSION` from `src/mcp/protocol.ts` — a drift risk if the revision
+  ever moves.
+- **Environment limits of this release run.** `reqmd` is not installed, so `npm run spec:check`
+  could not run (the `npm run spec` generator did run and left `spec/` byte-identical). Every other
+  gate ran — the component browser legs included, through the Chrome in the local Playwright cache.
 
 ## [0.10.2] - 2026-10-25
 

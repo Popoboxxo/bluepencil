@@ -247,23 +247,32 @@ export function createLayer(options: LayerOptions): LayerHandle;
 
 ```ts
 export interface BlueprintConfig extends Omit<LayerOptions, "store"> {
-  enabled?: () => boolean;      // evaluated on every enable() — fail closed
   adapter?: AdapterLike | (() => Adapter);
+  storeOptions?: Omit<StoreOptions, "adapter">;
   sessionRef?: string;
   environment?: Environment;
-  destroyOnDisable?: boolean;
+  enabled?: () => boolean;      // evaluated on every enable() — fail closed
+  autoEnable?: boolean;         // mount right away (default: true when no gate is configured)
 }
 export interface Blueprint {
   readonly store: Store;
   readonly layer: LayerHandle;
-  enable(): void;
+  enable(): boolean;            // false when the host gate refused
   disable(): void;
   isEnabled(): boolean;
-  export(options?: { format?: "markdown" | "json"; }): string;
+  setEnabled(gate: (() => boolean) | null): void;
+  notes(filter?: NoteFilter): Note[];
+  ready(): Promise<void>;
+  export(options?: { format?: "markdown" | "json"; includeDone?: boolean }): string;
   destroy(): Promise<void>;
 }
+export function createBlueprint(config?: BlueprintConfig): Blueprint;
 export function init(config?: BlueprintConfig): Blueprint;
 export function mount(config?: BlueprintConfig): Blueprint;
 ```
+
+Also exported from `src/index.ts`: `VERSION`, `registerAdapter`, the filter helpers `filterNotes`,
+`matchesFilter` and `excludeDone`, `SCHEMA_VERSION`, `BluepencilValidationError`, and the
+adapter/model/`Store`/`Layer` types that entry re-exports.
 
 `enabled()` returning false means: no DOM node, no request, no listener (FR-1.1, NFR-1).

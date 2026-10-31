@@ -52,7 +52,7 @@ bluepencil/
 │  ├─ i18n/                # en.ts, de.ts (strings only)
 │  ├─ react/               # optional wrapper (peer dependency)
 │  ├─ element/             # custom-element build (<bluepencil-notes>) for hosts w/o a bundler
-│  └─ index.ts             # public API: init(), mount(), enable(), disable(), destroy()
+│  └─ index.ts             # public API: init(), mount(), createBlueprint(), registerAdapter() + Blueprint handle
 ├─ server/                 # reference hosts: hub.ts (HTTP) + federator.ts (stdio), thin over src/
 ├─ bookmarklet/            # loader generator + usage docs
 ├─ examples/
@@ -125,13 +125,18 @@ await store.create(createNote({
 ```
 
 ```bash
-# CLI: exchange and inspection without any UI (FR-15.2) — file based today; the `--adapter http`
-# form is the M2 extension (adapter selection in the CLI), the HTTP surface is used through the library.
-bluepencil export --adapter http --endpoint … --env live --out live.bluepencil.json   # M2
-bluepencil inspect live.bluepencil.json
-bluepencil merge dev.bluepencil.json live.bluepencil.json --dry-run --json
-bluepencil import live.bluepencil.json --adapter http --endpoint … --mode merge       # M2
+# CLI: file-based exchange and inspection without any UI (FR-15.2).
+# The input is a positional path; `--out` names the file to write.
+bluepencil export live.bluepencil.json --format json --out live.bundle.json
+bluepencil inspect live.bundle.json
+bluepencil merge dev.bluepencil.json live.bundle.json --dry-run --json
+bluepencil import live.bundle.json team.bluepencil.json --mode upsert --on-conflict keep-incoming
 ```
+
+**Not implemented:** the CLI has no adapter selector — `--adapter` and `--endpoint` do not exist. The
+HTTP adapter is used through the library (`bluepencil/adapters/http`), and the commands above are the
+whole file-based surface. A future CLI adapter selection is not scheduled and is not claimed by any
+milestone.
 
 Everything the UI does is also available headlessly through `bp.store` and the export
 functions, so an integration can render the notes in its own UI (FR-10.4).
