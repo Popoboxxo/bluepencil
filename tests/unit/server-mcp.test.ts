@@ -116,6 +116,38 @@ describe("the MCP door: what it accepts", () => {
     expect(JSON.stringify(bad.body)).toContain("1999-01-01");
   });
 
+  it("refuses the revision Hermes speaks on a request after the handshake, but not on the handshake itself (#100)", async () => {
+    // The client's initialize names ITS revision — a proposal the hub answers with its own
+    // (#100). Rejecting that message would refuse the exchange that settles the question.
+    const handshake = await mcp(
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-11-25", clientInfo: { name: "hermes" } },
+      },
+      { headers: { "mcp-protocol-version": "2025-11-25" } },
+    );
+    expect(handshake.status).toBe(200);
+    // The counter-offer: this hub's revision, never the proposal.
+    expect((handshake.body["result"] as Json)["protocolVersion"]).toBe("2024-11-05");
+
+    // Everything after the handshake keeps the strict gate — the negotiated revision applies.
+    const after = await mcp(
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+      { headers: { "mcp-protocol-version": "2025-11-25" } },
+    );
+    expect(after.status).toBe(400);
+    expect(JSON.stringify(after.body)).toContain("2025-11-25");
+
+    // The same request with the negotiated revision passes.
+    const negotiated = await mcp(
+      { jsonrpc: "2.0", id: 3, method: "ping" },
+      { headers: { "mcp-protocol-version": "2024-11-05" } },
+    );
+    expect(negotiated.status).toBe(200);
+  });
+
   it("answers a parse error as a parse error", async () => {
     const answered = await mcp("{not json");
     expect(answered.status).toBe(400);

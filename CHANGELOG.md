@@ -1,3 +1,47 @@
+## [0.10.3] - 2026-10-31
+
+### Fixed
+
+**A client's protocol-version proposal is answered instead of refused, and the handshake never
+promises a revision the hub does not speak (#100).** Two coupled defects, found while wiring a
+Hermes session directly to a running hub:
+
+The `MCP-Protocol-Version` header gate rejected **every** value but `2024-11-05` — including the
+value carried by the `initialize` request itself. That request is where the revision is agreed: the
+header names the client's *proposal*, and the hub's answer settles it. Refusing the proposal refused
+the negotiation, so a client speaking a newer revision could never reach the door at all (measured:
+Hermes sends `2025-11-25` and was answered `400 … this hub speaks 2024-11-05`).
+
+`initialize` was also answered by echoing whatever the client asked for. The hub thus *promised*
+revisions it does not implement — and a client that takes that promise seriously carries the echoed
+version into the header of every later request, where the same gate then refuses it. The handshake
+now always answers `2024-11-05`, the revision this implementation speaks; per MCP the client
+continues with it or disconnects.
+
+The gate still applies to everything after the handshake, unchanged: `tools/list` and every other
+request with a foreign claimed revision are refused as before.
+
+### Verified
+
+Measured against a real client (mcp SDK 2.3.0, the stack behind Hermes' HTTP transport): a probe
+server answering the counter-offer received `2024-11-05` — not its own proposal — on
+`notifications/initialized` and `tools/list`, i.e. the client adopts the hub's revision from the
+next message on. New unit coverage: the handshake with `2025-11-25` in header *and* body is
+accepted and answered `2024-11-05`; `tools/list` with `2025-11-25` stays refused; `ping` with the
+negotiated revision passes. The full gate test (a foreign revision on a non-handshake request → 400)
+is unchanged.
+
+### Known gaps
+
+- **The two CORS findings stay open (#98, #99).** A cross-origin extension against a hub with
+  `--auth-secret`/`--token-key` still fails the preflight, and `x-bluepencil-auth` is still absent
+  from `Access-Control-Allow-Headers`. This release only removes the transport-level blocker; it
+  does not make the authenticated cross-origin pairing work.
+- The hub remains single-revision (`2024-11-05`). Accepting a proposal it could actually serve in a
+  future revision is a feature, not part of this fix.
+
+---
+
 ## [0.10.2] - 2026-10-25
 
 ### Fixed

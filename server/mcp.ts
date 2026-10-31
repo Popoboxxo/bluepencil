@@ -84,6 +84,16 @@ function needsWrite(body: string): boolean {
   return TOOL_DEFINITIONS.some((tool) => tool.name === name && tool.write);
 }
 
+/**
+ * True when the body is an `initialize` — the one message whose claimed revision is a proposal
+ * rather than an assertion. A body that does not parse is not a handshake: the caller keeps the
+ * strict gate (and the parse error surfaces where it always did).
+ */
+function claimsInitialize(body: string): boolean {
+  const parsed = parseRpcPayload(body);
+  return parsed.ok && parsed.request.method === "initialize";
+}
+
 /** The request headers, as `node:http` hands them over. */
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
@@ -176,9 +186,18 @@ export async function handleMcpRoute(
 
   // The revision a client claims has to be the one this hub speaks; guessing would mean answering a
   // dialect nobody agreed on. Absent is accepted: the protocol has a default and most clients omit it.
+  //
+  // `initialize` is exempt: that message IS the negotiation. A proposal in it is not an assertion —
+  // the hub answers the handshake with a revision it speaks (see protocol.ts), and the client then
+  // carries THAT revision into the header of every later request, where this gate applies again
+  // (#100). Rejecting the proposal would refuse the very exchange that settles the question.
   const claimed = headers["mcp-protocol-version"];
   const claimedVersion = Array.isArray(claimed) ? claimed[0] : claimed;
-  if (typeof claimedVersion === "string" && claimedVersion !== PROTOCOL_VERSION) {
+  if (
+    typeof claimedVersion === "string" &&
+    claimedVersion !== PROTOCOL_VERSION &&
+    !claimsInitialize(body)
+  ) {
     return answer(
       400,
       {
