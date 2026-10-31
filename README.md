@@ -19,7 +19,7 @@ no "the second badge in the header".
 
 ![The review layer on the vanilla fixture: five notes from a review round, the bar with its counters, the marker on the annotated element and the note list](docs/images/fixture-review.png)
 
-**Status:** `0.10.2` — the review layer, the headless data library and the CLI/MCP surfaces are on
+**Status:** `0.10.3` — the review layer, the headless data library and the CLI/MCP surfaces are on
 `main`: the core model, anchoring (now including **transient container reveal**), capture, store and
 the five adapters (with a conformance suite); canonical, diffable bundles with
 `merge`/`upsert`/`replace-session` and migrations; Markdown/JSON export; the collaboration protocol;

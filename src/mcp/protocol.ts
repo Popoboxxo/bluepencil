@@ -22,7 +22,7 @@ import {
 } from "./tools";
 import { VERSION } from "../version";
 
-/** The revision this implementation speaks; `initialize` echoes the client's when it names one. */
+/** The revision this implementation speaks; the handshake answers with this one, never with a proposal the hub does not speak. */
 export const PROTOCOL_VERSION = "2024-11-05";
 
 /** Unparsable input: the id cannot be recovered, so its response carries `id: null`. */
@@ -86,12 +86,18 @@ export async function handleRpc(
   try {
     switch (method) {
       case "initialize": {
-        const requested = params.protocolVersion;
         context.clientName =
           ((params.clientInfo as { name?: string } | undefined)?.name as string) ?? "mcp-client";
         const federated = context.backend.kind === "federation";
         transport.reply(id, {
-          protocolVersion: typeof requested === "string" ? requested : PROTOCOL_VERSION,
+          // The hub names a revision it speaks, always. Echoing the client's proposal would
+          // promise a dialect this implementation does not implement — and the client would carry
+          // that promised version into the `MCP-Protocol-Version` header of every later request,
+          // where the door's gate refuses it (#100). Per MCP the server counters with a revision
+          // it supports; the client then continues with that one or disconnects. Measured: the
+          // mcp SDK (Hermes) accepts the counter-offer and sends 2024-11-05 from the next
+          // message on.
+          protocolVersion: PROTOCOL_VERSION,
           capabilities: {
             tools: { listChanged: false },
             resources: { subscribe: false, listChanged: false },
