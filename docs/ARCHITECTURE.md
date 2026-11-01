@@ -254,7 +254,7 @@ POST   /api/v1/bluepencil/notes/{id}/messages   # append thread message (author_
 POST   /api/v1/bluepencil/notes/bulk-delete     # filter + confirm token
 GET    /api/v1/bluepencil/bundle                # canonical bundle JSON (agents/exports)
 GET    /api/v1/bluepencil/sessions
-GET    /api/v1/bluepencil/health
+GET    /api/v1/bluepencil/health                # GET or HEAD (empty body), no credential
 ```
 
 Responses are JSON `{ ok: boolean, ... }` with HTTP status codes; errors never return HTML.

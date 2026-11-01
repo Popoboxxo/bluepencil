@@ -482,7 +482,7 @@ docker run -i --rm --network bluepencil-federation \
 
 `--env-file .env` reads the registry credentials from the Compose `.env` file (uncomment and fill the
 token lines in `.env.example`); `--no-healthcheck` turns off the image's `HEALTHCHECK`, which probes
-the hub's `/config` — a federator has no HTTP endpoint and would otherwise sit at `unhealthy`
+the hub's `/health` — a federator has no HTTP endpoint and would otherwise sit at `unhealthy`
 forever.
 
 Deeper: [docs/FEDERATION.md §14](docs/FEDERATION.md#14-deployment-shapes).

@@ -8,6 +8,13 @@
  * This module imports nothing on purpose. `server/handler.ts` re-exports it, `server/hub.ts` and
  * `server/mcp.ts` import it from there, and `server/admin.ts` imports it directly — keeping the
  * function dependency-free is what makes that last edge safe instead of a runtime cycle.
+ *
+ * `preflightResponse` is the one implementation of an `OPTIONS` answer, used by every door that can
+ * be reached cross-origin: the notes router, the MCP route, the admin surface and the static site
+ * (#102). Each caller names the methods *it* documents, and that list is the preflight's answer —
+ * `/mcp` advertises `POST, OPTIONS`, `/health` advertises `GET, HEAD, OPTIONS`. Routing still
+ * happens in the caller, so a path that is not part of the API keeps its 404 rather than becoming
+ * an empty preflight answer.
  */
 
 /**
@@ -24,10 +31,35 @@ const ALLOW_HEADERS: readonly string[] = [
   "X-Bluepencil-Client",
   "X-Bluepencil-Actor",
   "Mcp-Session-Id",
+  "MCP-Protocol-Version",
 ];
 
 /**
+ * The method list a preflight advertises: the caller's documented methods *are* the answer, plus
+ * `OPTIONS`, deduped case-insensitively. The global list is deliberately not merged in here — a door
+ * that only answers `POST` must not advertise `PATCH` (#102).
+ */
+function preflightMethods(documented: readonly string[]): string {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of [...documented, "OPTIONS"]) {
+    const trimmed = candidate.trim().toUpperCase();
+    if (trimmed === "") continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    names.push(trimmed);
+  }
+  return names.join(", ");
+}
+
+/**
  * CORS headers for one deployment; the default (no `--cors`) sends none at all.
+ *
+ * `access-control-allow-methods` is deliberately absent: the header is only meaningful on a
+ * preflight, and `preflightResponse` is the one place that names a door's documented methods. An
+ * ordinary answer carrying the global vocabulary would contradict the preflight for the same door
+ * (#102) — and every caller passed no list, so it always did.
  *
  * `extraAllowHeaders` is for a door that speaks a header of its own (the admin surface's
  * `x-bluepencil-admin`). Duplicates are dropped case-insensitively and the first spelling wins, so
@@ -50,9 +82,46 @@ export function corsHeaders(
   }
   return {
     "access-control-allow-origin": cors,
-    "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
     "access-control-allow-headers": names.join(", "),
     "access-control-max-age": "600",
     ...(cors === "*" ? {} : { vary: "Origin" }),
+  };
+}
+
+/** The shape a preflight answer has; structurally compatible with the handler's `ServerResponse`. */
+export interface PreflightAnswer {
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/**
+ * The one CORS preflight implementation (#98, #99, #102).
+ *
+ * A browser sends `OPTIONS` without a credential — it cannot know one yet — so a credential check
+ * on it could only refuse the pairing, never protect a note. `null` means "this is not a preflight
+ * on a CORS-enabled hub": either the method is not OPTIONS, or `--cors` is off and the caller keeps
+ * its ordinary route refusal.
+ *
+ * `allowMethods` names the methods the door documents and is authoritative for the preflight answer
+ * (`OPTIONS` is appended, duplicates are dropped); `extraAllowHeaders` is for a door that speaks a
+ * header of its own (the admin surface's `x-bluepencil-admin`). The shared header list is never
+ * repeated per route — that is what makes it one vocabulary rather than five.
+ */
+export function preflightResponse(
+  method: string | undefined,
+  context: { readonly cors?: string | undefined },
+  allowMethods: readonly string[] = [],
+  extraAllowHeaders: readonly string[] = [],
+): PreflightAnswer | null {
+  if ((method ?? "GET").toUpperCase() !== "OPTIONS") return null;
+  if (context.cors === undefined || context.cors === "") return null;
+  return {
+    status: 204,
+    headers: {
+      ...corsHeaders(context.cors, extraAllowHeaders),
+      "access-control-allow-methods": preflightMethods(allowMethods),
+    },
+    body: "",
   };
 }

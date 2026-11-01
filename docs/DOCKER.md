@@ -27,26 +27,46 @@ Then, from your machine:
 curl -s http://localhost:8787/api/v1/bluepencil/config | jq .
 ```
 
-`{base}/config` needs no credential (FR-6.10), which is what makes it usable as a probe: it reports
-the name, the version, **which** credential the hub asks for and the binding the process actually has.
-That is also the image's `HEALTHCHECK`.
+`{base}/health` and `{base}/config` need no credential (FR-6.10, #109), which is what makes them
+usable as probes: `/health` answers the liveness fields, `/config` also reports the name, **which**
+credential the hub asks for and the binding the process actually has. The image's `HEALTHCHECK`
+uses `/health`, the cheaper of the two; `/config` remains the richer status read.
+
+The `HEALTHCHECK` builds its URL from the **environment** (`$BLUEPENCIL_PORT$BLUEPENCIL_BASE`), not
+from the runtime arguments. If you start the hub with `--port` or `--base`, set
+`BLUEPENCIL_PORT` / `BLUEPENCIL_BASE` to the same values as well — otherwise the probe keeps calling
+the default URL and the container reports `unhealthy` while the hub is running fine.
 
 ## What the container does on start
 
 `docker/entrypoint.sh` is the entrypoint, and it does three things a plain `CMD node server.js` cannot:
 
 1. **It binds `0.0.0.0`** — reachable from outside, which is the point of a container.
-2. **It generates a credential when none was handed in**, stores it in `/data/.bluepencil-auth`
-   (mode `0600`) and reuses it afterwards. The first start prints it in one line so it can be pasted
-   into the extension; later starts only name the file, because a secret in every log line is a secret
-   on every laptop that ever ran `docker logs`.
+2. **It generates the shared secret when none was handed in**, stores it in
+   `/data/.bluepencil-auth` (mode `0600`) and reuses it afterwards. This happens **even when
+   `BLUEPENCIL_TOKEN_KEY` is set** — the hub then accepts both credentials and an operator can add
+   token signing without locking out clients that already hold the secret. The first start prints a
+   freshly generated secret in one line so it can be pasted into the extension; later starts only
+   name the file, because a secret in every log line is a secret on every laptop that ever ran
+   `docker logs`. A `0`-byte secret file counts as "not present" and is regenerated; a file that
+   cannot be written (read-only mount, missing directory) aborts the start with a message naming
+   `BLUEPENCIL_AUTH_SECRET`/`BLUEPENCIL_SECRET_FILE` instead of continuing with an unexported
+   secret.
 3. **It prints the address and the MCP endpoint** (`POST {base}/mcp`).
 
-Hand a credential in and it is used instead:
+Hand a shared secret in and it is used instead of generating one — with or without a token key.
+Keep that value stable across container re-creations, otherwise every restart invalidates every
+client: write it once to an `.env` file (or a Docker secret) rather than generating it per start:
 
 ```sh
-BLUEPENCIL_AUTH_SECRET="$(openssl rand -hex 32)" docker compose up -d
+printf 'BLUEPENCIL_AUTH_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env   # once, not per start
+docker compose up -d
 ```
+
+The entrypoint always persists a shared secret unless `BLUEPENCIL_AUTH_SECRET` is handed in.
+Token acceptance is additive, not a replacement: setting `BLUEPENCIL_TOKEN_KEY` does not disable
+the secret, and there is no opt-out switch for it. `BLUEPENCIL_AUTH_SECRET=""` does not disable it
+either — an empty value counts as unset, so the entrypoint generates or reuses the file.
 
 ## Environment variables
 
@@ -59,10 +79,24 @@ BLUEPENCIL_AUTH_SECRET="$(openssl rand -hex 32)" docker compose up -d
 | `BLUEPENCIL_APP` | `bluepencil hub` | Identity reported as `/config.app`; a registry peer must match it |
 | `BLUEPENCIL_ENVIRONMENT` | `dev` | The one environment this hub is the store of record for |
 | `BLUEPENCIL_REGISTRY` | – | Registry file; makes `/mcp` an aggregate and `/config` report `federates:true` (the hub stays the store of record) |
-| `BLUEPENCIL_AUTH_SECRET` | generated | Shared secret; every client sends it in `x-bluepencil-auth` |
-| `BLUEPENCIL_TOKEN_KEY` | – | Signed per-device tokens instead (`Authorization: Bearer …`), individually revocable |
+| `BLUEPENCIL_AUTH_SECRET` | generated | Shared secret; every client sends it in `x-bluepencil-auth`. Generated into `BLUEPENCIL_SECRET_FILE` even when `BLUEPENCIL_TOKEN_KEY` is set — a hub with both accepts **both** credentials |
+| `BLUEPENCIL_TOKEN_KEY` | – | Signed per-device tokens (`Authorization: Bearer …`), individually revocable. Does not replace the shared secret; configure it *in addition* to keep both doors open |
 | `BLUEPENCIL_ADMIN_SECRET` | – | Opt-in admin surface at `{base}/admin`; at least 16 characters, or the hub refuses to start |
-| `BLUEPENCIL_SECRET_FILE` | `/data/.bluepencil-auth` | Where the generated secret is kept |
+| `BLUEPENCIL_SECRET_FILE` | `/data/.bluepencil-auth` | Where the generated secret is kept (reused on the next start). A `0`-byte file counts as not present and is regenerated; if it cannot be written the container refuses to start rather than run with an unpersisted secret |
+
+### Credentials and their headers
+
+| Credential | Sent in | Accepted on |
+|---|---|---|
+| shared secret (`BLUEPENCIL_AUTH_SECRET`) | `x-bluepencil-auth: <secret>` | the notes routes (`/notes`, `/notes/{id}`, `/notes/bulk-delete`, `/notes/{id}/messages`) |
+| signed token (`BLUEPENCIL_TOKEN_KEY`) | `Authorization: Bearer <token>` | the notes routes, same set |
+| admin secret (`BLUEPENCIL_ADMIN_SECRET`) | `x-bluepencil-admin: <secret>` | the admin surface, plus the notes routes as a second credential — never `/mcp` |
+
+A hub accepts as many of these as are configured; `{base}/config` names the strongest one, and
+`{base}/admin/status` lists all of them (`auth: "token+secret"`, `credentials: ["token","secret"]`).
+The admin secret is an operator credential, not a client one: alone it does not turn the client gate
+on. No route echoes a *configured* credential value; `POST {base}/admin/devices` deliberately
+returns the freshly minted token once, because the hub keeps only its id.
 
 Extra arguments go straight to the hub, e.g. a read-only hub with a Markdown mirror:
 
@@ -77,11 +111,22 @@ the routes behind it. Without it the surface does not exist: `{base}/admin` fall
 ordinary 404, so the container looks exactly like a hub that never had the feature.
 
 ```sh
+# once: mint the operator credentials into a file, not into the run command
+printf 'BLUEPENCIL_ADMIN_SECRET=%s\nBLUEPENCIL_TOKEN_KEY=%s\n' \
+  "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > bluepencil.env
+chmod 0600 bluepencil.env
+
 docker run -d --name bluepencil-hub -p 127.0.0.1:8787:8787 -v bluepencil-notes:/data \
-  -e BLUEPENCIL_ADMIN_SECRET="$(openssl rand -hex 32)" \
-  -e BLUEPENCIL_TOKEN_KEY="$(openssl rand -hex 32)" \
+  --env-file bluepencil.env \
   ghcr.io/popoboxxo/bluepencil:0.11.1
 ```
+
+The shared secret is deliberately absent here: the entrypoint generates it into the volume and
+reuses it on every start, which is already the stable form. Inlining
+`-e BLUEPENCIL_AUTH_SECRET="$(openssl rand -hex 32)"` into `docker run` instead would mint a new
+secret on every container re-creation, so every client that saved the old one loses access. If you
+must supply it yourself, append a stable `BLUEPENCIL_AUTH_SECRET=…` to `bluepencil.env` (or mount a
+Docker secret) — never generate it inline.
 
 At `{base}/admin` (`/admin/` is the same page) the operator:
 
@@ -106,9 +151,11 @@ Security caveats:
   credentials other clients use; publishing it is publishing the key ring.
 - **Terminate TLS in front of it.** The image has no TLS of its own, and the admin secret crosses
   the wire on every request.
-- **The journal is public.** `GET {base}/journal` is answered without a credential (like
-  `{base}/config`); do not expose a hub on an untrusted network and expect the audit trail to stay
-  private.
+- **The probes and the journal are public.** `GET {base}/health`, `GET {base}/config` and
+  `GET {base}/journal` are answered without a credential, and so is the CORS `OPTIONS` preflight on
+  the API routes (when `--cors` is set); the probes carry no note data, but the journal does — it
+  names the audited `noteId`, the `actor` and a `summary`. Do not expose a hub on an untrusted
+  network and expect the audit trail to stay private.
 - **The admin throttle keys on the socket peer address.** Behind a reverse proxy all operators
   share one budget (10 failures per 5 minutes), because every request arrives from the proxy's
   address. Bind the admin surface to a dedicated origin/loopback, or set a separate trust boundary
@@ -159,8 +206,10 @@ container's process user: the image runs as uid 1000 (`node`), so either `chown 
 file or set `user:` / `BLUEPENCIL_UID`/`BLUEPENCIL_GID` to the host uid/gid that owns it. A file
 owned by another user with the default `user: 1000` is refused the same way.
 
-**Health and ordering.** Each leaf has a `HEALTHCHECK` against `{base}/config`, which needs no
-credential; the aggregator uses `depends_on: service_healthy`, so it does not try to verify peers
+**Health and ordering.** The image built from this repository defines a `HEALTHCHECK` against
+`{base}/health`, which needs no credential since #109 (0.11.2); the federation example still pins
+`0.10.3`, where `/health` is gated, so its compose healthchecks use `{base}/config` until the pin
+moves. The aggregator uses `depends_on: service_healthy`, so it does not try to verify peers
 before they answer. A peer that is merely unreachable at start does not take the aggregator down
 (it starts degraded and reports `partial`); a registry, identity or nesting error is a start
 refusal (exit 4) and `restart: on-failure:5` stops the loop after a few attempts.
@@ -191,7 +240,7 @@ docker run -i --rm --network bluepencil-federation \
 admits RFC1918/ULA/CGNAT addresses but never link-local or cloud-metadata targets. `--env-file .env`
 supplies the registry credentials (`BP_DEV_TOKEN` and `BP_STAGING_TOKEN` — both instance entries
 reference them), `--user` keeps the `0600` owner check satisfied when the host uid differs from the
-image's `node` user, and `--no-healthcheck` disables the image's hub-only `/config` probe: a
+image's `node` user, and `--no-healthcheck` disables the image's hub-only `/health` probe: a
 federator has no HTTP endpoint and would otherwise report `unhealthy` forever.
 
 **Both bins are in the image.** It ships `dist/server.js` and `dist/federator.js` behind the

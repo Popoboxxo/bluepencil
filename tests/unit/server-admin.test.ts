@@ -116,6 +116,75 @@ describe("the admin surface exists only where it was switched on", () => {
   });
 });
 
+describe("the admin status names every accepted client credential (#112)", () => {
+  /**
+   * The bug (#112): `auth` named only the strongest credential, so a hub that accepted both a
+   * signed token and the shared secret looked like a token-only hub. `auth` now says
+   * `token+secret`, and the additive `credentials` list names them in acceptance order.
+   */
+  async function statusOf(options: Partial<ServerOptions>): Promise<Record<string, unknown>> {
+    const { port } = await serve({ adminSecret: ADMIN, ...options });
+    const status = await call(port, `${API}/admin/status`, { headers: { "x-bluepencil-admin": ADMIN } });
+    expect(status.status).toBe(200);
+    return status.json;
+  }
+
+  it("reports a token-only hub as token / [token]", async () => {
+    const json = await statusOf({ tokenKey: KEY });
+    expect(json.auth).toBe("token");
+    expect(json.credentials).toEqual(["token"]);
+  });
+
+  it("reports a secret-only hub as secret / [secret]", async () => {
+    const json = await statusOf({ authSecret: CLIENT_CREDENTIAL });
+    expect(json.auth).toBe("secret");
+    expect(json.credentials).toEqual(["secret"]);
+  });
+
+  it("reports a hub that accepts both as token+secret / [token, secret]", async () => {
+    const json = await statusOf({ authSecret: CLIENT_CREDENTIAL, tokenKey: KEY });
+    expect(json.auth).toBe("token+secret");
+    // Token first: the stronger credential is the one a client should prefer.
+    expect(json.credentials).toEqual(["token", "secret"]);
+  });
+
+  it("reports a hub without a client credential as none / []", async () => {
+    const json = await statusOf({});
+    expect(json.auth).toBe("none");
+    expect(json.credentials).toEqual([]);
+  });
+
+  it("carries no credential value in the status payload", async () => {
+    const json = await statusOf({ authSecret: CLIENT_CREDENTIAL, tokenKey: KEY });
+    const body = JSON.stringify(json);
+    expect(body).not.toContain(CLIENT_CREDENTIAL);
+    expect(body).not.toContain(KEY);
+    expect(body).not.toContain(ADMIN);
+  });
+
+  it("actually accepts both credentials on the notes routes", async () => {
+    // The status answer is only true if the gate behind it is: this is the premise of #108 — a
+    // hub with a token key must not have stopped accepting the shared secret.
+    const { port } = await serve({ adminSecret: ADMIN, authSecret: CLIENT_CREDENTIAL, tokenKey: KEY });
+
+    const viaSecret = await call(port, `${API}/notes`, {
+      headers: { "x-bluepencil-auth": CLIENT_CREDENTIAL },
+    });
+    expect(viaSecret.status).toBe(200);
+
+    const minted = await call(port, `${API}/admin/devices`, {
+      method: "POST",
+      headers: { "x-bluepencil-admin": ADMIN },
+      body: { device: "both-credential-device" },
+    });
+    expect(minted.status).toBe(201);
+    const viaToken = await call(port, `${API}/notes`, {
+      headers: { authorization: "Bearer " + String(minted.json.token) },
+    });
+    expect(viaToken.status).toBe(200);
+  });
+});
+
 describe("the admin secret bridges to the notes API", () => {
   it("edits notes with the one credential the page holds", async () => {
     const { port } = await serve({ adminSecret: ADMIN, authSecret: CLIENT_CREDENTIAL });
@@ -335,6 +404,9 @@ describe("CORS on the admin surface", () => {
     const preflight = await call(port, `${API}/admin/status`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
     expect((preflight.headers.get("access-control-allow-headers") ?? "").toLowerCase()).toContain("x-bluepencil-admin");
+    // `/admin/status` documents GET only, so the preflight must not advertise the notes API's
+    // `POST`/`PATCH` (#102).
+    expect(preflight.headers.get("access-control-allow-methods")).toBe("GET, OPTIONS");
   });
 
   it("[FR-6.8] refuses OPTIONS on the admin surface when no CORS origin is configured", async () => {
