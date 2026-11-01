@@ -37,6 +37,18 @@ const here = dirname(fileURLToPath(import.meta.url));
 const extDist = join(here, "dist");
 const HOST_PORT = 9431;
 
+/** The Authorization header the options page's connection probe sent to the fixture API (#105). */
+let probeApiAuthorization = null;
+
+/**
+ * How often the slow `/config` fixture was actually requested (#110).
+ *
+ * The stale-probe case asserts that the probe's result does not replace "Saved.". That condition is
+ * trivially true if the probe never ran at all, so the fixture counts its hits and the case asserts
+ * one of them: the green then says "the answer was discarded", not "there was no answer".
+ */
+let slowConfigHits = 0;
+
 /** The repository root; the new cases serve built artefacts (`dist/server.js`, `dist/attach.js`). */
 const repoRoot = join(here, "..");
 /** The built reference hub. The live round-trip case starts it as a child process. */
@@ -171,6 +183,51 @@ async function startHost() {
     if (url.startsWith("/hub")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(HUB_HTML);
+      return;
+    }
+    // A reachable hub-shaped API for the options page's "Test connection" probe (#105). It is a
+    // fixture, not the real hub: the live hub is started later, for the round-trip cases, and the
+    // options page is driven before it. The shape is the reference `/config` contract, and `/notes`
+    // records the Authorization header so the smoke can prove which credential left the browser
+    // without printing the value.
+    if (url.startsWith("/probe-api/config")) {
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "access-control-allow-origin": "*",
+      });
+      res.end(JSON.stringify({
+        name: "smoke probe hub",
+        app: "smoke probe hub",
+        version: "9.9.9-probe",
+        base: "/probe-api",
+        auth: "token",
+        readOnly: false,
+        environment: "dev",
+        federates: false,
+        bind: { host: "127.0.0.1", port: HOST_PORT, loopbackOnly: true },
+      }));
+      return;
+    }
+    if (url.startsWith("/probe-api/notes")) {
+      probeApiAuthorization = req.headers.authorization ?? null;
+      res.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "access-control-allow-origin": "*",
+      });
+      res.end(JSON.stringify({ notes: [] }));
+      return;
+    }
+    // A deliberately slow `/config`, used to prove that a probe finishing *after* a save cannot
+    // overwrite the newer "Saved." status (the stale-result guard in options.ts).
+    if (url.startsWith("/probe-api/slow-config")) {
+      slowConfigHits += 1;
+      setTimeout(() => {
+        res.writeHead(200, {
+          "content-type": "application/json; charset=utf-8",
+          "access-control-allow-origin": "*",
+        });
+        res.end(JSON.stringify({ name: "slow probe hub", version: "9.9.9-slow", auth: "none" }));
+      }, 1200);
       return;
     }
     if (url.startsWith("/loader")) {
@@ -1245,10 +1302,15 @@ async function checkInBrowser() {
         el.dispatchEvent(new Event("change", { bubbles: true }));
       };
       set("store", "http");
-      set("endpoint", "http://127.0.0.1:8787/bluepencil");
+      // The trailing slash is deliberate (#110): the page must store exactly what was typed. An
+      // auto-append of /notes or a normalisation of the slash would fail the exact-value check below.
+      set("endpoint", "http://127.0.0.1:8787/bluepencil/");
       set("auth", "token");
       set("deviceName", "smoke-laptop");
-      set("token", ${JSON.stringify(smokeToken)});
+      // Pasted with surrounding whitespace on purpose (#110): the probe and the layer trim it via
+      // configuredCredential, so storage must hold the trimmed value too — otherwise the saved
+      // settings and the header actually sent can disagree.
+      set("token", ${JSON.stringify("  " + smokeToken + "\n")});
       document.getElementById("form").requestSubmit();
       return true;
     })()`);
@@ -1274,6 +1336,10 @@ async function checkInBrowser() {
     ok("the options page stores the credential mode, not just a token",
       saved.settings?.auth === "token" && saved.settings?.deviceName === "smoke-laptop",
       JSON.stringify(saved.settings));
+    // #110: the field accepts a paste with a stray newline; storage gets the value the layer will
+    // actually send, so the round from storage to request cannot differ by whitespace.
+    ok("the token is stored trimmed, so storage and the header agree",
+      saved.settings?.token === smokeToken, `stored=${JSON.stringify(saved.settings?.token)}`);
     // A save that never happened must not look like a slow one: the page says so itself, and this
     // turns "timed out after 20000 ms" into the sentence that says why (a refused hub URL, a
     // validation block) — the failure mode measured on CI.
@@ -1289,6 +1355,178 @@ async function checkInBrowser() {
     ok("the token mode names the header it will send",
       /Authorization: Bearer/i.test(saved.hint),
       JSON.stringify(saved.hint));
+
+    // #110: the field names the full API base, and the value is stored byte-for-byte. The adapter
+    // appends /notes itself, so a page that "helpfully" completed the URL would send every note to
+    // .../notes/notes. The trailing slash in the typed value is the second half of the check: neither
+    // a missing base path nor a present trailing slash may be normalised away.
+    ok("the Hub URL is stored exactly as typed, with no appended /notes",
+      saved.settings?.endpoint === "http://127.0.0.1:8787/bluepencil/",
+      JSON.stringify(saved.settings?.endpoint));
+
+    const optionsUi = JSON.parse(await browser.evaluate(`(() => {
+      const endpoint = document.getElementById("endpoint");
+      const helper = document.getElementById("endpoint-hint");
+      const button = document.getElementById("test-connection");
+      const labels = endpoint?.labels ? Array.from(endpoint.labels) : [];
+      return JSON.stringify({
+        placeholder: endpoint?.getAttribute("placeholder") ?? null,
+        helper: helper?.textContent ?? null,
+        helperVisible: helper !== null && helper.getClientRects().length > 0,
+        describedBy: endpoint?.getAttribute("aria-describedby") ?? null,
+        labelText: labels.map((label) => label.textContent.trim()).join(" "),
+        hintInsideLabel: helper !== null && labels.some((label) => label.contains(helper)),
+        button: button === null ? null : {
+          type: button.getAttribute("type"),
+          text: button.textContent.trim(),
+          disabled: button.disabled,
+          hidden: button.hidden,
+        },
+      });
+    })()`));
+    ok("the Hub URL placeholder names the full API base",
+      /\/api\/v1\/bluepencil/.test(optionsUi.placeholder ?? ""),
+      JSON.stringify(optionsUi.placeholder));
+    ok("the Hub URL field explains the base path and that /notes is the hub's route",
+      optionsUi.helperVisible === true && /base path/i.test(optionsUi.helper ?? "") &&
+        /\/notes/.test(optionsUi.helper ?? ""),
+      JSON.stringify(optionsUi.helper));
+    ok("the options page offers a Test connection button that is not a submit",
+      optionsUi.button?.type === "button" && optionsUi.button?.text === "Test connection" &&
+        optionsUi.button?.disabled === false && optionsUi.button?.hidden === false,
+      JSON.stringify(optionsUi.button));
+    // The hint explains the field; it must not become part of its accessible name. Binding it with
+    // aria-describedby keeps the name "Hub URL" and still announces the explanation.
+    ok("the Hub URL hint is a description, not part of the accessible name",
+      optionsUi.describedBy === "endpoint-hint" && optionsUi.labelText === "Hub URL" &&
+        optionsUi.hintInsideLabel === false,
+      JSON.stringify({
+        describedBy: optionsUi.describedBy,
+        labelText: optionsUi.labelText,
+        hintInsideLabel: optionsUi.hintInsideLabel,
+      }));
+
+    // The probe is only meaningful for the hub store, so the button follows the same visibility rule
+    // as the hub block. Read both sides of the switch, then leave the form on `http` for the probes.
+    const hubOnlyButton = JSON.parse(await browser.evaluate(`(() => {
+      const store = document.getElementById("store");
+      const button = document.getElementById("test-connection");
+      const set = (value) => {
+        store.value = value;
+        store.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      set("chromeStorage");
+      const outsideHub = { hidden: button.hidden, disabled: button.disabled };
+      set("http");
+      const insideHub = { hidden: button.hidden, disabled: button.disabled };
+      return JSON.stringify({ outsideHub, insideHub });
+    })()`));
+    ok("the Test connection button is only visible and enabled for the hub store",
+      hubOnlyButton.outsideHub.hidden === true && hubOnlyButton.outsideHub.disabled === true &&
+        hubOnlyButton.insideHub.hidden === false && hubOnlyButton.insideHub.disabled === false,
+      JSON.stringify(hubOnlyButton));
+
+    // The full local snapshot, not just the settings key: the probe must write *nothing*, and a new
+    // key appearing under it would be a storage change just as much as a changed setting.
+    const storageSnapshot = `(async () => {
+      const all = await chrome.storage.local.get(null);
+      return JSON.stringify(Object.keys(all).sort().map((key) => [key, all[key]]));
+    })()`;
+    const settingsBeforeProbe = await browser.evaluate(storageSnapshot);
+
+    // #105, the failure path: a closed port. Nothing listens there, so this proves the probe reports
+    // the hub as unreachable and — the important part — writes nothing while doing it. The button is
+    // driven with a real click, the same way a user presses it. The port comes from `freePort()`
+    // rather than 8787: a developer with a hub running locally must not turn this into a false red.
+    const closedPort = await freePort();
+    await browser.evaluate(`(() => {
+      document.getElementById("endpoint").value = "http://127.0.0.1:${closedPort}/bluepencil";
+      return true;
+    })()`);
+    await browser.click("#test-connection");
+    const unreachableShown = await poll(browser, `(() => {
+      const status = document.getElementById("status");
+      return !document.getElementById("test-connection").disabled &&
+        /could not reach/i.test(status.textContent);
+    })()`, 15000);
+    const unreachableStatus = JSON.parse(await browser.evaluate(`(() => {
+      const status = document.getElementById("status");
+      return JSON.stringify({ text: status.textContent, kind: status.dataset.kind ?? null });
+    })()`));
+    ok("the probe reports a closed port as unreachable",
+      unreachableShown && unreachableStatus.kind === "error",
+      JSON.stringify(unreachableStatus));
+
+    // #105, the success path: a reachable hub-shaped API on the fixture host. The URL is changed in
+    // the form but *not* saved, which is also how a user checks a URL before committing to it.
+    probeApiAuthorization = null;
+    await browser.evaluate(`(() => {
+      const endpoint = document.getElementById("endpoint");
+      endpoint.value = "http://127.0.0.1:${HOST_PORT}/probe-api";
+      return true;
+    })()`);
+    await browser.click("#test-connection");
+    const connectedShown = await poll(browser, `(() => {
+      const status = document.getElementById("status");
+      return !document.getElementById("test-connection").disabled &&
+        /connected to smoke probe hub/i.test(status.textContent) &&
+        /credential was accepted/i.test(status.textContent);
+    })()`, 15000);
+    const connectedStatus = JSON.parse(await browser.evaluate(`(() => {
+      const status = document.getElementById("status");
+      return JSON.stringify({ text: status.textContent, kind: status.dataset.kind ?? null });
+    })()`));
+    ok("the probe surfaces the /config summary and the accepted credential",
+      connectedShown && /version 9\.9\.9-probe/.test(connectedStatus.text) &&
+        /auth token/.test(connectedStatus.text) && /read-only no/.test(connectedStatus.text) &&
+        /environment dev/.test(connectedStatus.text) && /federates no/.test(connectedStatus.text),
+      JSON.stringify(connectedStatus));
+    // The header is the contract from `handoff.ts`: a signed token leaves as Authorization: Bearer.
+    // The value is compared here in Node, never printed into the page.
+    ok("the probe sends the credential in the header the layer would send",
+      probeApiAuthorization === `Bearer ${smokeToken}`,
+      `authorization=${probeApiAuthorization === null ? "missing" : "present"}`);
+    ok("the probe says whether it worked, in the existing status element",
+      connectedStatus.kind === "ok", JSON.stringify(connectedStatus));
+
+    const settingsAfterProbe = await browser.evaluate(storageSnapshot);
+    ok("the probe writes nothing to chrome.storage (full snapshot)",
+      settingsAfterProbe === settingsBeforeProbe,
+      `before=${settingsBeforeProbe} after=${settingsAfterProbe}`);
+
+    // The race the stale-result guard exists for: a probe that is still in flight when Save runs must
+    // not replace "Saved." with a result about the now-superseded URL. The fixture delays /config by
+    // 1.2 s, which is far longer than the save.
+    slowConfigHits = 0;
+    await browser.evaluate(`(() => {
+      const set = (id, value) => {
+        const el = document.getElementById(id);
+        el.value = value;
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      set("auth", "none");
+      set("endpoint", "http://127.0.0.1:${HOST_PORT}/probe-api/slow-config");
+      return true;
+    })()`);
+    await browser.click("#test-connection");
+    await browser.evaluate(`(() => { document.getElementById("form").requestSubmit(); return true; })()`);
+    const savedDuringProbe = await poll(
+      browser,
+      'document.getElementById("status").textContent === "Saved."',
+      5000,
+    );
+    // Let the slow probe answer. It must find itself superseded and leave the status line alone.
+    await new Promise((resolve) => setTimeout(resolve, 1800));
+    const statusAfterStaleProbe = await browser.evaluate(
+      'document.getElementById("status").textContent',
+    );
+    ok("a probe that finishes after a save does not overwrite the newer status",
+      savedDuringProbe && statusAfterStaleProbe === "Saved.",
+      `saved=${savedDuringProbe} status=${JSON.stringify(statusAfterStaleProbe)}`);
+    // Without this the check above can pass because the probe never ran: "Saved." also stays when
+    // there is no probe answer to overwrite it. The fixture counts the requests it actually served.
+    ok("the stale-probe case really hit the slow /config route",
+      slowConfigHits >= 1, `slow /config requests=${slowConfigHits}`);
 
     // Readability, in both schemes.
     //
@@ -1345,6 +1583,19 @@ async function checkInBrowser() {
         return { label, background, color: cs.color, chain,
                  ratio: bg && fg ? ratio(fg, bg) : null };
       };
+      // The status line is text on the page's own Canvas, and each state is a different colour.
+      // Missing it is how the warn colour regressed: it borrowed the border token, which is 3.19:1
+      // as 0.9rem text. Every state is therefore sampled in both schemes, by setting the same
+      // data-kind attribute the page sets.
+      const statusNode = document.querySelector("#status");
+      const sampleStatus = (kind, label) => {
+        const previous = statusNode.dataset.kind;
+        statusNode.dataset.kind = kind;
+        const result = sample("#status", label);
+        if (previous === undefined) delete statusNode.dataset.kind;
+        else statusNode.dataset.kind = previous;
+        return result;
+      };
       return JSON.stringify([
         sample("#environment", "the environment select"),
         sample("#appName", "a text field"),
@@ -1353,6 +1604,9 @@ async function checkInBrowser() {
         sample(".warn", "the hub warning"),
         sample(".hint", "a hint line"),
         sample(".disclosure", "the data disclosure"),
+        sampleStatus("ok", "the status line (ok)"),
+        sampleStatus("warn", "the status line (warn)"),
+        sampleStatus("error", "the status line (error)"),
       ]);
     })()`;
 

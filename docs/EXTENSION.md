@@ -12,12 +12,14 @@ npm run build:ext     # writes extension/dist/
 Then load it: `chrome://extensions` → enable *Developer mode* → *Load unpacked* → pick
 `extension/dist`.
 
-`npm run smoke:ext` verifies the build: 67 checks — static artefact checks, the host-embed detection
+`npm run smoke:ext` verifies the build: 133 checks — static artefact checks, the host-embed detection
 pinned against fake documents without a browser, and a real Chrome run. The browser run mounts the
 layer against a host page with `script-src 'self'`, asserts it actually mounted, and drives a second
 page that already carries `<bluepencil-notes>` to prove the extension steps aside there. The options
-page has its own cases in that suite — the credential mode, the header it means, and the expiry line —
-because the settings UI is the only place a credential is entered and it was otherwise untested.
+page has its own cases in that suite — the credential mode, the header it means, the expiry line, the
+full API base in the URL field, the *Test connection* probe against both a closed port and a
+reachable fixture, and the contrast of every status colour in both schemes — because the settings UI
+is the only place a credential is entered and it was otherwise untested.
 
 ### From a release
 
@@ -97,6 +99,29 @@ Notes stay in the browser profile.
 Switch the store to *on a hub* in the options page and give it a URL. The extension then hands the
 element a `data-endpoint` and the element talks to the hub directly, which is what makes notes
 shared across devices and visible to the MCP server.
+
+The URL is the **full API base**, base path included — `http://127.0.0.1:8787/api/v1/bluepencil`,
+not the bare origin and not `…/notes`; the layer appends `/notes`, `/config` and the other routes
+itself. The page stores exactly what you typed and never completes or normalises the URL.
+
+**Test connection** reads the URL and credential that are **on screen**, not the saved ones, so a
+value can be tested before it is committed. It stores nothing: the probe writes no settings and no
+notes, and its only visible effect is the message next to the button. It asks `GET /config` first
+and, when a credential is configured, `GET /notes` with the same header the layer would send. The
+`/notes` request is **status-only** — it cancels the response body instead of downloading the note
+corpus — so a large or slow hub cannot turn an accepted credential into a timeout. A wrong base path
+(`404`), an unreachable hub, a timeout, a rejected credential (`401`/`403`) and a credential that is
+not a legal header value are each named as such. A redirect (`30x`) gets its own outcome rather than
+"unreachable": the probe does not follow it — that would carry the credential to an origin you never
+entered — so a reverse proxy that upgrades http to https or normalises the path is reported as
+*the hub redirected*, and the message asks for the final URL (the browser hides the target of an
+opaque redirect, Node/undici names it). If `/config` succeeds but the `/notes` check times out or
+fails, the page keeps the hub summary and says only that the credential could not be verified — it
+does not report the hub as unreachable.
+
+The credential itself is stored trimmed: a paste with a stray newline or surrounding spaces is saved
+as the exact value the layer and the probe send, so what is in storage and what goes into the header
+cannot drift apart.
 
 **Binding matters more than the credential.** The default is loopback, and a loopback hub needs no
 authentication at all — the process is as protected as the file it writes to. The moment you pass
