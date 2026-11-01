@@ -41,7 +41,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import type { HandlerContext, ServerErrorCode, ServerRequest, ServerResponse } from "./handler";
-import { corsHeaders } from "./cors";
+import { corsHeaders, preflightResponse } from "./cors";
 import { writeAtomic } from "./atomic-write";
 import { renderAdminHtml } from "./admin-html";
 import { ADMIN_STRINGS, adminLanguage } from "./admin-i18n";
@@ -328,12 +328,14 @@ export function handleAdmin(request: ServerRequest, context: HandlerContext): Se
 
   // A CORS preflight carries no custom header — the browser cannot know the secret yet — so it is
   // answered before the gate. Only with `--cors`: without it there is no cross-origin caller to
-  // answer, and OPTIONS keeps the ordinary 405.
-  if (method === "OPTIONS" && context.cors !== undefined && context.cors !== "") {
+  // answer, and OPTIONS keeps the ordinary 405. The shared helper supplies the CORS vocabulary (and
+  // takes the door's own header); `documented` is authoritative for the advertised methods, so
+  // `/admin/status` does not advertise the notes API's `PATCH`.
+  const preflight = preflightResponse(method, context, documented, [ADMIN_HEADER]);
+  if (preflight !== null) {
     return {
-      status: 204,
-      headers: { ...adminCors(context), allow: [...documented, "OPTIONS"].join(", ") },
-      body: "",
+      ...preflight,
+      headers: { ...preflight.headers, allow: [...documented, "OPTIONS"].join(", ") },
     };
   }
 

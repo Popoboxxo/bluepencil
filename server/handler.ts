@@ -73,7 +73,7 @@ import { VERSION } from "../src/version";
 import { canonicalNote } from "../src/data/canonical";
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { validateNote } from "../src/data/schema";
-import { corsHeaders } from "./cors";
+import { corsHeaders, preflightResponse } from "./cors";
 import { credentialMode } from "./credentials";
 // The admin surface answers before the credential gate, so it must not import the gate — the
 // dependency runs one way: this router delegates to `handleAdmin`, whose only dependency on this
@@ -82,7 +82,7 @@ import { handleAdmin } from "./admin";
 
 // Re-exported so the existing imports from `./handler` keep working; the implementation lives in
 // `server/cors.ts`, which imports nothing and can therefore be used from `server/admin.ts` too.
-export { corsHeaders };
+export { corsHeaders, preflightResponse };
 
 /** Version reported by `GET {base}/health` — the same string every other artifact reports (FR-19). */
 export const SERVER_VERSION: string = VERSION;
@@ -539,7 +539,7 @@ function splitSegments(rest: string): string[] {
 function allowedMethods(segments: readonly string[]): string[] | null {
   const first = segments[0];
   if (segments.length === 1) {
-    if (first === "health") return ["GET"];
+    if (first === "health") return ["GET", "HEAD"];
     if (first === "config") return ["GET"];
     if (first === "notes") return ["GET", "POST"];
     if (first === "sessions") return ["GET"];
@@ -1285,6 +1285,16 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   if (allow === null) {
     return errorResponse(404, "not_found", `unknown endpoint ${pathname} — the API lives under ${base || "/"}`, context);
   }
+  // The CORS preflight (#98, #99, #102) is answered before every credential check and before the
+  // method table below — and only for a path the table already knows, so an arbitrary path keeps
+  // its 404 instead of turning into an empty 204 that announces an API which is not there. A
+  // browser sends OPTIONS without a credential (it cannot know one yet), so a check here could
+  // only refuse the pairing, never protect a note. Without `--cors` the helper returns null and a
+  // route keeps its ordinary 405/401 answer.
+  const preflight = preflightResponse(method, context, allow);
+  if (preflight !== null) {
+    return preflight;
+  }
   // FR-6.10: the hub describes itself to a caller that has no credential yet — a client has to be
   // able to ask *which* credential to bring, and a status display has to be able to ask what this
   // process is actually bound to. This is the one route that cannot sit behind the gate below, so it
@@ -1303,11 +1313,30 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
     }
     return configResponse(context);
   }
+  // The liveness probe is public for the same reason (#109), and for the container runtime's: a
+  // healthcheck that has to carry a credential turns "is this hub alive" into a 401 on every
+  // authenticated deployment. Its answer is three fields and carries no note, session or
+  // credential data, so it belongs in front of the gate exactly like `/config`. HEAD is the probe
+  // a `wget --spider` or a proxy sends; it is served rather than refused.
+  if (segments.length === 1 && segments[0] === "health") {
+    if (method !== "GET" && method !== "HEAD") {
+      const response = errorResponse(
+        405,
+        "method_not_allowed",
+        `${method} is not allowed on ${pathname} — documented method(s): GET, HEAD`,
+        context,
+      );
+      response.headers.allow = "GET, HEAD";
+      return response;
+    }
+    return health(context);
+  }
   // Authentication comes before the method check and before any route, and that placement is the
   // security property rather than a style choice: an unauthenticated caller must not be able to
   // learn which paths exist by watching 405s turn into 404s, and no route may forget the check.
-  // (The single message in front of it is the CORS preflight answered above — an OPTIONS that
-  // carries no credential and whose answer is CORS metadata only, not a route.)
+  // (The messages in front of it are the CORS preflight and the two public probes answered above —
+  // an OPTIONS that carries no credential and whose answer is CORS metadata only, and `/config` /
+  // `/health`, which carry no note and no secret.)
   //
   // It deliberately sits *after* the "not even under the base" 404. A request for something that is
   // not this API at all is not the hub's business, and answering 401 to it would turn every
@@ -1327,15 +1356,6 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   // `401 … no token key configured` the moment the header alone arms the check. What must not happen
   // is the *opposite* mistake: a presented token being dropped while a credential is required, which
   // is why the token path below is tried first whenever a verifier exists.
-  // A CORS preflight stands in front of this gate, and that is a rule of CORS rather than a hole in
-  // this hub: the browser sends OPTIONS without a credential — it cannot know one yet — so a check
-  // here could only refuse the pairing, never protect a note. The answer carries CORS metadata only,
-  // and an unauthenticated caller already learns that the path exists from the 401 it gets for a
-  // real request (a refusal is never a 404), so nothing is disclosed that the gate did not disclose
-  // before. Every request that carries data still passes `authorize` below (#98).
-  if (method === "OPTIONS" && context.cors !== undefined && context.cors !== "") {
-    return { status: 204, headers: corsHeaders(context.cors), body: "" };
-  }
   // The admin secret is a second credential for the notes routes only — the page edits notes with
   // it. Every other route (and the MCP door) keeps the client credential alone.
   const refusal = authorize(request, context, undefined, {
@@ -1363,8 +1383,9 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
     );
   }
 
+  // `/health` answered above and never reaches this dispatch: `allowedMethods` lists it only so the
+  // path passes the 404 gate and the preflight/405 can name its methods. One path, one answer.
   const first = segments[0];
-  if (first === "health") return health(context);
   if (first === "notes") {
     if (segments.length === 1) {
       return method === "GET" ? listNotes(query, context) : createNoteFromBody(request, context);

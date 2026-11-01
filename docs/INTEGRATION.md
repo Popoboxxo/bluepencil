@@ -130,7 +130,14 @@ degraded. The registry `base` values must include the API path
 
 A hub on loopback needs none: it is as protected as the file it writes to. The moment `--host`
 leaves loopback, one of the two **client** credentials has to be configured, and **every request
-under the base** must then carry it:
+that reads or writes note data under the base** must then carry it. The read-only probes
+`GET {base}/health` and `GET {base}/config` are exempt because they carry no note and no secret;
+`GET {base}/journal` is exempt too, but it is an audit read, not a probe — its entries name the
+audited `noteId`, the `actor` and a `summary`, so a hub on an untrusted network exposes its audit
+trail. The CORS `OPTIONS` preflight is unauthenticated **on the API routes** when `--cors` is
+configured (a browser cannot carry a credential yet); `OPTIONS {base}/journal` is not a preflight —
+the journal answers `GET` only and refuses `OPTIONS` with `405`. Gated routes: `/notes*`,
+`/sessions`, `/bundle` and `/mcp`.
 
 | Credential | Flag / environment | Header | Properties |
 |---|---|---|---|

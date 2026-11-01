@@ -404,6 +404,9 @@ describe("CORS on the admin surface", () => {
     const preflight = await call(port, `${API}/admin/status`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
     expect((preflight.headers.get("access-control-allow-headers") ?? "").toLowerCase()).toContain("x-bluepencil-admin");
+    // `/admin/status` documents GET only, so the preflight must not advertise the notes API's
+    // `POST`/`PATCH` (#102).
+    expect(preflight.headers.get("access-control-allow-methods")).toBe("GET, OPTIONS");
   });
 
   it("[FR-6.8] refuses OPTIONS on the admin surface when no CORS origin is configured", async () => {

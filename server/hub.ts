@@ -62,6 +62,7 @@ import {
   isApiPath,
   isLoopbackAddress,
   normalizeBase,
+  preflightResponse,
   requestPath,
   type AdminThrottle,
   type HandlerContext,
@@ -509,15 +510,22 @@ function readBody(request: IncomingMessage, limit: number): Promise<string> {
 
 function serveStatic(url: string, method: string, options: ResolvedOptions, response: NodeResponse): void {
   const pathname = requestPath(url);
-  if (method === "OPTIONS" && options.cors !== undefined && options.cors !== "") {
-    write(response, { status: 204, headers: corsHeaders(options.cors), body: "" });
+  // The static site answers its own preflight through the shared helper; `GET, HEAD, OPTIONS` is the
+  // documented pair, so the answer does not advertise the notes API's `POST`/`PATCH`.
+  const preflight = preflightResponse(method, options, ["GET", "HEAD"]);
+  if (preflight !== null) {
+    write(response, preflight);
     return;
   }
   if (method !== "GET" && method !== "HEAD") {
-    write(
-      response,
-      glueError(405, "method_not_allowed", `${method} is not allowed on ${pathname} — documented method(s): GET, HEAD`, options),
+    const refusal = glueError(
+      405,
+      "method_not_allowed",
+      `${method} is not allowed on ${pathname} — documented method(s): GET, HEAD`,
+      options,
     );
+    refusal.headers.allow = "GET, HEAD";
+    write(response, refusal);
     return;
   }
   let relative: string;
@@ -1557,12 +1565,14 @@ Federation (FR-6.15/FR-16.14):
   --limit <1..1000>              maximum notes in an aggregate (default 200)
 
 Authentication:
-  With --auth-secret (or BLUEPENCIL_AUTH_SECRET) every request under the base must present the
-  secret in the x-bluepencil-auth header; anything else is answered 401 {"error":{"code":
-  "unauthorized"}}. Without the flag there is no authentication at all — which is the right default
-  for a hub bound to loopback, and the wrong one as soon as it is not. Prefer the environment
-  variable: a secret on a command line is visible in the process list to every other user on the
-  machine. An empty value is rejected rather than treated as "off".
+  With --auth-secret (or BLUEPENCIL_AUTH_SECRET) the note-carrying routes — /notes*, /sessions,
+  /bundle and POST /mcp — require the secret in the x-bluepencil-auth header; a missing or wrong
+  value is answered 401 {"error":{"code":"unauthorized"}}. Public on purpose, because they carry no
+  note and no secret: /config, GET|HEAD /health, GET /journal (audit metadata only, no note body)
+  and the CORS OPTIONS preflight. Without the flag there is no authentication at all — which is the
+  right default for a hub bound to loopback, and the wrong one as soon as it is not. Prefer the
+  environment variable: a secret on a command line is visible in the process list to every other
+  user on the machine. An empty value is rejected rather than treated as "off".
 
   With --admin-secret (or BLUEPENCIL_ADMIN_SECRET, at least 16 characters) the hub serves an admin
   page at {base}/admin and the routes behind it. The page itself is not gated (it carries no notes);
@@ -1581,7 +1591,7 @@ Authentication:
 Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in http adapter):
   GET    {base}/config              name, app, federates, version, base, which credential, and the
                                     live binding — needs no credential itself (FR-6.10, FR-6.15)
-  GET    {base}/health              { ok, status, version }
+  GET|HEAD {base}/health            { ok, status, version }
   POST   {base}/mcp                 MCP over HTTP (tools/list, tools/call, resources, prompts) —
                                     POST only, no sessions, same credential and same store as the
                                     notes API (FR-16.8)
