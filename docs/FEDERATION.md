@@ -721,9 +721,10 @@ docker run -i --rm --network bluepencil-federation \
 process instead of reading the shell environment; the token lines in `.env.example` must be
 uncommented and filled. `--user` keeps the `0600` registry owner check satisfied when the host uid
 differs from the image's `node` user (1000). `--no-healthcheck` disables the image's `HEALTHCHECK`:
-it probes the hub's `/config`, a federator has no HTTP endpoint, and the probe would otherwise report
+it probes the hub's `/health`, a federator has no HTTP endpoint, and the probe would otherwise report
 `unhealthy` forever. `-i` keeps stdin open; without an attached client the process exits on stdin
-EOF. A federator has no `/config`, so `includeSelf` is a documented no-op there.
+EOF. A federator has no HTTP endpoint (no `/health`, no `/config`), so `includeSelf` is a documented
+no-op there.
 
 ## 15. Rollback
 

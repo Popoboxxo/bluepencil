@@ -159,7 +159,9 @@ describe("the gate stamps presence on both doors", () => {
     const presence = createPresence({ now: time.now });
     const context = hub({ authSecret: CLIENT_CREDENTIAL, presence });
 
-    const allowed = get(context, "/health", { "x-bluepencil-auth": CLIENT_CREDENTIAL });
+    // `/notes`, not `/health`: the liveness probe is answered before the gate (since 0.11.3, #109),
+    // so it never reaches `authorize` and can therefore never stamp a credential as present.
+    const allowed = get(context, "/notes", { "x-bluepencil-auth": CLIENT_CREDENTIAL });
     expect(allowed.status).toBe(200);
     expect(presence.snapshot()).toEqual({ token: null, secret: iso(START) });
   });
@@ -168,7 +170,7 @@ describe("the gate stamps presence on both doors", () => {
     const presence = createPresence({ now: () => START });
     const context = hub({ authSecret: CLIENT_CREDENTIAL, presence });
 
-    const refused = get(context, "/health", { "x-bluepencil-auth": "not-it" });
+    const refused = get(context, "/notes", { "x-bluepencil-auth": "not-it" });
     expect(refused.status).toBe(401);
     expect(presence.snapshot()).toEqual({ token: null, secret: null });
   });
@@ -179,13 +181,23 @@ describe("the gate stamps presence on both doors", () => {
     const accepting: TokenVerifier = () => ({ ok: true, device: "graph-viewer" });
     const acceptingHub = hub({ verifyToken: accepting, presence });
 
-    expect(get(acceptingHub, "/health", { authorization: "Bearer whatever" }).status).toBe(200);
+    expect(get(acceptingHub, "/notes", { authorization: "Bearer whatever" }).status).toBe(200);
     expect(presence.snapshot()).toEqual({ token: iso(START), secret: null });
 
     const other = createPresence({ now: () => START });
     const refusing: TokenVerifier = () => ({ ok: false, reason: "revoked" });
-    expect(get(hub({ verifyToken: refusing, presence: other }), "/health", { authorization: "Bearer whatever" }).status).toBe(401);
+    expect(get(hub({ verifyToken: refusing, presence: other }), "/notes", { authorization: "Bearer whatever" }).status).toBe(401);
     expect(other.snapshot()).toEqual({ token: null, secret: null });
+  });
+
+  it("does not stamp on a route answered before the gate — /health stays credential-free", () => {
+    const presence = createPresence({ now: () => START });
+    const context = hub({ authSecret: CLIENT_CREDENTIAL, presence });
+
+    // #109: the probe is answered before `authorize`, so a credential on it proves nothing.
+    expect(get(context, "/health", { "x-bluepencil-auth": CLIENT_CREDENTIAL }).status).toBe(200);
+    expect(get(context, "/health", { "x-bluepencil-auth": "not-it" }).status).toBe(200);
+    expect(presence.snapshot()).toEqual({ token: null, secret: null });
   });
 
   it("does not stamp the admin secret — it is the operator's bridge, not a client credential", () => {

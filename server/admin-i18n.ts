@@ -47,6 +47,7 @@ export interface AdminStrings {
   overviewEnvironment: string;
   overviewNotes: string;
   overviewClientCredential: string;
+  overviewAcceptedCredentials: string;
   overviewTokenIssuing: string;
   overviewRevocation: string;
   overviewIssuedCredentials: string;
@@ -54,6 +55,9 @@ export interface AdminStrings {
   overviewFederates: string;
   credentialToken: string;
   credentialSecret: string;
+  credentialTokenAndSecret: string;
+  credentialKindToken: string;
+  credentialKindSecret: string;
   credentialNone: string;
   issuingAvailable: string;
   issuingUnavailable: string;
@@ -176,6 +180,7 @@ const en: AdminStrings = {
   overviewEnvironment: "Environment",
   overviewNotes: "Notes",
   overviewClientCredential: "Client credential",
+  overviewAcceptedCredentials: "Accepted credentials",
   overviewTokenIssuing: "Token issuing",
   overviewRevocation: "Revocation",
   overviewIssuedCredentials: "Issued client credentials",
@@ -183,6 +188,9 @@ const en: AdminStrings = {
   overviewFederates: "Federates",
   credentialToken: "signed token (--token-key)",
   credentialSecret: "shared secret (--auth-secret)",
+  credentialTokenAndSecret: "signed token (--token-key) + shared secret (--auth-secret)",
+  credentialKindToken: "token",
+  credentialKindSecret: "shared secret",
   credentialNone: "none",
   issuingAvailable: "available",
   issuingUnavailable: "not available — this hub has no --token-key",
@@ -303,6 +311,7 @@ const de: AdminStrings = {
   overviewEnvironment: "Umgebung",
   overviewNotes: "Notizen",
   overviewClientCredential: "Client-Anmeldedaten",
+  overviewAcceptedCredentials: "Akzeptierte Anmeldedaten",
   overviewTokenIssuing: "Token-Ausstellung",
   overviewRevocation: "Widerruf",
   overviewIssuedCredentials: "Ausgegebene Client-Credentials",
@@ -310,6 +319,9 @@ const de: AdminStrings = {
   overviewFederates: "Föderiert",
   credentialToken: "signiertes Token (--token-key)",
   credentialSecret: "geteiltes Secret (--auth-secret)",
+  credentialTokenAndSecret: "signiertes Token (--token-key) + geteiltes Secret (--auth-secret)",
+  credentialKindToken: "Token",
+  credentialKindSecret: "geteiltes Secret",
   credentialNone: "keine",
   issuingAvailable: "verfügbar",
   issuingUnavailable: "nicht verfügbar — dieser Hub hat keinen --token-key",

@@ -108,6 +108,17 @@ describe("GET {base}/config — the answer itself", () => {
     expect(configOf({ verifyToken: () => ({ ok: false, reason: "expired" }) })["auth"]).toBe("token");
   });
 
+  it("keeps the three-value vocabulary when both credentials are configured", () => {
+    // `/config` is the pre-credential probe every client parses; the federation client accepts
+    // only none | secret | token. A hub that accepts both still names the stronger one here — the
+    // richer `token+secret` answer lives on `/admin/status` (#112).
+    const both = configOf({
+      authSecret: SHARED,
+      verifyToken: () => ({ ok: false, reason: "expired" }),
+    });
+    expect(both["auth"]).toBe("token");
+  });
+
   it("reports name, version, base, environment and read-only", () => {
     const body = configOf({ hubName: "Unraid", readOnly: true, environment: "staging" });
     expect(body["name"]).toBe("Unraid");
@@ -151,6 +162,38 @@ describe("GET {base}/config — the answer itself", () => {
     const request: ServerRequest = { method: "GET", url: "/config", headers: {}, body: "" };
     expect(handleRequest(request, context()).status).toBe(404);
     expect(get("/notes").status).toBe(200);
+  });
+
+  it("answers a CORS preflight without a credential (#102)", () => {
+    // A browser sends OPTIONS before it can know which credential to bring; the answer carries CORS
+    // metadata only, never the config body and never a 401.
+    const response = handleRequest(
+      {
+        method: "OPTIONS",
+        url: `${BASE}/config`,
+        headers: { origin: "https://app.example", "access-control-request-method": "GET" },
+        body: "",
+      },
+      context({ cors: "*", authSecret: SHARED }),
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.body).toBe("");
+    expect(response.headers["access-control-allow-origin"]).toBe("*");
+    // `GET` is what `/config` documents; the preflight advertises exactly that plus OPTIONS, never
+    // the notes API's `POST`/`PATCH` (#102).
+    expect(response.headers["access-control-allow-methods"]).toBe("GET, OPTIONS");
+  });
+
+  it("keeps the 405 without --cors, because there is no cross-origin caller to answer", () => {
+    const response = handleRequest(
+      { method: "OPTIONS", url: `${BASE}/config`, headers: {}, body: "" },
+      context({ authSecret: SHARED }),
+    );
+
+    expect(response.status).toBe(405);
+    expect(response.headers.allow).toBe("GET");
+    expect(response.headers["access-control-allow-origin"]).toBeUndefined();
   });
 });
 

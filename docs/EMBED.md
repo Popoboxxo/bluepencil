@@ -274,7 +274,7 @@ them out of the box.
 
 | Method | Path | Request | Response |
 |---|---|---|---|
-| `GET` | `{base}/health` | – | `{ ok: true, status, version }` |
+| `GET`, `HEAD` | `{base}/health` | – | `{ ok: true, status, version }` — `HEAD` answers the same status with an empty body, for probes and proxies. |
 | `GET` | `{base}/notes` | Query params: `route`, `intent`, `type`, `session`, `source`, `environment`, `includeDone`, `since`, repeated `status` | `{ notes: Note[] }` |
 | `POST` | `{base}/notes` | `NoteDraft` JSON — an unknown key is refused (`400`), never dropped | `{ note: Note }` |
 | `GET` | `{base}/notes/{id}` | optional `?environment=` | `{ note: Note }` — one note, so a tool does not fetch the whole set to read it. |
@@ -284,6 +284,15 @@ them out of the box.
 | `GET` | `{base}/sessions` | – | `{ sessions: Session[] }` |
 | `GET` | `{base}/bundle` | – | Canonical bundle (`src/data`) — for agents and exports. |
 | `GET` | `{base}/journal` | optional `?since=<seq>` | `{ journal: { backend, location, entries, lastSeq }, entries }` — the mutation history (FR-18). |
+
+`GET {base}/health` needs no credential: a probe or a status display can ask whether the store is
+alive before it has one. `/health` carries `{ ok, status, version }` only — no note and no secret — and
+`HEAD` answers it too (same status, empty body). The same is true of `GET {base}/config`. The CORS
+`OPTIONS` preflight is answered without a credential on every known API route (`/config`, `/health`,
+`/notes*`, `/sessions`, `/bundle`, `/admin*`, `/mcp`) and for statically served files when CORS is
+enabled. `GET {base}/journal` is public as well, but it is an audit read: its entries carry the
+audited `noteId`, the `actor` and a `summary`. `OPTIONS {base}/journal` is not a preflight — the
+journal is `GET`-only and answers `405`.
 
 Who asked for a change: `X-Bluepencil-Actor` (or the payload's `author`) becomes the
 journal entry's `actor` and the `Actor:` trailer of a `git`-journal commit (FR-18).

@@ -91,6 +91,32 @@ describe("elementAttributesFor", () => {
     expect(attributes.token).toBeUndefined();
     expect(attributes["token-header"]).toBeUndefined();
   });
+
+  it("lets the none mode win over a stale token, exactly as the probe does", () => {
+    const attributes = elementAttributesFor(
+      { ...base, store: "http", endpoint: "http://x.test", auth: "none", token: "left-over" },
+      "en",
+    );
+    expect(attributes.token).toBeUndefined();
+    expect(attributes["token-header"]).toBeUndefined();
+  });
+
+  it("trims a pasted credential and treats whitespace-only as not configured", () => {
+    const trimmed = elementAttributesFor(
+      { ...base, store: "http", endpoint: "http://x.test", auth: "token", token: "  a.b.c\n" },
+      "en",
+    );
+    expect(trimmed.token).toBe("a.b.c");
+    expect(trimmed["token-header"]).toBe("authorization");
+
+    const blank = elementAttributesFor(
+      { ...base, store: "http", endpoint: "http://x.test", auth: "token", token: "   " },
+      "en",
+    );
+    expect(blank.token).toBeUndefined();
+    expect(blank["token-header"]).toBeUndefined();
+    expect(blank["token-scheme"]).toBeUndefined();
+  });
 });
 
 describe("the settings vocabulary the layer actually accepts", () => {

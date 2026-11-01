@@ -111,9 +111,9 @@ version: 1
 requires-trace-from: []
 ```
 
-Hub authentication, required as soon as it leaves loopback: a configured credential must be presented on every request under the base, and a missing or wrong one is answered 401 unauthorized before routing
+Hub authentication, required as soon as it leaves loopback: a configured credential must be presented on every request that carries note data under the base (/notes, /sessions, /bundle and /mcp), and a missing or wrong one is answered 401 unauthorized before routing; the read-only probes /config and /health (FR-6.10, #109) are exempt because they carry no note and no secret, and the CORS OPTIONS preflight on the API routes (#102) is exempt because a browser cannot know a credential yet; GET {base}/journal is a separate, deliberate exception — it is public but carries audit metadata (noteId, actor, summary), so exposing it is a documented risk rather than a probe
 
-*Acceptance criteria:* A hub started with `--auth-secret` refuses an unauthenticated request and answers one carrying the secret; a hub with no credential configured behaves exactly as before
+*Acceptance criteria:* A hub started with `--auth-secret` refuses an unauthenticated note request and answers one carrying the secret; `GET {base}/health` and `GET {base}/config` answer without one; `GET {base}/journal` answers without one and its payload names the audited note and actor; a hub with no credential configured behaves exactly as before
 
 ## FR-6.8 Signed, per-device tokens: the hub signs expiring tokens carrying a jti and a read/write…
 

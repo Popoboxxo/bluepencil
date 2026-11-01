@@ -8,9 +8,10 @@
  *
  * Two things are load-bearing and easy to get wrong, so they are pinned explicitly:
  *
- *   - the check runs *before* routing, so no route can forget it. A test walks a set of paths that
- *     have nothing to do with notes (health, an unknown path, a wrong method) and requires the same
- *     401 from all of them. If the check were inside a route, `/health` would still answer.
+ *   - the check runs *before* routing, so no note route can forget it. A test walks the note-bearing
+ *     paths and requires the same 401 from all of them. If the check were inside a route, those
+ *     routes would still answer. The liveness probe `/health` is the deliberate exception (#109):
+ *     it answers in front of the gate because it carries no note, session or credential data.
  *   - it is not confused with `--read-only`. A read-only hub refuses writes with 403; an
  *     unauthenticated one refuses *reads* too, with 401. Getting those backwards is the easy mistake.
  */
@@ -145,26 +146,49 @@ describe("hub authentication — a hub with a secret", () => {
     expect(response.status).toBe(401);
   });
 
-  it("checks before routing, so no route is reachable without the secret", () => {
-    // If the check lived inside a route handler, `/health` and the note endpoints would answer
-    // normally. They are the ones worth protecting and the ones a probe would try first.
+  it("checks before routing, so no note route is reachable without the secret", () => {
+    // If the check lived inside a route handler, the note endpoints would answer normally. They are
+    // the ones worth protecting and the ones a probe would try first.
     //
     // `/nonsense` is deliberately absent from this list. `allowedMethods` returns null for an unknown
     // first segment, so it lands in the same "this is not the API" 404 as a path outside the base —
     // and that 404 runs first on purpose. Answering 401 to a path that is not the API at all would
     // make a hub on a shared host 401 every unrelated request, and it would leak nothing: the base
     // path is public either way.
+    //
+    // `/health` is absent for a different reason (#109): it is a liveness probe and carries no note,
+    // session or credential data, so it answers in front of the gate like `/config` (FR-6.10). See
+    // the dedicated assertion below.
     const { call } = harness(CREDENTIAL);
 
-    const paths = [
-      `${BASE}/health`,
-      `${BASE}/notes`,
-      `${BASE}/sessions`,
-      `${BASE}/bundle`,
-    ];
+    const paths = [`${BASE}/notes`, `${BASE}/sessions`, `${BASE}/bundle`];
     for (const path of paths) {
       expect(call({ url: path }).status, path).toBe(401);
     }
+  });
+
+  it("answers GET /health without a credential, because it carries no note data (#109)", () => {
+    // The health probe is what a container runtime and a status display ask first; requiring a
+    // credential would make "is this hub alive" answer 401 on every authenticated deployment. The
+    // answer is the same three fields as before — and the gate still holds one path over.
+    const { call } = harness(CREDENTIAL);
+
+    const probe = call({ url: `${BASE}/health` });
+    expect(probe.status).toBe(200);
+    expect(parsed(probe)).toEqual({ ok: true, status: "ok", version: expect.any(String) });
+
+    expect(parsed(call({ url: `${BASE}/notes` }))).toMatchObject({
+      error: { code: "unauthorized" },
+    });
+  });
+
+  it("answers a wrong method on /health with 405, not 401, because the route is public", () => {
+    const { call } = harness(CREDENTIAL);
+
+    const response = call({ method: "POST", url: `${BASE}/health` });
+
+    expect(response.status).toBe(405);
+    expect(response.headers.allow).toBe("GET, HEAD");
   });
 
   it("does not claim paths outside the API at all", () => {

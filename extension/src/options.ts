@@ -6,6 +6,8 @@
  * writing go through `chrome.storage.local` directly — the same key the worker reads, so there is
  * one source of truth rather than a page-local copy that can drift.
  */
+import { probeConnection } from "./connection";
+import { configuredCredential } from "./handoff";
 import { DEFAULT_SETTINGS, expiryOfToken, normalizeSettings, type ExtensionSettings } from "./settings";
 
 declare const chrome: {
@@ -58,15 +60,43 @@ const form = byId<HTMLFormElement>("form");
 const status = byId<HTMLElement>("status");
 const hub = byId<HTMLElement>("hub");
 const save = byId<HTMLButtonElement>("save");
+const testConnection = byId<HTMLButtonElement>("test-connection");
 
-function say(message: string, kind: "ok" | "error" | "" = ""): void {
+type StatusKind = "ok" | "error" | "warn" | "";
+
+/**
+ * The newest writer of the status line.
+ *
+ * A probe and a save can overlap: the probe is a network round trip and Save stays usable while it
+ * runs. Without this counter the slower of the two would win and the user would read a stale result
+ * as the answer to their last action. Every writer takes a ticket; a result is only rendered while
+ * its ticket is still the newest.
+ */
+let statusGeneration = 0;
+let testing = false;
+
+function beginStatus(): number {
+  statusGeneration += 1;
+  return statusGeneration;
+}
+
+function say(message: string, kind: StatusKind = ""): void {
   status.textContent = message;
   if (kind === "") delete status.dataset.kind;
   else status.dataset.kind = kind;
 }
 
+function sayIfCurrent(generation: number, message: string, kind: StatusKind = ""): void {
+  if (generation === statusGeneration) say(message, kind);
+}
+
 function showSidecar(store: string): void {
-  hub.hidden = store !== "http";
+  const isHub = store === "http";
+  hub.hidden = !isHub;
+  // The probe is only meaningful for the hub store: with any other store there is no endpoint to
+  // test, and an enabled button would invite a request the saved settings would never make.
+  testConnection.hidden = !isHub;
+  testConnection.disabled = !isHub || testing;
 }
 
 function fill(settings: ExtensionSettings): void {
@@ -101,29 +131,80 @@ form.addEventListener("submit", (event) => {
   void save_();
 });
 
+/**
+ * "Test connection" (#105): probe the URL and credential that are on screen *now*.
+ *
+ * It reads the form rather than storage on purpose: someone trying to fix a broken hub has just
+ * edited the field, and testing the last-saved value would report on a URL they no longer intend to
+ * use. Nothing is saved and nothing is stored — the only side effects are the button's disabled
+ * state and the message in `#status`.
+ */
+testConnection.addEventListener("click", () => {
+  void testConnection_();
+});
+
+async function testConnection_(): Promise<void> {
+  const generation = beginStatus();
+  testing = true;
+  showSidecar(byId<HTMLSelectElement>("store").value);
+  say("Testing…");
+  try {
+    const settings = normalizeSettings(readForm());
+    const result = await probeConnection({
+      endpoint: settings.endpoint,
+      credential: { auth: settings.auth, token: settings.token },
+    });
+    // The message is built by the probe, from the response and the URL — never from the credential.
+    // `credential-unverified` is a warning, not a failure: the hub answered, only the credential
+    // check was inconclusive.
+    const kind: StatusKind = result.ok ? "ok" : result.status === "credential-unverified" ? "warn" : "error";
+    sayIfCurrent(generation, result.message, kind);
+  } catch (error) {
+    // `probeConnection` reports every expected failure as a result. Reaching here is a defect in that
+    // contract, and saying so is still better than a button that appears to do nothing.
+    sayIfCurrent(generation, `Could not test the connection: ${String(error)}`, "error");
+  } finally {
+    testing = false;
+    showSidecar(byId<HTMLSelectElement>("store").value);
+  }
+}
+
 async function save_(): Promise<void> {
+  const generation = beginStatus();
   save.disabled = true;
   try {
     const settings = normalizeSettings(readForm());
     // A hub store without a URL is a store that cannot be reached: the element would fall back to
     // its default `memory` and the notes would be gone on reload. Refusing to save says so instead.
     if (settings.store === "http" && settings.endpoint.trim().length === 0) {
-      say("A hub needs a URL — without one the notes would be kept in this tab only.", "error");
+      sayIfCurrent(generation, "A hub needs a URL — without one the notes would be kept in this tab only.", "error");
       return;
     }
     // Save the normalized form, not the raw input: what is stored is exactly what the worker will
     // read back, so a bad value cannot sit in storage until the next mount fails.
+    // The token is stored the way the layer and the probe use it — `configuredCredential` trims it
+    // and maps a whitespace-only paste to "none" (#110). Storing the raw field instead meant storage
+    // and the value actually sent could disagree, which is exactly the round the smoke test compares.
+    settings.token = configuredCredential(settings.token) ?? "";
     // The expiry is derived from the token rather than typed, so the user cannot state a wrong one.
+    const tokenExpiresAt = expiryOfToken(settings.token);
     await chrome.storage.local.set({
-      [SETTINGS_KEY]: { ...settings, tokenExpiresAt: expiryOfToken(settings.token) },
+      [SETTINGS_KEY]: { ...settings, tokenExpiresAt },
     });
+    // A probe that started before this save may finish after it. Its ticket is older, so it is
+    // discarded — and a save that itself became stale must not repaint the form either.
+    if (generation !== statusGeneration) return;
     const stored = await chrome.storage.local.get(SETTINGS_KEY);
+    // Re-check after the await: the read is another turn, and a probe started in this window has a
+    // newer ticket. Repainting the form or saying "Saved." then would answer the probe with a stale
+    // save, which is the mirror image of the race the first check guards.
+    if (generation !== statusGeneration) return;
     const current = normalizeSettings(stored[SETTINGS_KEY]);
     fill(current);
     describeCredential(current);
-    say("Saved.", "ok");
+    sayIfCurrent(generation, "Saved.", "ok");
   } catch (error) {
-    say(`Could not save: ${String(error)}`, "error");
+    sayIfCurrent(generation, `Could not save: ${String(error)}`, "error");
   } finally {
     save.disabled = false;
   }

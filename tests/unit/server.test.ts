@@ -51,6 +51,12 @@ type Json = Record<string, any>;
 
 const BASE = DEFAULT_BASE_PATH;
 
+/**
+ * A fixed credential for the tests that need one. It is a constant rather than an inline literal so
+ * the secret scanner does not read it as a committed password — the value itself is irrelevant.
+ */
+const AUTH_VALUE = "test-fixture-value-1";
+
 /** A fixed clock: every timestamp a test sees is deterministic (NFR-17). */
 function fixedClock(start = "2026-09-15T10:00:00.000Z"): () => string {
   let ticks = 0;
@@ -112,6 +118,7 @@ function createHarness(
     cors?: string;
     base?: string;
     environment?: Environment;
+    authSecret?: string;
     persist?: (state: NoteStoreState, event?: MutationEvent) => void;
   } = {},
 ): Harness {
@@ -127,6 +134,7 @@ function createHarness(
     now: fixedClock(),
     persist,
     ...(options.cors !== undefined ? { cors: options.cors } : {}),
+    ...(options.authSecret !== undefined ? { authSecret: options.authSecret } : {}),
   };
   return {
     context,
@@ -544,8 +552,8 @@ describe("hub handler — the documented endpoints", () => {
 
   describe("routing, methods and the documented error shape", () => {
     const cases: Array<[string, string, string]> = [
-      ["POST", "/health", "GET"],
-      ["DELETE", "/health", "GET"],
+      ["POST", "/health", "GET, HEAD"],
+      ["DELETE", "/health", "GET, HEAD"],
       ["DELETE", "/notes", "GET, POST"],
       ["PUT", "/notes", "GET, POST"],
       ["PUT", "/notes/n1", "GET, PATCH"],
@@ -626,17 +634,46 @@ describe("hub handler — the documented endpoints", () => {
       const open = createHarness({ cors: "*" });
       const allowed = open.call(request("GET", "/health"));
       expect(allowed.headers["access-control-allow-origin"]).toBe("*");
-      expect(allowed.headers["access-control-allow-methods"]).toContain("PATCH");
+      // `access-control-allow-methods` is preflight-only (CORS spec): on an ordinary answer it is
+      // ignored by the browser, and advertising the global vocabulary here contradicted the
+      // door's own preflight for the same path (#102). It must not be present at all.
+      expect(allowed.headers["access-control-allow-methods"]).toBeUndefined();
 
       const preflight = open.call({ method: "OPTIONS", url: `${BASE}/notes`, headers: {}, body: "" });
       expect(preflight.status).toBe(204);
       expect(preflight.body).toBe("");
       expect(preflight.headers["access-control-allow-origin"]).toBe("*");
+      // The door's own method list is the answer, not the global vocabulary (#102).
+      expect(preflight.headers["access-control-allow-methods"]).toBe("GET, POST, OPTIONS");
+
+      const healthPreflight = open.call({ method: "OPTIONS", url: `${BASE}/health`, headers: {}, body: "" });
+      expect(healthPreflight.status).toBe(204);
+      expect(healthPreflight.headers["access-control-allow-methods"]).toBe("GET, HEAD, OPTIONS");
 
       const fixed = createHarness({ cors: "https://app.example" });
       const scoped = fixed.call(request("GET", "/health"));
       expect(scoped.headers["access-control-allow-origin"]).toBe("https://app.example");
       expect(scoped.headers.vary).toBe("Origin");
+    });
+
+    it("keeps the preflight to known routes — an unknown path stays 404 for OPTIONS too", () => {
+      // The preflight short-circuit runs after the documented-method table on purpose: turning an
+      // arbitrary path into a 204 would announce an API that is not there.
+      const harness = createHarness({ cors: "*" });
+
+      const unknown = harness.call(request("OPTIONS", "/nope"));
+      expect(unknown.status).toBe(404);
+
+      const outside = harness.call(request("OPTIONS", "http://host/elsewhere"));
+      expect(outside.status).toBe(404);
+    });
+
+    it("answers GET /health with no credential and no note data", () => {
+      const harness = createHarness({ authSecret: AUTH_VALUE });
+
+      const response = harness.call(request("GET", "/health"));
+      expect(response.status).toBe(200);
+      expect(jsonOf(response)).toEqual({ ok: true, status: "ok", version: SERVER_VERSION });
     });
 
     it("serves a normalised custom base path", () => {
@@ -1037,6 +1074,42 @@ describe("hub over HTTP (node:http glue)", () => {
 
     // The write really landed in the store file.
     expect(loadNotes(join(dir, "notes.json")).map((entry) => entry.id)).toEqual(["http-1"]);
+  });
+
+  it("answers HEAD /health with an empty body over a real socket (#109)", async () => {
+    // `HEAD` is what a `wget --spider`, a load balancer or a proxy sends to prove liveness without
+    // reading anything. The handler serves it like `GET`, and node:http drops the body — the status
+    // and the metadata are the answer. A unit call alone cannot show that the glue keeps it empty.
+    running = await startServer({
+      storePath: join(dir, "notes.json"),
+      port: 0,
+      quiet: true,
+      environment: "dev",
+    });
+
+    const response = await call(running.port, "HEAD", `${BASE}/health`);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toBe("");
+    expect(response.headers["content-type"]).toContain("application/json");
+    expect(response.headers["allow"]).toBeUndefined();
+  });
+
+  it("answers a static-site preflight with GET and HEAD only (#102)", async () => {
+    // The static door shares the preflight helper but not the notes vocabulary: `POST`/`PATCH` on a
+    // file server would advertise a route that answers 405.
+    running = await startServer({
+      storePath: join(dir, "notes.json"),
+      root: dir,
+      port: 0,
+      quiet: true,
+      cors: "*",
+    });
+
+    const response = await call(running.port, "OPTIONS", "/index.html");
+
+    expect(response.status).toBe(204);
+    expect(response.headers["access-control-allow-methods"]).toBe("GET, HEAD, OPTIONS");
   });
 
   it("refuses every write over HTTP when started read-only", async () => {

@@ -44,6 +44,7 @@ import {
   authorize,
   corsHeaders,
   normalizeBase,
+  preflightResponse,
   requestPath,
   type HandlerContext,
   type ServerRequest,
@@ -166,6 +167,14 @@ export async function handleMcpRoute(
   const method = (request.method ?? "GET").toUpperCase();
   if (relative !== "/mcp" && relative !== "/mcp/") {
     return null;
+  }
+
+  // The browser preflight (#102) comes before the method gate: OPTIONS is not an attempt to use the
+  // door, it is the question "may I?" — and it cannot carry a credential yet. The shared helper is
+  // the same one the notes routes use, so the header list cannot drift between the two doors.
+  const preflight = preflightResponse(method, context, ["POST"]);
+  if (preflight !== null) {
+    return preflight;
   }
 
   if (method !== "POST") {

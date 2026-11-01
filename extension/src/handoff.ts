@@ -64,14 +64,17 @@ export function elementAttributesFor(
     if (settings.endpoint.length > 0) {
       attributes.endpoint = settings.endpoint;
     }
-    if (settings.token.length > 0) {
-      attributes.token = settings.token;
-      if (settings.auth === "token") {
+    // `none` wins over a leftover token, exactly as it does in the connection probe: the saved
+    // settings would not use that value, so handing it to the element would invent a credential.
+    const credential = configuredCredential(settings.token);
+    if (credential !== null && settings.auth !== "none") {
+      attributes.token = credential;
+      const spec = credentialHeaderFor(settings.auth);
+      // The element's attribute vocabulary spells header names lower case.
+      attributes["token-header"] = spec.header.toLowerCase();
+      if (spec.scheme !== null) {
         // A bare token has to be turned into `Bearer <token>` by the element's own contract.
-        attributes["token-header"] = "authorization";
-        attributes["token-scheme"] = "Bearer";
-      } else if (settings.auth === "secret") {
-        attributes["token-header"] = "x-bluepencil-auth";
+        attributes["token-scheme"] = spec.scheme;
       }
     }
     return attributes;
@@ -84,4 +87,38 @@ export function elementAttributesFor(
 /** `auto` follows the browser, which is where this code runs. Anything but German is the default. */
 function autoLanguage(browserLanguage: string): "en" | "de" {
   return browserLanguage.toLowerCase().startsWith("de") ? "de" : "en";
+}
+
+/**
+ * The header a credential mode means — the single mapping the layer and the connection probe share.
+ *
+ * Two headers, because they are two different credentials: a shared secret every client holds, and a
+ * per-device signed token. Choosing the wrong one produces a `401` that reads like a dead server, so
+ * the mapping lives in one place rather than being spelled out once per caller.
+ */
+export interface CredentialHeader {
+  /** Canonical header name; the element's `token-header` attribute wants the lower-case form. */
+  header: "Authorization" | "x-bluepencil-auth";
+  /** `Bearer` for a signed token, `null` for a shared secret. */
+  scheme: string | null;
+}
+
+/** The header for `secret` or `token`. Callers handle `none` themselves; there is no header for it. */
+export function credentialHeaderFor(auth: "secret" | "token"): CredentialHeader {
+  return auth === "token"
+    ? { header: "Authorization", scheme: "Bearer" }
+    : { header: "x-bluepencil-auth", scheme: null };
+}
+
+/**
+ * The credential as it should be carried, or `null` when none is configured.
+ *
+ * Whitespace-only is *not* configured: sending it would turn a harmless probe into a guaranteed 401
+ * and hand the element a header value no hub can match. The value is trimmed, so a token pasted with
+ * a trailing newline travels without it. Both the layer and the probe read this one rule, so the URL
+ * the options page tests is the URL the layer would actually use (#105).
+ */
+export function configuredCredential(token: string): string | null {
+  const value = token.trim();
+  return value.length === 0 ? null : value;
 }

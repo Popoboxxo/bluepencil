@@ -113,16 +113,19 @@ afterEach(() => {
 interface MountOptions {
   /** When true, `navigator.clipboard.writeText` rejects — the `execCommand` fallback path. */
   clipboardRejects?: boolean;
+  /** `/admin/status` answer this page receives; defaults to `STATUS`. */
+  status?: typeof STATUS & { credentials?: string[] };
 }
 
 function mount(options: MountOptions = {}): Harness {
   const requests: Array<{ url: string; method: string }> = [];
+  const status = options.status ?? STATUS;
   const fetchMock = vi.fn(async (input: string, init?: { method?: string }): Promise<Reply> => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
     requests.push({ url, method });
 
-    if (url.includes("/admin/status")) return reply(200, STATUS);
+    if (url.includes("/admin/status")) return reply(200, status);
     if (url.includes("/admin/devices/revoke")) {
       return reply(200, {
         revoked: DEVICE.jti,
@@ -196,6 +199,32 @@ async function connect(h: Harness): Promise<void> {
     expect(node(h, "app").hidden).toBe(false);
   });
 }
+
+describe("the admin page's credential readout (#112)", () => {
+  it("renders both accepted credentials instead of falling through to 'none'", async () => {
+    const h = mount({
+      status: { ...STATUS, auth: "token+secret", credentials: ["token", "secret"] },
+    });
+    await connect(h);
+
+    const overview = (node(h, "overview-card").textContent ?? "").toLowerCase();
+
+    expect(overview).toContain("token");
+    expect(overview).toContain("shared secret");
+    // "none" is the false claim the old ternary made for an unknown mode.
+    expect(overview).not.toContain("none");
+  });
+
+  it("renders 'none' only for a hub that accepts no client credential", async () => {
+    const h = mount({ status: { ...STATUS, auth: "none", credentials: [] } });
+    await connect(h);
+
+    const overview = (node(h, "overview-card").textContent ?? "").toLowerCase();
+
+    expect(overview).toContain("client credential");
+    expect(overview).toContain("none");
+  });
+});
 
 describe("the admin page's device panel", () => {
   it("[FR-6.8] keeps the freshly minted token visible after the device list refreshes", async () => {
