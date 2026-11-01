@@ -9,7 +9,9 @@
 
 import { describe, expect, it } from "vitest";
 
+import { createHttpAdapter } from "../../src/adapters/http";
 import { createMemoryAdapter } from "../../src/adapters/memory";
+import { currentHttpTransport, registerHttpTransport } from "../../src/adapters/transport";
 import { matchesFilter, type Adapter } from "../../src/core/adapter";
 import { createNote, type Note } from "../../src/core/model";
 import { init, type Blueprint } from "../../src/index";
@@ -153,5 +155,51 @@ describe("createBlueprint — loading contract (NFR-2, NFR-8)", () => {
     expect(blueprint.notes()).toEqual([]);
 
     await blueprint.destroy();
+  });
+});
+
+/**
+ * #116: the transport seam is process-scoped, not instance-scoped.
+ *
+ * The extension registers one relay for the document and builds the element afterwards. If
+ * `disable()` or `destroy()` unregistered it, a second element on the same page (FR-12.3) or a
+ * re-`enable()` (FR-12.1) would silently fall back to the page's `fetch` — which is blocked by a
+ * strict `connect-src`. The registration therefore belongs to whoever registered it.
+ */
+describe("createBlueprint — the HTTP transport seam (#116)", () => {
+  it("keeps a registered transport across disable()/enable()/destroy()", async () => {
+    const calls: string[] = [];
+    const dispose = registerHttpTransport((async (input: RequestInfo | URL) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ ok: true, notes: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch);
+    try {
+      const blueprint = init({
+        adapter: () => createHttpAdapter({ endpoint: "http://hub.test/api/v1/bluepencil" }),
+        autoEnable: false,
+      });
+
+      blueprint.enable();
+      await blueprint.ready();
+      expect(calls.length).toBeGreaterThan(0);
+      const before = calls.length;
+
+      blueprint.disable();
+      // Teardown must not unregister a transport it does not own.
+      expect(currentHttpTransport()).not.toBeNull();
+
+      blueprint.enable();
+      await blueprint.ready();
+      expect(calls.length).toBeGreaterThan(before);
+
+      await blueprint.destroy();
+      expect(currentHttpTransport()).not.toBeNull();
+    } finally {
+      dispose();
+      expect(currentHttpTransport()).toBeNull();
+    }
   });
 });

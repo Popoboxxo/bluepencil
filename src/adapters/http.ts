@@ -33,6 +33,7 @@ import {
   type Adapter,
   type AdapterPatch,
 } from "../core/adapter";
+import { currentHttpTransport } from "./transport";
 
 /** Adapter name reported to the store and to hosts. */
 export const HTTP_ADAPTER_NAME = "http";
@@ -48,7 +49,12 @@ export interface HttpAdapterOptions {
    * phase-2 signed token be refreshed without rebuilding the adapter.
    */
   headers?: () => Record<string, string>;
-  /** Injectable for tests and for runtimes without a global `fetch`. */
+  /**
+   * Injectable for tests and for runtimes without a global `fetch`.
+   *
+   * Highest precedence: a per-instance transport beats the one registered with
+   * `registerHttpTransport()` (see `./transport`), which in turn beats `globalThis.fetch`.
+   */
   fetchImpl?: typeof fetch;
 }
 
@@ -120,7 +126,13 @@ export function createHttpAdapter(options: HttpAdapterOptions): HttpAdapter {
       requestInit.body = JSON.stringify(init.body);
     }
 
-    const fetchImpl = options.fetchImpl ?? (globalThis as { fetch?: typeof fetch }).fetch;
+    // Resolved per request, not at construction: the extension registers its bridge relay after the
+    // element has already built the adapter (see `./transport`). No registration means exactly the
+    // old behaviour — `globalThis.fetch`.
+    const fetchImpl =
+      options.fetchImpl ??
+      currentHttpTransport() ??
+      (globalThis as { fetch?: typeof fetch }).fetch;
     if (!fetchImpl) {
       throw new BluepencilValidationError([
         "the http adapter needs fetch(): use a browser, Node 20+ or pass fetchImpl",
