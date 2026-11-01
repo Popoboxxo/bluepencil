@@ -1,3 +1,22 @@
+## [0.11.6] - 2026-11-01
+
+### Fixed
+
+- **The extension's hub traffic leaves through the service worker.** A page with
+  `default-src 'self'` and no `connect-src` no longer blocks note sync: the layer's HTTP adapter is
+  routed page → bridge → worker, and the worker is outside the document's CSP. The worker only
+  contacts the configured endpoint (origin and base path; every `{base}/admin` spelling is refused,
+  percent-encoded forms included), forwards the two credential headers, sends no cookies, follows
+  no redirects and rejects an oversized body (#116).
+- **The page-side storage relay is scoped to the layer's own keys.** A page can write only
+  `bluepencil:<instance>:v1`, never `bluepencil:settings` — rewriting that object would have
+  repointed the hub relay at any origin and turned the worker into a CSP bypass. Reading the
+  settings stays possible (a pre-existing page-world exposure, documented in `docs/EXTENSION.md`)
+  (#116).
+- **The HTTP adapter accepts a process-wide transport.** `registerHttpTransport(fetchImpl)` is
+  additive: with no registration the adapter uses `globalThis.fetch` exactly as before, and the
+  registration survives `disable()`/`enable()`/`destroy()` (#116).
+
 ## [0.11.5] - 2026-11-01
 
 ### Added
