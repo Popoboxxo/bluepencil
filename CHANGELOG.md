@@ -1,3 +1,56 @@
+## [0.11.0] - 2026-11-01
+
+### Added
+
+**An optional admin surface for the hub: `{base}/admin` — page and routes, switched off unless it
+is configured.** With `--admin-secret` (or `BLUEPENCIL_ADMIN_SECRET`) the hub serves a small
+operator page and the routes behind it; without the flag none of it exists — the paths answer the
+router's ordinary 404 rather than a locked page that advertises itself.
+
+What it does, and why each piece is where it is:
+
+- **Its own credential, its own header** (`x-bluepencil-admin`). The hub's `x-bluepencil-auth` is
+  the value every browser using the extension holds; this one belongs to the operator and unlocks
+  issuing and revoking, so the two never leak into each other.
+- **Notes are edited through the existing notes API** with the admin secret, which
+  `authorize()` now accepts as a second credential. Note handling stays implemented exactly once,
+  and the page only ever asks for one value.
+- **Per-device tokens: issue and revoke.** Minting reuses `server/tokens.ts`'s issuer (present only
+  with `--token-key` — the page says so plainly otherwise), and the token is shown exactly once:
+  the hub keeps the id, not the token. Issued ids are recorded in `devices.json` next to the store.
+- **Revocation is live *and* durable.** A revoked id joins the in-memory set the verifier reads on
+  every request **and** the `--revoked-tokens` file, so a cut-off device stays cut off after a
+  restart. Without that file the revocation is live until restart, and the page reports that rather
+  than pretending.
+- **Overview and activity**: version, environment, which credential the hub speaks, note/device
+  counts, whether token issuing and durable revocation are available — plus every journal entry
+  (who, what, when) through the journal route the hub already had.
+
+No client dependency was added: the page is one embedded string of vanilla HTML/JS in
+`server/admin-html.ts`, the same shape the extension's options page already has — the hub's runtime
+image ships `dist/server.js` and nothing else, and a bundled UI framework would have been its first
+client dependency on a page that sits behind a secret.
+
+### Verified
+
+Eleven cases against running hubs (`server-admin.test.ts`): no `--admin-secret` → 404 everywhere;
+the page answers without a credential; routes refuse a missing or wrong `x-bluepencil-admin`; the
+admin secret edits notes while the client secret alone still gates the door; minting without a
+signing key → 409 naming `--token-key`; a minted token is accepted immediately and recorded;
+revocation takes effect at once and lands in the file; empty device names and unknown scopes are
+refused; an empty `--admin-secret` is a startup error; the environment feeds the parser.
+
+### Known gaps
+
+- **#102 stays open** (`OPTIONS /mcp` → 405): cross-origin MCP remains impossible; the admin page is
+  same-origin by construction, so it is unaffected.
+- The page issues and revokes tokens but does not rotate the hub's own secrets — those live in the
+  process environment, and rotating them means restarting the hub with the new value.
+- Device activity is derived from the journal, which records mutations; a device that only *reads*
+  leaves no entry.
+
+---
+
 ## [0.10.4] - 2026-11-01
 
 ### Fixed
