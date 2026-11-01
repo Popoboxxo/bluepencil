@@ -14,7 +14,7 @@ shared by UI, CLI, hub and MCP.
 
 | Section | What you find |
 |---|---|
-| [Status](#status) | What `0.10.3` contains — and what it honestly does not |
+| [Status](#status) | What `0.11.0` contains — and what it honestly does not |
 | [Why the name](#why-the-name) | Where the metaphor comes from |
 | [Quick start](#quick-start) | Build, artifact table, one `init()` call, the runtime handle |
 | [The pieces](#the-pieces) | Browser layer, five adapters, store, hub, two agent doors |

@@ -69,6 +69,8 @@ import {
   type MutationEvent,
 } from "./handler";
 import { asHandlerVerifier, createTokenIssuer } from "./tokens";
+// The admin surface's device registry lives next to the store; the page itself is only a route.
+import { devicesPathFor } from "./admin";
 import { selectJournal, type Journal, type JournalRecord, type JournalStatus } from "./journal";
 import { handleMcpRoute, type McpBackendFactoryInput } from "./mcp";
 import { createStoreBackend, type McpBackend } from "../src/mcp/backend";
@@ -133,6 +135,12 @@ export interface ServerOptions {
   revokedTokens?: ReadonlySet<string>;
   /** Where the revocation list was read from, so a startup log can name it. */
   revokedPath?: string;
+  /**
+   * The admin surface's credential (`--admin-secret`). Its own switch, not a second auth mode:
+   * unset, the page and its routes do not exist at all — the only defensible default for a surface
+   * that mints credentials.
+   */
+  adminSecret?: string;
   allowEnvMismatch?: boolean;
   /** Optional Markdown mirror of the note set (`--mirror`). */
   mirror?: string;
@@ -202,6 +210,7 @@ interface ResolvedOptions {
   tokenTtlSeconds: number | undefined;
   revokedTokens: ReadonlySet<string> | undefined;
   revokedPath: string | undefined;
+  adminSecret: string | undefined;
   mirror: string | undefined;
   cors: string | undefined;
   quiet: boolean;
@@ -235,6 +244,7 @@ function resolveOptions(options: HubOptions): ResolvedOptions {
     readOnly: options.readOnly ?? false,
     allowEnvMismatch: options.allowEnvMismatch ?? false,
     authSecret: options.authSecret,
+    adminSecret: options.adminSecret,
     tokenKey: options.tokenKey,
     tokenTtlSeconds: options.tokenTtlSeconds,
     revokedTokens: options.revokedTokens,
@@ -1059,6 +1069,12 @@ export async function startHub(options: HubOptions): Promise<RunningServer> {
           ...(resolved.now !== undefined ? { now: () => new Date(resolved.now!()) } : {}),
         });
 
+  // Revocation has to be live *and* durable: the set below is what the verifier reads on every
+  // request, and the file is what survives a restart. Doing only one of the two would make a
+  // revocation either a speed bump (memory) or invisible until restart (file). The admin surface
+  // adds to both through `revokeToken`.
+  const liveRevoked = new Set<string>(resolved.revokedTokens ?? []);
+
   const context: HandlerContext = {
     store: store.state,
     base: resolved.base,
@@ -1076,8 +1092,26 @@ export async function startHub(options: HubOptions): Promise<RunningServer> {
     // a real server: the handler was configured without it and served every request. The unit tests
     // could not catch it, because they call the handler directly with their own context.
     ...(resolved.authSecret !== undefined ? { authSecret: resolved.authSecret } : {}),
-    ...(tokenIssuer !== undefined ? { verifyToken: asHandlerVerifier(tokenIssuer) } : {}),
-    ...(resolved.revokedTokens !== undefined ? { revokedTokens: resolved.revokedTokens } : {}),
+    ...(resolved.adminSecret !== undefined ? { adminSecret: resolved.adminSecret } : {}),
+    ...(tokenIssuer !== undefined ? { verifyToken: asHandlerVerifier(tokenIssuer), tokenIssuer } : {}),
+    revokedTokens: liveRevoked,
+    ...(devicesPathFor(resolved.storePath) !== undefined ? { devicesPath: devicesPathFor(resolved.storePath) } : {}),
+    ...(resolved.revokedPath !== undefined ? { revocationPath: resolved.revokedPath } : {}),
+    revokeToken: (jti: string) => {
+      liveRevoked.add(jti);
+      const path = resolved.revokedPath;
+      if (path === undefined) return; // live only; the status route reports exactly that
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+        const list = Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
+        if (!list.includes(jti)) list.push(jti);
+        writeFileSync(path, JSON.stringify(list, null, 2), "utf8");
+      } catch {
+        // No readable file yet (or a corrupt one) — write a fresh list rather than losing the
+        // revocation: the device stays cut off after a restart, which is the whole point.
+        writeFileSync(path, JSON.stringify([jti], null, 2), "utf8");
+      }
+    },
     ...(resolved.cors !== undefined ? { cors: resolved.cors } : {}),
     ...(resolved.now !== undefined ? { now: resolved.now } : {}),
     persist: (state, event) => {
@@ -1324,6 +1358,16 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
   }
   const authSecret = authSecretRaw;
 
+  // The admin surface's own credential (`--admin-secret` / `BLUEPENCIL_ADMIN_SECRET`). Kept separate
+  // from `--auth-secret` because they are handed to different people: the client credential lives in
+  // every browser that uses the extension, this one belongs to the operator and unlocks token
+  // issuing and revocation. An empty value reads as a typo for the same reason as above.
+  const adminSecretRaw = get("--admin-secret") ?? process.env.BLUEPENCIL_ADMIN_SECRET;
+  if (adminSecretRaw !== undefined && adminSecretRaw.length === 0) {
+    return "--admin-secret must not be empty — omit it entirely to run without an admin surface";
+  }
+  const adminSecret = adminSecretRaw;
+
   // Phase 2 (#36): a signing key for per-device tokens. Separate from the shared secret on purpose —
   // it is a different credential with a different job, and one is not a substitute for the other:
   // the key never leaves the hub, the secret is handed to every client. Setting both is
@@ -1377,6 +1421,7 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
     // `--auth-secret <value>` or the environment, never both: an unset secret means "no
     // authentication", so a typo in the flag must not silently fall back to that (#36).
     ...(authSecret !== undefined ? { authSecret } : {}),
+    ...(adminSecret !== undefined ? { adminSecret } : {}),
     ...(tokenKey !== undefined ? { tokenKey } : {}),
     ...(tokenTtlSeconds !== undefined ? { tokenTtlSeconds } : {}),
     ...(revokedTokens !== undefined ? { revokedTokens } : {}),
@@ -1407,13 +1452,13 @@ export const HELP = `bluepencil hub ${SERVER_VERSION} — static site + notes AP
 Usage:
   node dist/server.js --store notes.json [--port 8787] [--host 127.0.0.1] [--name "<text>"]
     [--base /api/v1/bluepencil] [--root <static dir>] [--environment dev|staging|live]
-    [--read-only] [--auth-secret <value>] [--allow-env-mismatch] [--mirror notes.md] [--cors <origin|*>] [--quiet]
+    [--read-only] [--auth-secret <value>] [--admin-secret <value>] [--allow-env-mismatch] [--mirror notes.md] [--cors <origin|*>] [--quiet]
     [--journal auto|git|file|none] [--journal-dir <dir>] [--journal-repo <dir>]
     [--journal-coalesce <ms>] [--journal-author "Name <mail>"] [--journal-subject "<template>"]
     [--app "<text>"] [--registry <path>] [--include-self|--no-self] [--allow-write] [--allow-insecure]
     [--timeout <ms>] [--concurrency <1..16>] [--limit <1..1000>]
-      env: BLUEPENCIL_APP, BLUEPENCIL_REGISTRY, BLUEPENCIL_AUTH_SECRET, BLUEPENCIL_JOURNAL (backend),
-           BLUEPENCIL_JOURNAL_AUTHOR, BLUEPENCIL_JOURNAL_SUBJECT
+      env: BLUEPENCIL_APP, BLUEPENCIL_REGISTRY, BLUEPENCIL_AUTH_SECRET, BLUEPENCIL_ADMIN_SECRET,
+           BLUEPENCIL_JOURNAL (backend), BLUEPENCIL_JOURNAL_AUTHOR, BLUEPENCIL_JOURNAL_SUBJECT
       a flag wins over the env; without an author the commits carry the repository's identity,
       and the journal status reports which identity is in use
 
@@ -1435,6 +1480,14 @@ Authentication:
   variable: a secret on a command line is visible in the process list to every other user on the
   machine. An empty value is rejected rather than treated as "off".
 
+  With --admin-secret (or BLUEPENCIL_ADMIN_SECRET) the hub serves an admin page at {base}/admin and
+  the routes behind it, each answered only for the x-bluepencil-admin header with that value — a
+  separate credential from the one in every browser, because this one mints and revokes the other
+  kind. Without the flag the surface does not exist at all (404, not a locked page). The admin
+  secret is also accepted as a client credential, so the page edits notes with the one value it
+  holds; minting tokens additionally needs --token-key, and a revocation is written to
+  --revoked-tokens so it survives a restart.
+
 Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in http adapter):
   GET    {base}/config              name, app, federates, version, base, which credential, and the
                                     live binding — needs no credential itself (FR-6.10, FR-6.15)
@@ -1452,6 +1505,7 @@ Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in h
   GET    {base}/bundle              canonical bundle (src/data) — for agents/exports
   GET    {base}/journal             history: { journal: {backend, location, entries, lastSeq},
                                     entries } — optional ?since=<seq> for agents (FR-18)
+  GET    {base}/admin               the admin page (HTML); exists only with --admin-secret
 
 Rules: bulk-delete requires "confirm": true; an unknown id is 404; a malformed body is 400; a body
 that is not application/json is 415; a known path with the wrong method is 405; every error is

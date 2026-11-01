@@ -71,6 +71,10 @@ import { VERSION } from "../src/version";
 import { canonicalNote } from "../src/data/canonical";
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { validateNote } from "../src/data/schema";
+// The admin surface answers before the credential gate, so it must not import the gate — the
+// dependency runs one way: this router delegates to `handleAdmin`, whose only dependency on this
+// module is its types (erased at runtime, so the cycle never materialises in the bundle).
+import { handleAdmin } from "./admin";
 
 /** Version reported by `GET {base}/health` — the same string every other artifact reports (FR-19). */
 export const SERVER_VERSION: string = VERSION;
@@ -196,6 +200,28 @@ export interface HandlerContext {
    * right one: an empty list is a working deployment, not a broken one.
    */
   revokedTokens?: ReadonlySet<string>;
+  /**
+   * The admin surface's own credential (`--admin-secret`); absent means this hub has no admin
+   * surface at all — the routes answer 404 rather than a guarded page.
+   */
+  adminSecret?: string;
+  /**
+   * The token issuer, so the admin surface can mint per-device tokens; present only when the hub
+   * runs with `--token-key`.
+   */
+  tokenIssuer?: {
+    issue(input: {
+      device: string;
+      scope: readonly ("read" | "write")[];
+      ttlSeconds?: number;
+    }): { token: string; claims: { jti: string; device: string; scope: readonly string[]; exp: string } };
+  };
+  /** Where the device registry is kept (next to the store). */
+  devicesPath?: string;
+  /** Where the revocation list is read from at startup (`--revoked-tokens`). */
+  revocationPath?: string;
+  /** Revokes a token for the running process: the live set grows and the file catches up. */
+  revokeToken?: (jti: string) => void;
   /** `--allow-env-mismatch`: a foreign-environment write is promoted instead of refused (FR-14.8). */
   allowEnvMismatch?: boolean;
   /** `--cors <origin|*>`: the allowed origin; unset means no CORS headers at all. */
@@ -1132,7 +1158,13 @@ export function authorize(
       }
     } else if (typeof secret === "string" && secret.length > 0) {
       const presented = headerValue(request.headers, AUTH_HEADER);
-      if (presented === undefined || !secretsMatch(secret, presented)) {
+      // The admin secret is accepted here too: the admin page edits notes through *this* API with
+      // one credential it already holds, so note handling stays implemented exactly once. It does
+      // not widen anything the other way — the admin routes check `x-bluepencil-admin`, which the
+      // hub's client credential is not.
+      const adminAccepts =
+        context.adminSecret !== undefined && presented !== undefined && secretsMatch(context.adminSecret, presented);
+      if (presented === undefined || !(secretsMatch(secret, presented) || adminAccepts)) {
         return errorResponse(
           401,
           "unauthorized",
@@ -1182,6 +1214,16 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   const { pathname, query } = parseRequestUrl(request.url);
   const method = (request.method ?? "GET").toUpperCase();
   const rest = pathWithin(pathname, base);
+  // The admin surface decides its own existence — `handleAdmin` answers null unless `--admin-secret`
+  // is configured — so it is asked before this router's own table: a route that can be switched off
+  // must not be listed in a table that cannot, or it would announce itself on a hub that has no
+  // admin surface at all.
+  if (rest !== null) {
+    const adminResponse = handleAdmin(request, context);
+    if (adminResponse !== null) {
+      return adminResponse;
+    }
+  }
   const segments = rest === null ? [] : splitSegments(rest);
   const allow = rest === null ? null : allowedMethods(segments);
 
