@@ -105,7 +105,15 @@ curl -s http://127.0.0.1:8787/api/v1/bluepencil/config
 `app` and `federates` always exist. `federates` is `true` exactly when the hub was started with
 `--registry`; it is what a peer checks before trusting a federation member. `environment` is the
 hub's one environment, not a note field. `/notes`, `/health` and `/mcp` follow the hub's
-`--auth-secret` / token gate (only `/config` is unauthenticated by design).
+`--auth-secret` / token gate; `/config` is unauthenticated by design, and so is
+`GET {base}/journal` (it is answered before any auth), plus the admin page when `--admin-secret`
+is enabled.
+
+The optional admin secret (`--admin-secret` / `BLUEPENCIL_ADMIN_SECRET`) is **not a client
+credential on this door**. `POST {base}/mcp` accepts only the configured client credential — the
+shared secret or a signed token. The admin secret is admitted as a second credential on the notes
+routes only, never on `/mcp`, so a token-only hub can be administered without opening the MCP door
+to the operator's secret.
 
 The MCP door speaks the normal handshake:
 

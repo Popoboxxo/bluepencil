@@ -27,14 +27,14 @@
  * notes is delegated to `src/core/**` + `src/data/**` through the handler (FR-15.3); this file
  * adds no note logic of its own.
  */
-import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
   type Server,
   type ServerResponse as NodeResponse,
 } from "node:http";
-import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { extname, join, resolve, sep } from "node:path";
 import { hostname as osHostname } from "node:os";
 import { booleanFlag } from "../src/argv";
 import { isRecord } from "../src/core/adapter";
@@ -63,11 +63,13 @@ import {
   isLoopbackAddress,
   normalizeBase,
   requestPath,
+  type AdminThrottle,
   type HandlerContext,
   type NoteStoreState,
   type ServerErrorCode,
   type MutationEvent,
 } from "./handler";
+import { writeAtomic } from "./atomic-write";
 import { asHandlerVerifier, createTokenIssuer } from "./tokens";
 // The admin surface's device registry lives next to the store; the page itself is only a route.
 import { devicesPathFor } from "./admin";
@@ -325,25 +327,6 @@ export function parseNoteSet(text: string | null, path: string): Note[] {
 /** The notes of a store file, or `[]` for a file that does not exist yet. */
 export function loadNotes(path: string): Note[] {
   return parseNoteSet(readTextIfExists(path), path);
-}
-
-let writeCounter = 0;
-
-/**
- * Atomic write: the temp file lives in the target directory (so `rename` never crosses a mount,
- * FR-6.5) and is removed on *every* exit path — including a failed rename — so a refused write
- * can never leave litter behind. The counter keeps two writes of one process from sharing a temp
- * path, which would let one rename publish a blob another write is still filling in.
- */
-function writeAtomic(path: string, text: string): void {
-  writeCounter += 1;
-  const tmp = join(dirname(path), `.${basename(path)}.tmp-${process.pid}-${writeCounter}`);
-  try {
-    writeFileSync(tmp, text, "utf8");
-    renameSync(tmp, path);
-  } finally {
-    rmSync(tmp, { force: true });
-  }
 }
 
 export interface FileNoteStore {
@@ -699,8 +682,9 @@ async function respond(
 
   // The MCP door (FR-16.8) is asynchronous, so it is answered here instead of inside the synchronous
   // handler. It shares the store file, the atomic write path and the authentication gate.
+  const remote = request.socket.remoteAddress;
   const mcpResponse = await handleMcpRoute(
-    { method, url, headers: request.headers, body },
+    { method, url, headers: request.headers, body, ...(remote === undefined ? {} : { remote }) },
     context,
     {
       read: async () => readTextIfExists(options.storePath),
@@ -726,7 +710,7 @@ async function respond(
   write(
     response,
     handleRequest(
-      { method, url, headers: request.headers, body },
+      { method, url, headers: request.headers, body, ...(remote === undefined ? {} : { remote }) },
       context,
     ),
   );
@@ -1007,6 +991,80 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
+/* ------------------------------------------------------------------------------------------------
+ * Admin throttle
+ * ---------------------------------------------------------------------------------------------- */
+
+/** Failed admin-secret checks a peer may make inside one window before it is answered 429. */
+const ADMIN_THROTTLE_LIMIT = 10;
+/** Length of that window: five minutes, the value the answer names in `Retry-After`. */
+const ADMIN_THROTTLE_WINDOW_MS = 5 * 60 * 1000;
+/**
+ * Upper bound on tracked peers. The map is keyed by a client-supplied-ish value (the peer address),
+ * so without a cap a flood from many addresses would grow it without limit. Past the cap the oldest
+ * entry is evicted — an attacker can then reset their own count by rotating addresses, but every
+ * address they rotate to still costs them one connection, which is the same budget as no throttle.
+ */
+const ADMIN_THROTTLE_MAX_ENTRIES = 4096;
+
+interface ThrottleEntry {
+  count: number;
+  /** When the current window started (epoch milliseconds). */
+  firstAt: number;
+}
+
+/**
+ * The in-memory brute-force brake for `--admin-secret`: 10 failed checks per peer per 5 minutes.
+ *
+ * It lives in the glue, not in the pure handler, because it needs a clock and mutable process
+ * state. A success clears the peer's entry — an operator who mistypes once and then gets it right
+ * should not carry the failure into the rest of the window.
+ */
+function createAdminThrottle(now: () => number = Date.now): AdminThrottle {
+  const entries = new Map<string, ThrottleEntry>();
+  const keyOf = (remote: string | undefined): string => remote ?? "unknown";
+  const expired = (entry: ThrottleEntry, at: number): boolean =>
+    at - entry.firstAt >= ADMIN_THROTTLE_WINDOW_MS;
+  const prune = (at: number): void => {
+    for (const [key, entry] of entries) {
+      if (expired(entry, at)) entries.delete(key);
+    }
+  };
+
+  return {
+    allow: (remote) => {
+      const at = now();
+      const key = keyOf(remote);
+      const entry = entries.get(key);
+      if (entry === undefined) return true;
+      if (expired(entry, at)) {
+        entries.delete(key);
+        return true;
+      }
+      return entry.count < ADMIN_THROTTLE_LIMIT;
+    },
+    failure: (remote) => {
+      const at = now();
+      prune(at);
+      const key = keyOf(remote);
+      const entry = entries.get(key);
+      if (entry !== undefined) {
+        entry.count += 1;
+        return;
+      }
+      if (entries.size >= ADMIN_THROTTLE_MAX_ENTRIES) {
+        // Map iteration is insertion order, so the first key is the oldest entry.
+        const oldest = entries.keys().next().value;
+        if (oldest !== undefined) entries.delete(oldest);
+      }
+      entries.set(key, { count: 1, firstAt: at });
+    },
+    success: (remote) => {
+      entries.delete(keyOf(remote));
+    },
+  };
+}
+
 export interface RunningServer {
   readonly server: Server;
   readonly host: string;
@@ -1097,19 +1155,39 @@ export async function startHub(options: HubOptions): Promise<RunningServer> {
     revokedTokens: liveRevoked,
     ...(devicesPathFor(resolved.storePath) !== undefined ? { devicesPath: devicesPathFor(resolved.storePath) } : {}),
     ...(resolved.revokedPath !== undefined ? { revocationPath: resolved.revokedPath } : {}),
+    adminThrottle: createAdminThrottle(),
     revokeToken: (jti: string) => {
+      // Live first, always: the running process must cut the device off even if the file write
+      // below fails. The result then says whether a restart would let it back in.
       liveRevoked.add(jti);
       const path = resolved.revokedPath;
-      if (path === undefined) return; // live only; the status route reports exactly that
+      if (path === undefined) return { durable: false };
       try {
-        const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-        const list = Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
+        // A file that does not exist at runtime is treated as an empty list; startup already
+        // validated the configured path (`parseHubArgs` refuses a missing file), so this is a file
+        // that disappeared after the hub came up. Anything that is not a JSON array of strings is
+        // refused instead of overwritten: replacing a corrupt list with `[jti]` would silently
+        // un-revoke every id it used to hold.
+        const raw = readTextIfExists(path);
+        let list: string[] = [];
+        if (raw !== null) {
+          const parsed: unknown = JSON.parse(raw);
+          if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
+            return {
+              durable: false,
+              error: `${path} must contain a JSON array of token id strings — the revocation is live only until restart`,
+            };
+          }
+          list = parsed;
+        }
         if (!list.includes(jti)) list.push(jti);
-        writeFileSync(path, JSON.stringify(list, null, 2), "utf8");
-      } catch {
-        // No readable file yet (or a corrupt one) — write a fresh list rather than losing the
-        // revocation: the device stays cut off after a restart, which is the whole point.
-        writeFileSync(path, JSON.stringify([jti], null, 2), "utf8");
+        writeAtomic(path, JSON.stringify(list, null, 2));
+        return { durable: true };
+      } catch (error) {
+        return {
+          durable: false,
+          error: `${path} could not be updated: ${oneLine(errorText(error))}`,
+        };
       }
     },
     ...(resolved.cors !== undefined ? { cors: resolved.cors } : {}),
@@ -1366,6 +1444,12 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
   if (adminSecretRaw !== undefined && adminSecretRaw.length === 0) {
     return "--admin-secret must not be empty — omit it entirely to run without an admin surface";
   }
+  // The admin secret mints and revokes every other credential, so it is the one secret that must
+  // not be guessable: a short one turns the surface into a brute-force target that answers 401
+  // quickly. 16 characters is the floor, not a recommendation.
+  if (adminSecretRaw !== undefined && adminSecretRaw.length < 16) {
+    return "--admin-secret must be at least 16 characters — a short operator secret is guessable";
+  }
   const adminSecret = adminSecretRaw;
 
   // Phase 2 (#36): a signing key for per-device tokens. Separate from the shared secret on purpose —
@@ -1480,13 +1564,19 @@ Authentication:
   variable: a secret on a command line is visible in the process list to every other user on the
   machine. An empty value is rejected rather than treated as "off".
 
-  With --admin-secret (or BLUEPENCIL_ADMIN_SECRET) the hub serves an admin page at {base}/admin and
-  the routes behind it, each answered only for the x-bluepencil-admin header with that value — a
-  separate credential from the one in every browser, because this one mints and revokes the other
-  kind. Without the flag the surface does not exist at all (404, not a locked page). The admin
-  secret is also accepted as a client credential, so the page edits notes with the one value it
-  holds; minting tokens additionally needs --token-key, and a revocation is written to
-  --revoked-tokens so it survives a restart.
+  With --admin-secret (or BLUEPENCIL_ADMIN_SECRET, at least 16 characters) the hub serves an admin
+  page at {base}/admin and the routes behind it. The page itself is not gated (it carries no notes);
+  the routes answer only for the x-bluepencil-admin header with that value — a separate credential
+  from the one in every browser, because this one mints and revokes the other kind. Without the flag
+  the surface does not exist at all (404, not a locked page). The admin secret is a second
+  credential on the notes routes only (never on /mcp), so the page edits notes with the one value it
+  holds. Minting tokens additionally needs --token-key; a revocation is live at once and written to
+  --revoked-tokens so it survives a restart (without that file it is live only until restart).
+  Failed secret checks are throttled: after 10 wrong attempts from one address within 5 minutes the
+  answer is 429 with Retry-After: 300. Minting and revoking are credential management rather than
+  note writes, so they stay available under --read-only while note writes remain 403. The surface
+  speaks plain HTTP like the rest of the hub: bind it to loopback or put it behind TLS, because the
+  admin secret travels in a header on every request.
 
 Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in http adapter):
   GET    {base}/config              name, app, federates, version, base, which credential, and the
@@ -1505,11 +1595,16 @@ Endpoints (base defaults to /api/v1/bluepencil — the default of the built-in h
   GET    {base}/bundle              canonical bundle (src/data) — for agents/exports
   GET    {base}/journal             history: { journal: {backend, location, entries, lastSeq},
                                     entries } — optional ?since=<seq> for agents (FR-18)
-  GET    {base}/admin               the admin page (HTML); exists only with --admin-secret
+  GET    {base}/admin               the admin page (HTML, not gated); exists only with --admin-secret
+  GET    {base}/admin/status        hub + registry summary            → { version, …, devices }
+  GET    {base}/admin/devices       the device registry               → { devices }
+  POST   {base}/admin/devices       { device, scope?, ttlSeconds? }   → { token, jti, … }
+  POST   {base}/admin/devices/revoke { jti }                          → { revoked, known, durable }
 
 Rules: bulk-delete requires "confirm": true; an unknown id is 404; a malformed body is 400; a body
 that is not application/json is 415; a known path with the wrong method is 405; every error is
-{"error":{"code","message"}}. --read-only refuses every write (403). The hub is bound to ONE
+{"error":{"code","message"}}. --read-only refuses every note write (403); admin mint/revoke stay
+available because they manage credentials, not notes. The hub is bound to ONE
 environment: a write that names another one is refused (400) unless --allow-env-mismatch promotes
 it (FR-14.8). The store file is canonical bundle JSON, written atomically; a corrupt store file
 refuses the start (exit 2) instead of being served as an empty set. --root serves a static

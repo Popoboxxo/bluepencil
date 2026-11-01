@@ -1,3 +1,75 @@
+## [0.11.1] - 2026-11-01
+
+### Fixed
+
+**The admin surface now behaves like a surface an operator can trust: its token panel survives a
+refresh, its credential reaches only the notes it is meant to reach, and every route answers with
+the headers and limits it claims.** The 0.11.0 page was usable; these are the defects that showed
+up once it was driven against a running hub.
+
+- **The minted-token panel no longer disappears.** A devices refresh used to rebuild the table and
+  drop the once-only token with it. The token now stays until the operator dismisses it, reloads,
+  or mints again, and **Copy** works through the Clipboard API with an `execCommand` fallback for a
+  page that is not served over a secure context.
+- **The admin secret bridges to the notes routes on a token-only hub.** `authorize()` accepts it as
+  a second credential with one explicitly allowed route scope — `/notes*` — and never on `/mcp`.
+  The bridge does not turn authentication on: a hub with no client credential still has no gate.
+- **The admin secret is not stored in `sessionStorage` by default.** The page keeps it in the tab's
+  JavaScript memory; the former write is now an opt-in **Remember in this tab** with a warning.
+- **The admin page is served defensively.** Its response carries `cache-control: no-store`,
+  `x-frame-options: DENY`, `content-security-policy: frame-ancestors 'none'` and
+  `referrer-policy: no-referrer`.
+- **Every admin response carries CORS metadata, and `OPTIONS` is answered.** The preflight
+  advertises `x-bluepencil-admin` alongside `Content-Type` and `Authorization`, so a scripted admin
+  route from the configured origin passes the browser's preflight.
+- **Persistence is atomic where the admin surface writes.** The store, `devices.json` and the
+  revocation file are written through a temporary file and a rename. A corrupt `devices.json` is
+  reported as **500 `registry_unreadable`** and surfaced as `devicesError` on the status route —
+  never silently read as an empty list, and never overwritten by the next mint.
+- **Revocation reporting matches what revocation actually does.** The page says *durable* only when
+  `--revoked-tokens` is configured and *live only — lost on restart* otherwise. Ids minted with the
+  CLI (which never entered `devices.json`) can still be revoked by jti and land in the revocation
+  file, so the cut-off survives a restart.
+- **The journal records the verified device, not a spoofable header.** On a token-authenticated
+  request the token's device name is the actor; `X-Bluepencil-Actor` is only the fallback when no
+  token proved an identity.
+- **Input limits are enforced at the route.** Device names are capped at 200 characters, `jti` at
+  256, and token TTLs at 365 days. The admin secret must be at least 16 characters at startup.
+  Repeated admin failures are throttled: 10 failures per remote in 5 minutes answer **429** with
+  `Retry-After: 300`.
+- **Admin paths are normalised.** `/admin/` serves the same page as `/admin`, `..` segments are
+  normalised before the route check, and an unknown path under the surface still answers **404**.
+- **The page is translated and accessible.** The embedded HTML carries `en`/`de` copy, the device
+  table follows tablist keyboard semantics, and every value is rendered as text — an operator name
+  or a device string cannot become markup.
+- **The device list tells the truth about CLI-minted tokens.** It lists only ids this hub issued
+  (`devices.json`); a token minted with `bluepencil token` is not listed, but it can still be
+  revoked by its jti, which the page states instead of implying the list is complete.
+
+### Verified
+
+Against **running hubs** (`server-admin.test.ts`) and the **jsdom page tests**:
+
+- on a token-only hub the admin secret edits notes while `/mcp` refuses it — the bridge is
+  notes-route only;
+- a hub with no client credential stays open: the admin secret does not switch authentication on;
+- CORS and `OPTIONS` advertise `x-bluepencil-admin`, and refusals carry the same headers;
+- a corrupt `devices.json` answers `500 registry_unreadable`, reports `devicesError`, is not
+  overwritten, and revocation still applies;
+- revoking an unknown jti with a revocation file configured is accepted and **durable**: the id is
+  written to `--revoked-tokens` and the answer does not claim the revocation was live-only;
+- `/admin/` serves the page, an unknown admin path is 404, a short admin secret refuses startup;
+- 10 failures in 5 minutes answer 429 with `Retry-After`;
+- mint and revoke still work under `--read-only` while a note write answers 403;
+- the journal records the verified token device;
+- the 200/256/365-day limits are enforced.
+
+The page tests assert that the minted token stays visible after a devices refresh, that copy works
+through the Clipboard API and its fallback, and that a note body containing markup (`<img …>`) is
+rendered as text, not HTML.
+
+---
+
 ## [0.11.0] - 2026-11-01
 
 ### Added

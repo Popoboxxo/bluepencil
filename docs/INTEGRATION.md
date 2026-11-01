@@ -129,15 +129,26 @@ degraded. The registry `base` values must include the API path
 ### Authentication — and when it is needed
 
 A hub on loopback needs none: it is as protected as the file it writes to. The moment `--host`
-leaves loopback, one of two credentials has to be configured, and **every request under the base**
-must then carry it:
+leaves loopback, one of the two **client** credentials has to be configured, and **every request
+under the base** must then carry it:
 
 | Credential | Flag / environment | Header | Properties |
 |---|---|---|---|
 | Shared secret | `--auth-secret` / `BLUEPENCIL_AUTH_SECRET` | `x-bluepencil-auth: <secret>` | one string for every client, no expiry, no per-device revocation |
 | Signed token | `--token-key` / `BLUEPENCIL_TOKEN_KEY` | `Authorization: Bearer <token>` | HS256, one per device (`jti`), expires, revocable by id |
+| Admin secret (operator) | `--admin-secret` / `BLUEPENCIL_ADMIN_SECRET` | `x-bluepencil-admin: <secret>` | at least 16 characters; a **notes-route-only** bridge, never `/mcp`; rate-limited; **not a client credential** |
 
-Prefer the environment variable over the flag in both cases: a value on a command line is visible in
+**The admin secret is not a client credential.** It belongs to the operator and unlocks the optional
+admin page at `{base}/admin`; the hub admits it as a second credential only on the notes routes
+(`{base}/notes*`), never on `/mcp`, `/sessions` or `/bundle`, and its presence does **not** turn
+authentication on — a hub with no `x-bluepencil-auth`/token gate stays ungated. Admin
+authentication is rate-limited: 10 failures per remote in 5 minutes answer `429` with
+`Retry-After: 300`. The page keeps the secret in memory by default; **Remember in this tab** is
+opt-in and warns about the tab's storage. The page is served with `cache-control: no-store`,
+`x-frame-options: DENY`, `content-security-policy: frame-ancestors 'none'` and
+`referrer-policy: no-referrer`.
+
+Prefer the environment variable over the flag in every case: a value on a command line is visible in
 the process list to every other user on the machine.
 
 ```sh
@@ -153,7 +164,9 @@ bluepencil token --device work-laptop --scope read write --ttl 43200
 
 `bluepencil token` mints locally and prints the token on stdout (context on stderr), so
 `export TOKEN=$(bluepencil token --device laptop)` works. The id it prints is what a revocation file
-lists; the file is read once at startup, so revoking a device means restarting the hub.
+lists; with the admin surface a revocation is live at once and, when `--revoked-tokens` is
+configured, durable across restarts. Without the admin surface the file is read at startup, so a
+revocation means adding the id and restarting the hub.
 
 Clients authenticate the same way the extension does — over HTTP the adapter sets the header:
 
