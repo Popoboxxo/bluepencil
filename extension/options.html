@@ -52,6 +52,10 @@
   option { background-color: Field; color: FieldText; }
   ::placeholder { color: GrayText; opacity: 1; }
   .hint { display: block; margin-top: .25rem; font-size: .82rem; color: var(--bp-muted); }
+  /* A hint that describes a control rather than labelling it lives outside the <label> (so it does
+     not become part of the accessible name) and needs the field spacing the label used to carry. */
+  .field { margin: 0 0 .9rem; }
+  .field > label { margin: 0; }
   .row { display: flex; gap: .6rem; align-items: center; }
   .row input[type=checkbox] { width: auto; }
   /* The `label > span` rule above adds a bottom margin for a stacked field; in a flex row it would
@@ -62,9 +66,15 @@
     border: 1px solid #2563eb; background: #2563eb; color: #fff; cursor: pointer;
   }
   button[disabled] { opacity: .6; cursor: default; }
-  #status { margin-left: .8rem; font-size: .9rem; color: var(--bp-muted); }
+  .actions { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
+  #status { font-size: .9rem; color: var(--bp-muted); }
   #status[data-kind=error] { color: var(--bp-error); }
   #status[data-kind=ok] { color: var(--bp-ok); }
+  /* Reachable, but the credential check was inconclusive — neither success nor failure. */
+  /* `--bp-warn-edge` is a *border* colour: as 0.9rem text on Canvas it is 3.19:1 in light mode.
+     The status line takes the warning's text token instead (9.07:1 light, 15.04:1 dark), which is
+     what `.warn` already uses for its own foreground. Measured per scheme by `npm run smoke:ext`. */
+  #status[data-kind=warn] { color: var(--bp-warn-fg); }
   .warn {
     border-left: 3px solid var(--bp-warn-edge); padding: .6rem .8rem;
     background: var(--bp-warn-bg); color: var(--bp-warn-fg); border-radius: 0 6px 6px 0;
@@ -193,10 +203,19 @@
           as its secret, so start it with <code>--auth-secret</code> — without that flag every caller
           on the network can read and write your notes.
         </p>
-        <label>
-          <span>Hub URL</span>
-          <input type="text" id="endpoint" placeholder="http://127.0.0.1:8787">
-        </label>
+        <!-- The hint describes the field instead of labelling it: it sits outside the <label> and is
+             bound with aria-describedby, so the input's accessible name stays "Hub URL". -->
+        <div class="field">
+          <label for="endpoint">
+            <span>Hub URL</span>
+            <input type="text" id="endpoint" aria-describedby="endpoint-hint"
+                   placeholder="http://127.0.0.1:8787/api/v1/bluepencil">
+          </label>
+          <span class="hint" id="endpoint-hint">
+            The full API base, including the base path — and no <code>/notes</code> at the end. The
+            hub appends <code>/notes</code>, <code>/config</code> and the other routes itself.
+          </span>
+        </div>
         <label>
           <span>Authentication</span>
           <select id="auth">
@@ -229,8 +248,12 @@
       </div>
     </fieldset>
 
-    <button type="submit" id="save">Save</button>
-    <span id="status" role="status" aria-live="polite"></span>
+    <div class="actions">
+      <button type="submit" id="save">Save</button>
+      <!-- Only meaningful for the hub store; `showSidecar()` keeps it hidden and disabled otherwise. -->
+      <button type="button" id="test-connection" hidden disabled>Test connection</button>
+      <span id="status" role="status" aria-live="polite"></span>
+    </div>
   </form>
 
   <fieldset class="card">
