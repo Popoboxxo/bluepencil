@@ -241,3 +241,18 @@ requires-trace-from: []
 /config reports app and federates, without secrets: GET {base}/config additionally returns app (string) and federates (boolean); federates is true exactly when the process aggregates a registry; every registered instance must report federates — if the field is missing the federation start fails with federates_missing, so children below 0.10 are not federatable; the body carries no tokens, secrets or environment values; older clients ignore the fields; the hub's --app sets app
 
 *Acceptance criteria:* The body contains `app` and `federates` and no credential material; a hub without a registry answers `federates:false`; a registered instance whose `/config` lacks `federates` aborts the start with `federates_missing`
+
+## FR-6.16 Optional admin surface on the hub: --admin-secret / BLUEPENCIL_ADMIN_SECRET (at least 16…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+Optional admin surface on the hub: --admin-secret / BLUEPENCIL_ADMIN_SECRET (at least 16 characters) enables {base}/admin and {base}/admin/, with status, devices and revoke routes; without the flag every admin path is the router's ordinary 404; every admin route except GET {base}/admin is gated by the x-bluepencil-admin header, and refusals and OPTIONS advertise that header in CORS; the admin secret is accepted as a second credential on /notes* only (never /mcp, /sessions or /bundle) and does not turn authentication on; minting requires --token-key; revocation is live and durable through an atomic write to --revoked-tokens; a corrupt devices.json answers 500 registry_unreadable without being overwritten, reports devicesError on status and still applies revocation; admin authentication is throttled at 10 failures per remote per 5 minutes (429 with Retry-After: 300); the page is served with cache-control: no-store, x-frame-options: DENY, content-security-policy: frame-ancestors 'none' and referrer-policy: no-referrer; mint and revoke remain allowed under --read-only while note writes answer 403; the page is translated (en/de)
+
+*Acceptance criteria:* Starting without `--admin-secret` leaves `{base}/admin` at the router's 404; with a 16-character secret `{base}/admin` and `{base}/admin/` serve the page, and status/devices/revoke answer only for `x-bluepencil-admin` (advertised on refusals and `OPTIONS`); on a token-only hub the admin secret edits `/notes*` while `/mcp` refuses it, and a hub with no client credential stays ungated; minting without `--token-key` is refused; a revoked id is cut off immediately and survives a restart when `--revoked-tokens` is set; a corrupt `devices.json` yields 500 `registry_unreadable`, `devicesError`, no overwrite and still-applied revocation; 10 failures in 5 minutes yield 429 with `Retry-After: 300`; the page response carries the four headers; mint and revoke work under `--read-only` while a note write is 403; both `en` and `de` render

@@ -30,7 +30,8 @@ const HELP = `bluepencil token — mint a signed device token for a hub (#36, ph
   The token goes to stdout and nothing else does, so it can be captured:
       export BLUEPENCIL_TOKEN=$(bluepencil token --device work-laptop)
 
-  To revoke it later, put the printed id in the hub's --revoked-tokens file and restart it.
+  To revoke it, use the hub's admin surface (--admin-secret with --revoked-tokens configured) for a
+  live, durable revocation, or add the printed id to --revoked-tokens and restart the hub.
   Tokens are short-lived, so rotating the key also invalidates every one of them at once.
 `;
 

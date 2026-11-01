@@ -61,6 +61,7 @@ BLUEPENCIL_AUTH_SECRET="$(openssl rand -hex 32)" docker compose up -d
 | `BLUEPENCIL_REGISTRY` | – | Registry file; makes `/mcp` an aggregate and `/config` report `federates:true` (the hub stays the store of record) |
 | `BLUEPENCIL_AUTH_SECRET` | generated | Shared secret; every client sends it in `x-bluepencil-auth` |
 | `BLUEPENCIL_TOKEN_KEY` | – | Signed per-device tokens instead (`Authorization: Bearer …`), individually revocable |
+| `BLUEPENCIL_ADMIN_SECRET` | – | Opt-in admin surface at `{base}/admin`; at least 16 characters, or the hub refuses to start |
 | `BLUEPENCIL_SECRET_FILE` | `/data/.bluepencil-auth` | Where the generated secret is kept |
 
 Extra arguments go straight to the hub, e.g. a read-only hub with a Markdown mirror:
@@ -68,6 +69,50 @@ Extra arguments go straight to the hub, e.g. a read-only hub with a Markdown mir
 ```yaml
 command: ["--read-only", "--mirror", "/data/notes.md"]
 ```
+
+## The admin surface (optional)
+
+`--admin-secret` (or `BLUEPENCIL_ADMIN_SECRET`, at least 16 characters) adds an operator page and
+the routes behind it. Without it the surface does not exist: `{base}/admin` falls through to the
+ordinary 404, so the container looks exactly like a hub that never had the feature.
+
+```sh
+docker run -d --name bluepencil-hub -p 127.0.0.1:8787:8787 -v bluepencil-notes:/data \
+  -e BLUEPENCIL_ADMIN_SECRET="$(openssl rand -hex 32)" \
+  -e BLUEPENCIL_TOKEN_KEY="$(openssl rand -hex 32)" \
+  ghcr.io/popoboxxo/bluepencil:0.11.1
+```
+
+At `{base}/admin` (`/admin/` is the same page) the operator:
+
+- **mints per-device tokens** — this needs `--token-key`; without a signing key the page says so
+  and offers the shared secret instead;
+- **revokes by `jti`** — live at once and durable when `--revoked-tokens` names a file;
+- **reads status and activity** — version, environment, credential mode, note/device counts, and
+  whether token issuing and durable revocation are available.
+
+Issued ids are recorded in `devices.json` next to the store (for example `/data/devices.json` next
+to `/data/notes.bluepencil.json`). The token itself is shown once and never stored; the hub keeps
+the id. A token minted with `bluepencil token` is not listed there, but it can still be revoked by
+its jti.
+
+The admin credential is its own header (`x-bluepencil-admin`) and is **not** a client credential:
+it is admitted as a second credential on the notes routes only, never on `/mcp`. It also does not
+turn authentication on — a hub without `--auth-secret`/`--token-key` still has no client gate.
+
+Security caveats:
+
+- **Keep the surface on loopback or behind a dedicated origin.** It mints and revokes the
+  credentials other clients use; publishing it is publishing the key ring.
+- **Terminate TLS in front of it.** The image has no TLS of its own, and the admin secret crosses
+  the wire on every request.
+- **The journal is public.** `GET {base}/journal` is answered without a credential (like
+  `{base}/config`); do not expose a hub on an untrusted network and expect the audit trail to stay
+  private.
+- **The admin throttle keys on the socket peer address.** Behind a reverse proxy all operators
+  share one budget (10 failures per 5 minutes), because every request arrives from the proxy's
+  address. Bind the admin surface to a dedicated origin/loopback, or set a separate trust boundary
+  accordingly.
 
 ## Hub of Hubs
 

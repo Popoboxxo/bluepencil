@@ -8,10 +8,12 @@
  * (`<origin>/api/v1/bluepencil`), so the hub is drop-in for the element.
  *
  * This module is the *pure* half of the hub: `handleRequest(request, context)` maps one HTTP
- * request onto `{ status, headers, body }` and imports nothing but `src/**` — no `node:http`, no
- * `node:fs`, no socket, no timer. The `node:http` glue, the static file serving, the CLI parsing
- * and the file store live in `server/hub.ts`; persistence arrives as `context.persist`, which is
- * called exactly once per accepted mutation (and whose failure rolls the mutation back).
+ * request onto `{ status, headers, body }` and itself takes no Node API — no `node:http`, no
+ * socket, no timer. It does delegate the optional admin surface to `server/admin.ts`, and that
+ * module reads the device registry and the revocation file through `node:fs`. The `node:http`
+ * glue, the static file serving, the CLI parsing and the file store live in `server/hub.ts`;
+ * persistence arrives as `context.persist`, which is called exactly once per accepted mutation
+ * (and whose failure rolls the mutation back).
  *
  * Everything is delegated to the single implementation of `src/core/**` and `src/data/**`
  * (FR-15.3) — nothing about notes is re-implemented here:
@@ -71,10 +73,15 @@ import { VERSION } from "../src/version";
 import { canonicalNote } from "../src/data/canonical";
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { validateNote } from "../src/data/schema";
+import { corsHeaders } from "./cors";
 // The admin surface answers before the credential gate, so it must not import the gate — the
 // dependency runs one way: this router delegates to `handleAdmin`, whose only dependency on this
 // module is its types (erased at runtime, so the cycle never materialises in the bundle).
 import { handleAdmin } from "./admin";
+
+// Re-exported so the existing imports from `./handler` keep working; the implementation lives in
+// `server/cors.ts`, which imports nothing and can therefore be used from `server/admin.ts` too.
+export { corsHeaders };
 
 /** Version reported by `GET {base}/health` — the same string every other artifact reports (FR-19). */
 export const SERVER_VERSION: string = VERSION;
@@ -120,6 +127,13 @@ export const ERROR_CODES = [
   "payload_too_large",
   "store_write_failed",
   "internal_error",
+  // The optional admin surface's own refusals (server/admin.ts): a registry that cannot be read, a
+  // peer that exhausted its secret-check budget, a hub with no signing key, and a host that wired no
+  // revocation.
+  "registry_unreadable",
+  "too_many_attempts",
+  "no_signing_key",
+  "revocation_unavailable",
 ] as const;
 
 export type ServerErrorCode = (typeof ERROR_CODES)[number];
@@ -133,6 +147,16 @@ export interface ServerRequest {
   headers?: Record<string, string | string[] | undefined>;
   /** Raw request body text; empty when the request has none. */
   body?: string;
+  /**
+   * Peer address, filled by the `node:http` glue. The pure handler never reads a socket; it only
+   * passes this to injected policies (the admin throttle) that key their state by origin.
+   */
+  remote?: string;
+  /**
+   * Device name of a token the verifier accepted, set by `authorize()`. A verified identity, unlike
+   * the `x-bluepencil-actor` header, which is the caller's own unverified statement.
+   */
+  authDevice?: string;
 }
 
 /** One HTTP response; `headers` are already complete, `body` is the exact bytes to send. */
@@ -149,6 +173,24 @@ export interface ServerResponse {
  */
 export interface NoteStoreState {
   notes: Note[];
+}
+
+/**
+ * The admin surface's brute-force brake, injected so the handler stays free of Node APIs.
+ *
+ * The throttle is injected and the pure handler has no clock of its own; the glue owns the clock
+ * and the storage, and the admin routes only ask "may this peer try again?" and report what
+ * happened. Keeping it a narrow interface also means a host that runs the handler in its own
+ * backend can plug in its own policy (or none) without this module knowing. The registry I/O the
+ * admin surface needs lives in `server/admin.ts`, not here.
+ */
+export interface AdminThrottle {
+  /** True when this peer may attempt a secret check now. */
+  allow(remote: string | undefined): boolean;
+  /** Records a failed secret check for this peer. */
+  failure(remote: string | undefined): void;
+  /** Clears this peer's failures after a successful check. */
+  success(remote: string | undefined): void;
 }
 
 /** Everything the pure handler needs: the set, the deployment settings and the persist hook. */
@@ -220,8 +262,17 @@ export interface HandlerContext {
   devicesPath?: string;
   /** Where the revocation list is read from at startup (`--revoked-tokens`). */
   revocationPath?: string;
-  /** Revokes a token for the running process: the live set grows and the file catches up. */
-  revokeToken?: (jti: string) => void;
+  /**
+   * Revokes a token for the running process: the live set grows and, when a revocation file is
+   * configured, the file catches up. The result says whether the revocation survives a restart —
+   * a memory-only revocation is a speed bump, and the admin answer must not pretend otherwise.
+   */
+  revokeToken?: (jti: string) => { durable: boolean; error?: string };
+  /**
+   * Brute-force brake for the admin surface's secret checks (`server/hub.ts` injects one). Absent
+   * means no throttling — the pure handler has no clock of its own.
+   */
+  adminThrottle?: AdminThrottle;
   /** `--allow-env-mismatch`: a foreign-environment write is promoted instead of refused (FR-14.8). */
   allowEnvMismatch?: boolean;
   /** `--cors <origin|*>`: the allowed origin; unset means no CORS headers at all. */
@@ -548,24 +599,6 @@ function configResponse(context: HandlerContext): ServerResponse {
   );
 }
 
-/** CORS headers for one deployment; the default (no `--cors`) sends none at all. */
-export function corsHeaders(cors: string | undefined): Record<string, string> {
-  if (cors === undefined || cors === "") return {};
-  return {
-    "access-control-allow-origin": cors,
-    "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
-    // Every header any caller of this API actually sends, or the browser drops it before the
-    // request leaves: `Authorization` (signed token), `x-bluepencil-auth` (shared secret, #99 —
-    // without it an authenticated cross-origin pairing fails after the preflight passes), and the
-    // identity/session pair both MCP and the notes API record (`x-bluepencil-client`,
-    // `mcp-session-id`, `x-bluepencil-actor` for the journal). Header names match case-insensitively.
-    "access-control-allow-headers":
-      "Content-Type, Authorization, X-Bluepencil-Auth, X-Bluepencil-Client, X-Bluepencil-Actor, Mcp-Session-Id",
-    "access-control-max-age": "600",
-    ...(cors === "*" ? {} : { vary: "Origin" }),
-  };
-}
-
 function json(status: number, payload: unknown, context: HandlerContext): ServerResponse {
   return {
     status,
@@ -874,11 +907,14 @@ function assertKnownDraftFields(payload: Record<string, unknown>): void {
 }
 
 /**
- * The journal's "who" (FR-18): the `X-Bluepencil-Actor` header wins, otherwise the payload's own
- * `author`. Both are the caller's own statement — the hub has no authentication, so this is a
- * provenance note, not an identity claim (see the hub README on that boundary).
+ * The journal's "who" (FR-18). A device name from a token the verifier accepted wins: that identity
+ * was proven by the hub, while the `X-Bluepencil-Actor` header and the payload's `author` are the
+ * caller's own statement. Without a verified token the header wins over the payload author — the
+ * same unverified provenance note the hub has always recorded.
  */
 function actorOf(request: ServerRequest, payload?: Record<string, unknown>): string | undefined {
+  const device = request.authDevice === undefined ? "" : request.authDevice.trim();
+  if (device !== "") return device;
   const header = headerValue(request.headers, "x-bluepencil-actor");
   const named = header === undefined ? "" : header.trim();
   if (named !== "") return named;
@@ -1129,65 +1165,83 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
  * `POST {base}/mcp` is a read when the message is `tools/list` and a write when it calls a writing
  * tool, so the scope has to follow the message rather than the HTTP verb.
  *
+ * `options.allowAdminSecret` is a *notes-route-only* second credential, opted into per request by
+ * the router. It lets the admin page edit notes through this one API with the one secret the
+ * operator already holds, so note handling stays implemented exactly once. It is deliberately not a
+ * client credential on the MCP door (which never opts in) and it does not configure authentication:
+ * a hub with no client credential still has no gate, and the admin surface does not turn one on.
+ *
  * Returns the refusal to answer with, or `null` when the request may proceed.
  */
 export function authorize(
   request: ServerRequest,
   context: HandlerContext,
   scope?: "read" | "write",
+  options?: { allowAdminSecret?: boolean },
 ): ServerResponse | null {
   const method = (request.method ?? "GET").toUpperCase();
   const verifier = context.verifyToken;
   const secret = context.authSecret;
   const presentedToken = bearerToken(request);
-  if (verifier !== undefined || (typeof secret === "string" && secret.length > 0)) {
-    const required =
-      scope ?? context.requiredScope?.({ method }) ?? (method === "GET" ? "read" : "write");
-    const token = presentedToken;
+  // The gate exists only when a credential was configured. An admin secret alone is not one: it
+  // guards the admin routes, not the notes a client reads.
+  if (verifier === undefined && !(typeof secret === "string" && secret.length > 0)) return null;
 
-    if (token !== undefined && verifier !== undefined) {
-      const verdict = verifier(token, required, context.revokedTokens ?? EMPTY_REVOKED);
-      if (!verdict.ok) {
-        const refusal = tokenRefusal(verdict.reason);
-        return errorResponse(
-          refusal.status,
-          refusal.code,
-          `${refusal.advice} — the token was refused because it is ${verdict.reason}`,
-          context,
-        );
-      }
-    } else if (typeof secret === "string" && secret.length > 0) {
-      const presented = headerValue(request.headers, AUTH_HEADER);
-      // The admin secret is accepted here too: the admin page edits notes through *this* API with
-      // one credential it already holds, so note handling stays implemented exactly once. It does
-      // not widen anything the other way — the admin routes check `x-bluepencil-admin`, which the
-      // hub's client credential is not.
-      const adminAccepts =
-        context.adminSecret !== undefined && presented !== undefined && secretsMatch(context.adminSecret, presented);
-      if (presented === undefined || !(secretsMatch(secret, presented) || adminAccepts)) {
-        return errorResponse(
-          401,
-          "unauthorized",
-          presented === undefined
-            ? `missing ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`
-            : `invalid ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`,
-          context,
-        );
-      }
-    } else {
-      // A key is configured and no token arrived — either none was sent at all or one came in a
-      // different scheme (`Authorization: Basic …` is somebody else's credential, and treating its
-      // value as a token would be leniency in the one place leniency is a bypass). Answering 401 is
-      // the whole point of having configured a key.
+  const required =
+    scope ?? context.requiredScope?.({ method }) ?? (method === "GET" ? "read" : "write");
+
+  // A signed token is verified first and on its own: an invalid token is refused rather than
+  // retried as a secret, so a device cannot downgrade from "my token was revoked" to "try a secret".
+  if (presentedToken !== undefined && verifier !== undefined) {
+    const verdict = verifier(presentedToken, required, context.revokedTokens ?? EMPTY_REVOKED);
+    if (!verdict.ok) {
+      const refusal = tokenRefusal(verdict.reason);
       return errorResponse(
-        401,
-        "unauthorized",
-        `missing ${BEARER_HEADER}: Bearer <token> — this hub requires a signed token (--token-key)`,
+        refusal.status,
+        refusal.code,
+        `${refusal.advice} — the token was refused because it is ${verdict.reason}`,
         context,
       );
     }
+    // The verified device is the identity the journal records; the header is not.
+    if (verdict.device !== undefined) request.authDevice = verdict.device;
+    return null;
   }
-  return null;
+
+  const presented = headerValue(request.headers, AUTH_HEADER);
+  if (
+    options?.allowAdminSecret === true &&
+    context.adminSecret !== undefined &&
+    presented !== undefined &&
+    secretsMatch(context.adminSecret, presented)
+  ) {
+    return null;
+  }
+
+  if (typeof secret === "string" && secret.length > 0) {
+    if (presented === undefined || !secretsMatch(secret, presented)) {
+      return errorResponse(
+        401,
+        "unauthorized",
+        presented === undefined
+          ? `missing ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`
+          : `invalid ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`,
+        context,
+      );
+    }
+    return null;
+  }
+
+  // A key is configured and no token arrived — either none was sent at all or one came in a
+  // different scheme (`Authorization: Basic …` is somebody else's credential, and treating its
+  // value as a token would be leniency in the one place leniency is a bypass). Answering 401 is
+  // the whole point of having configured a key.
+  return errorResponse(
+    401,
+    "unauthorized",
+    `missing ${BEARER_HEADER}: Bearer <token> — this hub requires a signed token (--token-key)`,
+    context,
+  );
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -1281,7 +1335,11 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   if (method === "OPTIONS" && context.cors !== undefined && context.cors !== "") {
     return { status: 204, headers: corsHeaders(context.cors), body: "" };
   }
-  const refusal = authorize(request, context);
+  // The admin secret is a second credential for the notes routes only — the page edits notes with
+  // it. Every other route (and the MCP door) keeps the client credential alone.
+  const refusal = authorize(request, context, undefined, {
+    allowAdminSecret: segments[0] === "notes",
+  });
   if (refusal !== null) {
     return refusal;
   }
