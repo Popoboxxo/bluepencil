@@ -89,6 +89,18 @@ The layer uses constructable stylesheets (`document.adoptedStyleSheets`) when a 
 forbids inline styles (#33). That keeps it working *inside* a policy, not around it. The smoke test
 runs against a strict-CSP host on purpose: it is the case that used to break.
 
+One part is different since 0.11.6: **hub traffic leaves through the extension's service worker**
+(#116). The layer's `fetch` still runs in the page, but it is routed page → isolated-world bridge →
+service worker, and the worker is outside the document's CSP. A page with `default-src 'self'` and
+no `connect-src` therefore no longer blocks note sync. The overlay's own CSS remains subject to
+`style-src`, and a plain embed or bookmarklet (no extension) still needs `connect-src` for its hub
+origin.
+
+The page → bridge channel carries two things, and only the second reaches the worker: one
+`chrome.storage.local` call (the layer's own store, so notes survive a reload — the bridge answers
+it itself) and one hub request (relayed to the worker). The storage hop is *not* the worker, but it
+has its own rule; see **Page-side storage relay** below.
+
 ## Storage
 
 The default store is `chromeStorage` (`chrome.storage.local`), which needs no server and no account.
@@ -96,9 +108,21 @@ Notes stay in the browser profile.
 
 ### Using a hub instead
 
-Switch the store to *on a hub* in the options page and give it a URL. The extension then hands the
-element a `data-endpoint` and the element talks to the hub directly, which is what makes notes
-shared across devices and visible to the MCP server.
+Switch the store to *on a hub* in the options page and give it a URL. The extension hands the
+element a `data-endpoint`; the element's HTTP adapter sends its requests through the service worker
+(below), which is what makes notes shared across devices and visible to the MCP server.
+
+The worker is the trust boundary for hub traffic, not the bridge. Any page script can post a relay
+request, so the worker enforces all of it: the request must target the configured endpoint's
+**origin and base path** (every `{base}/admin` spelling is refused, including a percent-encoded
+one), the method must be `GET`, `POST` or `PATCH`, and only `accept`,
+`content-type`, `authorization` and `x-bluepencil-auth` are forwarded. A request that arrives with
+any other header is refused rather than trimmed, so a misconfiguration is visible instead of silent.
+The worker sends `credentials: "omit"`, `cache: "no-store"` and `referrerPolicy: "no-referrer"`:
+the layer authenticates with a header, never with a cookie. It also **refuses redirects** rather
+than following them — following one would carry the credential to an origin you never configured,
+and the browser hides the redirect target, so it cannot be checked first. If a reverse proxy
+redirects http to https, save the **final** URL in the options page.
 
 The URL is the **full API base**, base path included — `http://127.0.0.1:8787/api/v1/bluepencil`,
 not the bare origin and not `…/notes`; the layer appends `/notes`, `/config` and the other routes
@@ -181,6 +205,35 @@ Both credential phases of [#36](https://github.com/Popoboxxo/bluepencil/issues/3
 release. What is deliberately *not* here: there is no token refresh (an expired token is replaced by
 hand) and the revocation list is read when the hub starts, so revoking a device means restarting
 it. See *Known gaps* in [CHANGELOG.md](../CHANGELOG.md) for the current list.
+
+### Page-side storage relay
+
+The layer's default store lives in `chrome.storage.local`, which the page's own world cannot reach;
+the isolated-world bridge performs that call on its behalf. The channel is reachable by any page
+script, so the bridge applies one write rule: **a page may only write the layer's own store blob**
+(`bluepencil:<instance>:v1`). `bluepencil:settings` — the hub endpoint and the credential — is out
+of reach, and so is anything else outside that namespace. This matters for the hub path above: a
+page that could rewrite the settings could repoint the relay at any origin and use the worker as a
+CSP-bypassing egress path.
+
+Reads are deliberately broader: a page can read the store blob and the settings object. That
+exposure predates the write rule, the layer needs its store back, and a read cannot repoint
+anything — but it is named here instead of being left implicit. The annotated page's own world is
+the wrong trust boundary to defend a credential on: a page that must not learn the token cannot be
+annotated by an extension that runs the layer there.
+
+### Residual behaviour to know about
+
+- **No rate cap.** A page can post relay requests as fast as it likes. The worker adds no capability
+  the page did not already have (it can reach the hub directly when `connect-src` allows it), and
+  the hub is the place to rate-limit; a page-side cap would only be a courtesy against itself.
+- **Disabling the extension without a reload.** The transport is registered for the document and is
+  never unregistered (a second mount must not lose it, and `disable()`/`enable()` must not either).
+  If the extension is disabled or updated while a page stays open, the bridge is gone and each hub
+  call waits the full 35 s page-side budget before it fails — it is a timeout, not a crash, but it
+  looks like a hang. Reload the page to restore the path.
+- **No cancel channel.** An aborted layer request gives up locally; the worker's request runs to its
+  own 30 s timeout.
 
 ## Permissions, and why these
 

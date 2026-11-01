@@ -104,10 +104,12 @@ const EMBED_HTML = `<!doctype html>
 /**
  * The hub fixture: the same annotatable markup as `HOST_HTML`, but **without** the CSP meta.
  *
- * The strict page's `default-src 'self'` also governs `connect-src`, so a page on it cannot fetch the
- * hub on a *different port* — the browser would block the request before the layer could ever make
- * it. A second fixture keeps the strict-CSP assertions above honest and still gives the round-trip a
- * document that is allowed to talk to the hub cross-origin.
+ * This is the *legacy* case. Before #116 it was the only hub round-trip, because `default-src 'self'`
+ * also governs `connect-src` and the page would block a hub on a different port. It stays, unchanged,
+ * so the CSP-free path keeps being pinned alongside the new one.
+ *
+ * The #116 regression case is `/hub-csp`, which serves `HOST_HTML` unchanged: a strict-CSP page whose
+ * hub traffic must leave through the extension's service worker instead of the page.
  */
 const HUB_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -179,7 +181,14 @@ async function startHost() {
       res.end(EMBED_HTML);
       return;
     }
-    // The hub fixture drops the CSP meta so the layer may fetch the hub cross-origin (see HUB_HTML).
+    // The #116 regression fixture: the strict-CSP page, unchanged (`default-src 'self'` with no
+    // `connect-src`). It has to be matched before `/hub`, which is a prefix route.
+    if (url.startsWith("/hub-csp")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(HOST_HTML);
+      return;
+    }
+    // The legacy hub fixture drops the CSP meta so the layer may fetch the hub cross-origin (HUB_HTML).
     if (url.startsWith("/hub")) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(HUB_HTML);
@@ -936,6 +945,101 @@ async function waitForHubNote(base, tag) {
 }
 
 /**
+ * Start a plain HTTP server on a free loopback port that only counts how often it was contacted.
+ *
+ * The #116 negative case needs an origin the worker must never reach. Counting the hits is what makes
+ * "refused" mean something: a rejection that still delivered the request would be the CORS bypass the
+ * relay exists to prevent.
+ */
+async function startCountingServer() {
+  const port = await freePort();
+  let hits = 0;
+  const server = createServer((_req, res) => {
+    hits += 1;
+    res.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "access-control-allow-origin": "*",
+    });
+    res.end(JSON.stringify({ marker: "must-not-be-reached" }));
+  });
+  await new Promise((done) => server.listen(port, "127.0.0.1", () => done()));
+  return {
+    port,
+    get hits() {
+      return hits;
+    },
+    stop: () => new Promise((resolve) => server.close(() => resolve())),
+  };
+}
+
+/**
+ * Post one relay request from the page and wait for the bridge's answer.
+ *
+ * This is exactly what any page script can do, which is why the negative cases are meaningful: the
+ * worker is the trust boundary, not the bridge. A reply that never arrives resolves to `{timedOut:
+ * true}`, so a missing answer is a red check rather than a hung case.
+ */
+async function pageRelay(browser, { url, method = "GET", headers = {}, body }) {
+  const request = { url, method, headers, ...(body === undefined ? {} : { body }) };
+  return browser.evaluate(`(async () => {
+    const requestId = 'bp-smoke-fetch-' + Math.random().toString(36).slice(2);
+    return await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        window.removeEventListener('message', onMessage);
+        resolve({ timedOut: true });
+      }, 8000);
+      function onMessage(event) {
+        if (event.source !== window) return;
+        const data = event.data;
+        if (!data || data.source !== 'bluepencil-page') return;
+        if (data.requestId !== requestId || !('reply' in data)) return;
+        clearTimeout(timer);
+        window.removeEventListener('message', onMessage);
+        resolve(data.reply);
+      }
+      window.addEventListener('message', onMessage);
+      window.postMessage(
+        { source: 'bluepencil-page', kind: 'fetch', requestId, request: ${JSON.stringify(request)} },
+        window.location.origin === 'null' ? '*' : window.location.origin,
+      );
+    });
+  })()`);
+}
+
+/**
+ * Post one `kind:"storage"` call from the page and wait for the bridge's answer.
+ *
+ * The same channel any page script can use. Used to show that `bluepencil:settings` — the hub
+ * endpoint and credential — is out of a page's reach even though the page can write its own store
+ * blob (#116 / CR-116-01).
+ */
+async function pageStorage(browser, payload) {
+  return browser.evaluate(`(async () => {
+    const requestId = 'bp-smoke-storage-' + Math.random().toString(36).slice(2);
+    return await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        window.removeEventListener('message', onMessage);
+        resolve({ timedOut: true });
+      }, 8000);
+      function onMessage(event) {
+        if (event.source !== window) return;
+        const data = event.data;
+        if (!data || data.source !== 'bluepencil-page') return;
+        if (data.requestId !== requestId || !('reply' in data)) return;
+        clearTimeout(timer);
+        window.removeEventListener('message', onMessage);
+        resolve(data.reply);
+      }
+      window.addEventListener('message', onMessage);
+      window.postMessage(
+        { source: 'bluepencil-page', kind: 'storage', requestId, ...${JSON.stringify(payload)} },
+        window.location.origin === 'null' ? '*' : window.location.origin,
+      );
+    });
+  })()`);
+}
+
+/**
  * Run one extended case and, if a thrown wait aborts it, report that as a red check and move on.
  *
  * A case that cannot complete must not silently cancel the cases after it: the suite's value is the
@@ -1070,7 +1174,9 @@ async function checkInBrowser() {
     //     than in something page-local.
     const sentinel = JSON.parse(await browser.evaluate(`(async () => {
       const origin = location.origin;
-      const key = 'bp-smoke-bridge-sentinel';
+      // The layer's own namespace (bluepencil:<instance>:v1): the bridge refuses a page write to
+      // anything else, so a sentinel outside it would prove the wrong thing (#116 / CR-116-01).
+      const key = 'bluepencil:smoke:v1';
       const replies = new Map();
       const onReply = (event) => {
         const data = event.data;
@@ -1201,7 +1307,9 @@ async function checkInBrowser() {
     // The other half of the sentinel round trip in step 3b: the page cannot see this object, so a
     // value here is what makes that check mean "it was persisted", not "it was echoed back".
     const persisted = JSON.parse(await browser.evaluate(`(async () => {
-      const key = 'bp-smoke-bridge-sentinel';
+      // The layer's own namespace (bluepencil:<instance>:v1): the bridge refuses a page write to
+      // anything else, so a sentinel outside it would prove the wrong thing (#116 / CR-116-01).
+      const key = 'bluepencil:smoke:v1';
       const stored = await chrome.storage.local.get(key);
       await chrome.storage.local.remove(key);
       return JSON.stringify({ value: stored[key] ?? null });
@@ -1790,12 +1898,16 @@ async function checkInBrowser() {
  * Case 1 — the live hub round-trip, the highest-value claim this suite can make.
  *
  * It starts the BUILT reference hub (`dist/server.js`) as a child process, points the extension at it,
- * mounts on a CSP-free fixture and creates a note through the real UI. Then it checks the note three
- * ways: in the layer's own store, in the hub's `GET /notes` (read from Node, so the page cannot fake
- * it), and — after a reload and a toolbar-equivalent re-mount — back in the layer's store, loaded from
- * the hub. Together that is page → layer → http adapter → hub → layer in a real Chromium.
+ * mounts on a fixture and creates a note through the real UI. Then it checks the note three ways: in
+ * the layer's own store, in the hub's `GET /notes` (read from Node, so the page cannot fake it), and —
+ * after a reload and a toolbar-equivalent re-mount — back in the layer's store, loaded from the hub.
+ * Together that is page → layer → http adapter → hub → layer in a real Chromium.
+ *
+ * `path` is the fixture it runs on. The default `/hub` is the CSP-free legacy case; `/hub-csp` is the
+ * same document with the strict CSP (`HOST_HTML`) and is the #116 regression: there the hub request
+ * can only leave through the service worker. `suffix` keeps the two runs' check names apart.
  */
-async function caseHubRoundTrip(browser) {
+async function caseHubRoundTrip(browser, { path = "/hub", suffix = "" } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "bp-ext-hub-"));
   let hub;
   try {
@@ -1811,15 +1923,15 @@ async function caseHubRoundTrip(browser) {
       auth: "none",
     });
 
-    const tabId = await openHostTab(browser, "/hub");
-    ok("the hub fixture opens in its own tab", tabId !== null, `tab id ${tabId}`);
-    await attachToHostPath(browser, "/hub");
+    const tabId = await openHostTab(browser, path);
+    ok(`the hub fixture opens in its own tab${suffix}`, tabId !== null, `tab id ${tabId}`);
+    await attachToHostPath(browser, path);
 
-    const tag = `hub round-trip ${Date.now()}`;
+    const tag = `hub round-trip${suffix} ${Date.now()}`;
     const mount = await mountViaWorker(browser);
-    ok("the worker mounts the layer against the live hub", mount?.ok === true,
+    ok(`the worker mounts the layer against the live hub${suffix}`, mount?.ok === true,
       `mount: ${JSON.stringify(mount)}`);
-    await attachToHostPath(browser, "/hub");
+    await attachToHostPath(browser, path);
     await waitForLayer(browser);
 
     // The real-UI create. Wrapped so a failed capture is reported as this case's red check rather than
@@ -1831,7 +1943,7 @@ async function caseHubRoundTrip(browser) {
     } catch {
       captured = false;
     }
-    ok("the note is in the layer's store after the real-UI create", captured,
+    ok(`the note is in the layer's store after the real-UI create${suffix}`, captured,
       `store: ${JSON.stringify(await notesInStore(browser))}`);
 
     // The panel is the user-facing half: the note has to render, not only exist in the store. Opening
@@ -1843,32 +1955,134 @@ async function caseHubRoundTrip(browser) {
         .some((n) => n.textContent.includes(${JSON.stringify(tag)}))`,
       8000,
     );
-    ok("the panel shows the note it just saved", panelShows);
+    ok(`the panel shows the note it just saved${suffix}`, panelShows);
 
     const onHub = await waitForHubNote(hub.base, tag);
-    ok("the hub itself persists the note, read from Node", onHub !== null,
+    ok(`the hub itself persists the note, read from Node${suffix}`, onHub !== null,
       `GET ${hub.base}/notes → ${onHub === null ? "note missing" : "found"}`);
 
     // Reload the same tab and re-mount the way the toolbar would: a fresh document has no layer (the
     // config does not survive navigation — see case 3), so the note can only come back from the hub.
-    await attachToHostPath(browser, "/hub");
-    await browser.navigate(`http://127.0.0.1:${HOST_PORT}/hub`);
-    await attachToHostPath(browser, "/hub");
+    await attachToHostPath(browser, path);
+    await browser.navigate(`http://127.0.0.1:${HOST_PORT}${path}`);
+    await attachToHostPath(browser, path);
     const remount = await mountViaWorker(browser);
-    ok("the layer re-mounts on the reloaded hub page", remount?.ok === true,
+    ok(`the layer re-mounts on the reloaded hub page${suffix}`, remount?.ok === true,
       `mount: ${JSON.stringify(remount)}`);
-    await attachToHostPath(browser, "/hub");
+    await attachToHostPath(browser, path);
     const backFromHub = await poll(
       browser,
       `document.querySelector('bluepencil-notes')?.blueprint?.store.notes()
         .some((n) => String(n.body).includes(${JSON.stringify(tag)})) === true`,
       15000,
     );
-    ok("the note is loaded back from the hub into the layer's store", backFromHub);
+    ok(`the note is loaded back from the hub into the layer's store${suffix}`, backFromHub);
   } finally {
     // The hub holds the store file open: stop it before the temp dir is removed. `hub` is undefined
     // when `startHub` itself threw, and the temp dir is still removed.
     if (hub !== undefined) await hub.stop();
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * Case 1b — the worker relay is not a general-purpose proxy (#116).
+ *
+ * Any page script can post `{source:"bluepencil-page", kind:"fetch"}`, so the interesting claim is not
+ * "it forwards" but "it refuses". Each refusal is observed through the same channel a page would use,
+ * and the foreign origin additionally counts its own hits: a rejection that still delivered the
+ * request would be a CORS bypass, not a rejection.
+ */
+async function caseRelayRejectsForeignOrigin(browser) {
+  const dir = await mkdtemp(join(tmpdir(), "bp-ext-hub-"));
+  const foreign = await startCountingServer();
+  let hub;
+  try {
+    hub = await startHub(dir);
+    await writeExtensionSettings(browser, {
+      store: "http",
+      endpoint: hub.base,
+      identity: "anonymous",
+      auth: "none",
+    });
+
+    const tabId = await openHostTab(browser, "/hub-csp");
+    ok("the strict-CSP fixture opens in its own tab for the relay refusals", tabId !== null,
+      `tab id ${tabId}`);
+    await attachToHostPath(browser, "/hub-csp");
+
+    const mount = await mountViaWorker(browser);
+    ok("the worker mounts the layer before the relay refusals", mount?.ok === true,
+      `mount: ${JSON.stringify(mount)}`);
+    await attachToHostPath(browser, "/hub-csp");
+
+    const foreignReply = await pageRelay(browser, {
+      url: `http://127.0.0.1:${foreign.port}/secret`,
+      method: "GET",
+    });
+    ok("the relay refuses a foreign origin",
+      foreignReply?.ok === false && foreignReply?.error?.code === "disallowed_target",
+      JSON.stringify(foreignReply));
+    ok("the foreign server was never contacted", foreign.hits === 0, `hits: ${foreign.hits}`);
+
+    const outsideReply = await pageRelay(browser, {
+      url: `http://127.0.0.1:${hub.port}/`,
+      method: "GET",
+    });
+    ok("the relay refuses a path outside the configured base",
+      outsideReply?.ok === false && outsideReply?.error?.code === "disallowed_target",
+      JSON.stringify(outsideReply));
+
+    const deleteReply = await pageRelay(browser, { url: `${hub.base}/notes`, method: "DELETE" });
+    ok("the relay refuses DELETE",
+      deleteReply?.ok === false && deleteReply?.error?.code === "disallowed_method",
+      JSON.stringify(deleteReply));
+
+    const headerReply = await pageRelay(browser, {
+      url: `${hub.base}/notes`,
+      method: "GET",
+      headers: { cookie: "session=must-not-cross" },
+    });
+    ok("the relay refuses a header outside the allowlist",
+      headerReply?.ok === false && headerReply?.error?.code === "disallowed_header",
+      JSON.stringify(headerReply));
+
+    // CR-116-01: `bluepencil:settings` is extension state, not note data. If a page could write it,
+    // it could point the relay at any origin and use the worker as a CSP-bypassing egress path —
+    // the exact guarantee #116 sells. The write is refused, and the relay still only knows the
+    // original hub: the would-be endpoint stays `disallowed_target` and its server is never hit.
+    const repoint = await pageStorage(browser, {
+      op: "set",
+      items: {
+        "bluepencil:settings": {
+          store: "http",
+          endpoint: `http://127.0.0.1:${foreign.port}/api/v1/bluepencil`,
+          identity: "anonymous",
+          auth: "none",
+        },
+      },
+    });
+    ok("a page cannot rewrite the extension's hub settings", repoint?.ok === false,
+      JSON.stringify(repoint));
+
+    const repointedReply = await pageRelay(browser, {
+      url: `http://127.0.0.1:${foreign.port}/api/v1/bluepencil/health`,
+      method: "GET",
+    });
+    ok("the would-be endpoint is still refused after the write attempt",
+      repointedReply?.ok === false && repointedReply?.error?.code === "disallowed_target",
+      JSON.stringify(repointedReply));
+    ok("the counting server still received nothing after the write attempt",
+      foreign.hits === 0, `hits: ${foreign.hits}`);
+
+    // The positive control: the same channel *does* answer a request the worker allows, so the four
+    // refusals above cannot be explained by "the relay is deaf".
+    const allowedReply = await pageRelay(browser, { url: `${hub.base}/health`, method: "GET" });
+    ok("the relay answers an allowlisted request", allowedReply?.ok === true,
+      JSON.stringify(allowedReply));
+  } finally {
+    if (hub !== undefined) await hub.stop();
+    await foreign.stop();
     await rm(dir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
@@ -2190,6 +2404,10 @@ async function checkExtended(browser) {
   // Each case starts with `writeExtensionSettings`, which writes a complete blob — so the
   // options-page step above (which leaves `store:"http"` on a dead port 8787) can never leak in.
   await runCase("live hub round-trip", () => caseHubRoundTrip(browser));
+  await runCase("live hub round-trip on a strict-CSP page (#116)",
+    () => caseHubRoundTrip(browser, { path: "/hub-csp", suffix: " (strict CSP)" }));
+  await runCase("worker relay refuses requests outside the configured hub (#116)",
+    () => caseRelayRejectsForeignOrigin(browser));
   await runCase("chromeStorage reload persistence", () => caseChromeStorageReload(browser));
   await runCase("same-origin navigation", () => caseNavigationPersistence(browser));
   await runCase("unforced double mount is a no-op", () => caseDoubleMount(browser));

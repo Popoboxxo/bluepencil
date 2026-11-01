@@ -27,6 +27,8 @@ import { readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { injectsCodeString } from "./lib/webstore-rules.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..");
 const extDir = join(root, "extension");
@@ -252,7 +254,7 @@ async function checkShippedCode() {
       if (source !== undefined) files.push({ name: `dist/${name}`, code: source });
     }
   } else {
-    for (const name of ["sw.ts", "bridge.ts", "bootstrap.ts", "options.ts", "handoff.ts", "settings.ts"]) {
+    for (const name of ["sw.ts", "bridge.ts", "bootstrap.ts", "page-relay.ts", "storage-relay.ts", "options.ts", "handoff.ts", "settings.ts"]) {
       const source = await readIfPresent(join(extDir, "src", name));
       if (source !== undefined) files.push({ name: `src/${name}`, code: stripComments(source) });
     }
@@ -293,12 +295,13 @@ async function checkShippedCode() {
 
   // `chrome.scripting.executeScript({ code: "…" })` is string evaluation wearing an API's clothes:
   // the payload is a string, which is exactly the shape the policy forbids. Only `files` and `func`
-  // may appear.
+  // may appear. Scoped to the call's own arguments (`injectsCodeString`) so an ordinary protocol
+  // field named `code` — the relay's `error.code` — is not mistaken for an injection (CR-116-04).
   const worker = files.find((f) => f.name.endsWith("sw.js") || f.name.endsWith("sw.ts"));
   if (worker !== undefined) {
     check(
       "the worker injects files and functions only, never a code string",
-      !/\bcode\s*:/.test(worker.code),
+      !injectsCodeString(worker.code),
       "executeScript({ code }) found",
     );
   }
@@ -327,7 +330,7 @@ async function checkShippedCode() {
   // bundle and would otherwise report the library's single call site twice, as if the extension had
   // one of its own.
   const ownSources = [];
-  for (const name of ["sw.ts", "bridge.ts", "bootstrap.ts", "options.ts", "handoff.ts", "settings.ts"]) {
+  for (const name of ["sw.ts", "bridge.ts", "bootstrap.ts", "page-relay.ts", "storage-relay.ts", "options.ts", "handoff.ts", "settings.ts"]) {
     const source = await readIfPresent(join(extDir, "src", name));
     if (source !== undefined) ownSources.push({ name, code: stripComments(source) });
   }

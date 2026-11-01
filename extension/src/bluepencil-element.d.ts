@@ -35,6 +35,15 @@ declare module "*/dist/bluepencil.element.js" {
    */
   export function registerAdapter(name: string, factory: () => unknown): void;
 
+  /**
+   * Registers the `fetch` the HTTP adapter falls back to (#116).
+   *
+   * The extension uses it to send hub requests through the bridge into the service worker, which is
+   * outside the page's `connect-src`. Resolution is `fetchImpl` → registered transport →
+   * `globalThis.fetch`; without a registration nothing changes.
+   */
+  export function registerHttpTransport(fetchImpl: typeof fetch): () => void;
+
   /** The custom element the layer mounts as. */
   export class BluepencilNotesElement extends HTMLElement {
     static readonly tagName: string;

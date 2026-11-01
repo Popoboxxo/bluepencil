@@ -21,11 +21,18 @@
  *    `chrome.storage` itself. The worker resolves the configuration and hands it to the page
  *    through a `postMessage` handshake; `content-bridge.js` relays it.
  *
+ * 4. **Relay hub requests (#116).** A page's `connect-src` governs the layer's `fetch`, so a strict
+ *    policy silently blocks note sync. The page registers a transport that sends the request here;
+ *    `hub-fetch.ts` validates it (configured origin and base path only, GET/POST/PATCH, a header
+ *    allowlist, no cookies, no redirects, a timeout) and performs it with the worker's permissions.
+ *    The worker — not the bridge — is the trust boundary.
+ *
  * The worker holds no state between events. A MV3 service worker is terminated aggressively, so
  * anything that must survive a restart has to live in `chrome.storage`, not in a module variable.
  */
 
 import { DEFAULT_SETTINGS, normalizeSettings, type ExtensionSettings } from "./settings";
+import { hubFetchPolicy, refuse, runHubRequest, validateHubRequest } from "./hub-fetch";
 
 const SETTINGS_KEY = "bluepencil:settings";
 
@@ -251,6 +258,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (type === "bluepencil:mounted") {
     if ((message as { ok?: unknown }).ok === true) void clearHostEmbed(sender?.tab?.id);
     return false;
+  }
+
+  // The hub relay (#116). The layer's `fetch` runs in the page and is therefore subject to the
+  // document's CSP; a strict `connect-src` blocks every hub call. This worker is outside that policy
+  // and already holds the host permission, so the page's request is performed here instead.
+  //
+  // This is the trust boundary: the bridge is unauthenticated and any page script can post the
+  // envelope, so *every* rule (target, method, headers, sizes) is enforced by `validateHubRequest`.
+  // The settings are read per message, never cached: an endpoint changed in the options page must
+  // take effect on the next request, and a MV3 worker is torn down between events anyway.
+  if (type === "bluepencil:fetch") {
+    if (sender?.tab?.id === undefined) {
+      sendResponse(refuse("invalid_request", "the relay request did not come from a tab"));
+      return false;
+    }
+    const request = (message as { request?: unknown }).request;
+    void (async () => {
+      try {
+        const settings = await readSettings();
+        const policy = hubFetchPolicy(settings.endpoint);
+        const validated = validateHubRequest(request, policy);
+        if (!validated.ok) {
+          sendResponse(validated);
+          return;
+        }
+        sendResponse(await runHubRequest(validated.request, policy));
+      } catch (error) {
+        sendResponse(
+          refuse("network", error instanceof Error ? error.message : "the relay request failed"),
+        );
+      }
+    })();
+    // The answer is asynchronous; keep the message channel open.
+    return true;
   }
 
   // `bluepencil:toggle` is the on/off switch #36 asked for. It is a message rather than a second
