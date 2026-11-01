@@ -35,9 +35,14 @@
  */
 import { createChromeStorageAdapter } from "../../dist/adapters/chrome-storage.js";
 import type { ChromeStorageArea } from "../../dist/adapters/chrome-storage.js";
-import { defineBluepencilElement, registerAdapter } from "../../dist/bluepencil.element.js";
+import {
+  defineBluepencilElement,
+  registerAdapter,
+  registerHttpTransport,
+} from "../../dist/bluepencil.element.js";
 import { detectHostEmbed, type HostEmbedSource } from "./detect";
 import { elementAttributesFor } from "./handoff";
+import { installPageTransport } from "./page-relay";
 import type { ExtensionSettings } from "./settings";
 
 /** The settings for this mount, placed here by the worker. Absent until the user asks for the layer. */
@@ -136,6 +141,12 @@ function mount(options?: MountOptions): void {
 
     // The element code was bundled into this file, so there is nothing left to fetch or evaluate —
     // registering it is a plain function call.
+    //
+    // The transport is registered *before* the element is defined, because the adapter is built from
+    // the element's attributes when it connects. The registry is process-scoped and installed once per
+    // document (global guard), so a forced second mount cannot stack a second registration; and
+    // `disable()`/`destroy()` never unregister it — it belongs to this document, not to an instance.
+    installBridgeTransport();
     defineBluepencilElement();
 
     const tag = "bluepencil-notes";
@@ -240,6 +251,16 @@ function createBridgedStorageArea(): ChromeStorageArea {
       await unwrap({ op: "remove", keys });
     },
   };
+}
+
+/**
+ * Install the hub relay once per document (#116).
+ *
+ * The guard, the pending map, the timeout and the reply handling live in `page-relay.ts`, so the
+ * failure paths are unit-tested rather than only exercised through a bundled MAIN-world script.
+ */
+function installBridgeTransport(): void {
+  installPageTransport({ register: registerHttpTransport });
 }
 
 function report(ok: boolean, error: string): void {

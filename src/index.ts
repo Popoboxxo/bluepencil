@@ -280,3 +280,12 @@ export type {
 export { SCHEMA_VERSION, BluepencilValidationError } from "./core/model";
 /** Register a named adapter factory, e.g. a preconfigured HTTP store (FR-6.2, FR-17). */
 export { registerAdapter } from "./core/store";
+/**
+ * Register the process-wide `fetch` the HTTP adapter falls back to (before `globalThis.fetch`).
+ *
+ * Additive and inert by default: without a registration every existing host keeps its current
+ * behaviour. The extension uses it to route hub traffic through its service worker, so a page's
+ * `connect-src` no longer blocks note sync (#116).
+ */
+export { registerHttpTransport } from "./adapters/transport";
+export type { HttpTransport } from "./adapters/transport";

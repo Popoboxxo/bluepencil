@@ -330,4 +330,14 @@ export function defineBluepencilElement(tagName: string = BluepencilNotesElement
  */
 export { registerAdapter } from "../index";
 
+/**
+ * The transport seam, re-exported for the same reason as `registerAdapter`.
+ *
+ * The extension's bootstrap runs in the page's world and registers a `fetch` that relays through the
+ * isolated-world bridge into the service worker (#116). Without it the element's HTTP adapter would
+ * use the page's `fetch`, which a strict `connect-src` blocks.
+ */
+export { registerHttpTransport } from "../index";
+export type { HttpTransport } from "../index";
+
 defineBluepencilElement();

@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AdapterPatch } from "../../src/core/adapter";
 import { applyPatch, coerceNote, matchesFilter } from "../../src/core/adapter";
 import {
+  BluepencilValidationError,
   createMessage,
   createNote,
   newId,
@@ -25,6 +26,7 @@ import { createJsonAdapter, createMemoryAdapter, type JsonAdapterIo } from "../.
 import { createLocalStorageAdapter, localStorageKey } from "../../src/adapters/local-storage";
 import { createFileAdapter, type FileAdapterIo } from "../../src/adapters/file";
 import { HttpAdapterError, createHttpAdapter } from "../../src/adapters/http";
+import { currentHttpTransport, registerHttpTransport } from "../../src/adapters/transport";
 import { createStore } from "../../src/core/store";
 
 const ROUTE_A = "/checkout";
@@ -876,6 +878,141 @@ describe("http adapter specifics", () => {
 
     const messageCall = server.calls.find((call) => call.path.endsWith("/messages"));
     expect(messageCall?.body).toMatchObject({ text: "hi", kind: "reply", author_type: "human" });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * The transport seam (#116): `fetchImpl` → registered transport → `globalThis.fetch`, per request
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("http transport seam (#116)", () => {
+  it("prefers an explicit fetchImpl over a registered transport", async () => {
+    const registered = createFakeServer();
+    const explicit = createFakeServer();
+    const dispose = registerHttpTransport(registered.fetch);
+    try {
+      const adapter = createHttpAdapter({ endpoint: HTTP_BASE, fetchImpl: explicit.fetch });
+      await adapter.health();
+      expect(explicit.calls).toHaveLength(1);
+      expect(registered.calls).toHaveLength(0);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("uses the registered transport when the adapter has no fetchImpl", async () => {
+    const registered = createFakeServer();
+    const dispose = registerHttpTransport(registered.fetch);
+    try {
+      const adapter = createHttpAdapter({ endpoint: HTTP_BASE });
+      expect(await adapter.health()).toMatchObject({ ok: true });
+      expect(registered.calls).toHaveLength(1);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("resolves the transport per request, so a late registration takes effect", async () => {
+    // Built *before* the registration exists — the element does exactly this: the adapter is
+    // constructed from attributes and only later does the bootstrap get its relay registered.
+    const adapter = createHttpAdapter({ endpoint: HTTP_BASE });
+    const late = createFakeServer();
+    const dispose = registerHttpTransport(late.fetch);
+    try {
+      await adapter.health();
+      expect(late.calls).toHaveLength(1);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("falls back to globalThis.fetch when nothing is registered (back-compat)", async () => {
+    const globalServer = createFakeServer();
+    vi.stubGlobal("fetch", globalServer.fetch);
+    try {
+      const adapter = createHttpAdapter({ endpoint: HTTP_BASE });
+      await adapter.health();
+      expect(globalServer.calls).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("restores the previous transport when the disposer runs", async () => {
+    const first = createFakeServer();
+    const second = createFakeServer();
+    const disposeFirst = registerHttpTransport(first.fetch);
+    const disposeSecond = registerHttpTransport(second.fetch);
+    try {
+      disposeSecond();
+      const adapter = createHttpAdapter({ endpoint: HTTP_BASE });
+      await adapter.health();
+      expect(first.calls).toHaveLength(1);
+      expect(second.calls).toHaveLength(0);
+    } finally {
+      disposeFirst();
+    }
+  });
+
+  it("unwinds nested registrations in LIFO order", async () => {
+    const outer = createFakeServer();
+    const inner = createFakeServer();
+    const disposeOuter = registerHttpTransport(outer.fetch);
+    const disposeInner = registerHttpTransport(inner.fetch);
+    try {
+      expect(currentHttpTransport()).toBe(inner.fetch);
+      disposeInner();
+      expect(currentHttpTransport()).toBe(outer.fetch);
+      disposeOuter();
+      expect(currentHttpTransport()).toBeNull();
+    } finally {
+      // Both disposers are idempotent, so calling them again is harmless even after a failure.
+      disposeInner();
+      disposeOuter();
+    }
+  });
+
+  it("ignores a second dispose so it cannot clear a later registration", async () => {
+    const first = createFakeServer();
+    const later = createFakeServer();
+    const disposeFirst = registerHttpTransport(first.fetch);
+    disposeFirst();
+    const disposeLater = registerHttpTransport(later.fetch);
+    try {
+      // A teardown that runs twice must not unregister someone else's transport.
+      disposeFirst();
+      const adapter = createHttpAdapter({ endpoint: HTTP_BASE });
+      await adapter.health();
+      expect(later.calls).toHaveLength(1);
+    } finally {
+      disposeLater();
+    }
+  });
+
+  it("rejects a transport that is not a function", () => {
+    expect(() => registerHttpTransport(null as unknown as typeof fetch)).toThrow(
+      BluepencilValidationError,
+    );
+    expect(() => registerHttpTransport("fetch" as unknown as typeof fetch)).toThrow(
+      /fetch-compatible/,
+    );
+  });
+
+  it("reports a rejecting transport as an HttpAdapterError with status 0", async () => {
+    const dispose = registerHttpTransport(
+      (async () => {
+        throw new TypeError("relay unavailable");
+      }) as unknown as typeof fetch,
+    );
+    try {
+      const adapter = createHttpAdapter({ endpoint: HTTP_BASE });
+      const error = await adapter.list().catch((reason: unknown) => reason);
+      expect(error).toBeInstanceOf(HttpAdapterError);
+      expect((error as HttpAdapterError).status).toBe(0);
+      expect((error as HttpAdapterError).message).toMatch(/relay unavailable/);
+    } finally {
+      dispose();
+    }
   });
 });
 
