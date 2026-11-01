@@ -752,3 +752,30 @@ describe("the admin page follows Accept-Language", () => {
     expect(fallback.body).toContain("Connect");
   });
 });
+
+describe("presence is pinned to the hub context, not to one request", () => {
+  it("[#113] a credential accepted on the notes door shows up in /admin/status", async () => {
+    const { port } = await serve({ adminSecret: ADMIN, authSecret: CLIENT_CREDENTIAL });
+
+    // A real client read on the notes door, authenticated with the shared secret. The request runs
+    // through one handler context; the status request below runs through another route.
+    const notes = await call(port, `${API}/notes`, { headers: { "x-bluepencil-auth": CLIENT_CREDENTIAL } });
+    expect(notes.status).toBe(200);
+
+    // `startHub` builds its `HandlerContext` once and every request reuses it, so `presenceOf()`
+    // finds the same WeakMap entry here. If the context were rebuilt per request, the stamp made
+    // above would be invisible and this would read `null` — the wiring gap this test pins.
+    const status = await call(port, `${API}/admin/status`, { headers: { "x-bluepencil-admin": ADMIN } });
+    expect(status.status).toBe(200);
+
+    const presence = status.json.presence as { token: unknown; secret: unknown };
+    expect(typeof presence.secret).toBe("string");
+    expect(presence.secret).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    // Only the shared secret was ever accepted; the token kind stays "not seen".
+    expect(presence.token).toBeNull();
+
+    // The payload carries the timestamp, never the credential that produced it.
+    expect(status.body).not.toContain(CLIENT_CREDENTIAL);
+    expect(status.body).not.toContain(ADMIN);
+  });
+});

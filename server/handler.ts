@@ -74,6 +74,7 @@ import { canonicalNote } from "../src/data/canonical";
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { validateNote } from "../src/data/schema";
 import { corsHeaders, preflightResponse } from "./cors";
+import { presenceOf, type PresenceTracker } from "./presence";
 import { credentialMode } from "./credentials";
 // The admin surface answers before the credential gate, so it must not import the gate — the
 // dependency runs one way: this router delegates to `handleAdmin`, whose only dependency on this
@@ -274,6 +275,16 @@ export interface HandlerContext {
    * means no throttling — the pure handler has no clock of its own.
    */
   adminThrottle?: AdminThrottle;
+  /**
+   * Last-seen stamps per accepted client credential kind (`server/presence.ts`), stamped by
+   * `authorize()` and reported by `/admin/status`.
+   *
+   * The hub deliberately has no client registry: a reader that never writes leaves no trace. The two
+   * stamps are the one honest signal it *does* have — they say when a signed token or the shared
+   * secret was last accepted, not who presented it. Injected here so tests can pin the clock; when
+   * absent, `presenceOf()` keeps one tracker per context object (memory only, never persisted).
+   */
+  presence?: PresenceTracker;
   /** `--allow-env-mismatch`: a foreign-environment write is promoted instead of refused (FR-14.8). */
   allowEnvMismatch?: boolean;
   /** `--cors <origin|*>`: the allowed origin; unset means no CORS headers at all. */
@@ -1172,6 +1183,11 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
  * client credential on the MCP door (which never opts in) and it does not configure authentication:
  * a hub with no client credential still has no gate, and the admin surface does not turn one on.
  *
+ * An accepted *client* credential (a verified token, or the shared secret) also stamps presence
+ * (`server/presence.ts`): the hub has no client registry, so "when was this credential kind last
+ * accepted" is the only presence signal it can honestly report. The admin secret does not stamp —
+ * it is the operator's bridge, not a client credential.
+ *
  * Returns the refusal to answer with, or `null` when the request may proceed.
  */
 export function authorize(
@@ -1187,6 +1203,10 @@ export function authorize(
   // The gate exists only when a credential was configured. An admin secret alone is not one: it
   // guards the admin routes, not the notes a client reads.
   if (verifier === undefined && !(typeof secret === "string" && secret.length > 0)) return null;
+
+  // One tracker per hub context (or the one a test injected). Only successful checks below stamp it,
+  // so a refused request cannot make a credential kind look alive.
+  const presence = presenceOf(context);
 
   const required =
     scope ?? context.requiredScope?.({ method }) ?? (method === "GET" ? "read" : "write");
@@ -1206,6 +1226,9 @@ export function authorize(
     }
     // The verified device is the identity the journal records; the header is not.
     if (verdict.device !== undefined) request.authDevice = verdict.device;
+    // A verified token is a live client at this moment — the only reader signal this hub has.
+    // `presence.ts` throttles it to one recorded stamp per minute; the identity is not recorded.
+    presence.stamp("token");
     return null;
   }
 
@@ -1230,6 +1253,9 @@ export function authorize(
         context,
       );
     }
+    // The shared secret got in. Stamped per kind, never per client: every browser holding this one
+    // string is indistinguishable here, and `presence.ts` says so on the page.
+    presence.stamp("secret");
     return null;
   }
 

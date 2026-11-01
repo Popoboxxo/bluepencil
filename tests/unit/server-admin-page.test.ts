@@ -77,6 +77,7 @@ const STATUS = {
   revocationDurable: true,
   devices: 1,
   revoked: 0,
+  presence: { token: "2026-10-31T09:05:00.000Z", secret: null },
 };
 
 const DEVICE = {
@@ -344,6 +345,28 @@ describe("the admin page's note list", () => {
   });
 });
 
+describe("the admin page's presence card", () => {
+  it("[#113] renders the last-accepted stamp per credential kind next to the credential rows", async () => {
+    const h = mount();
+    await connect(h);
+
+    const rows = node(h, "presence-rows");
+    // The stamp comes from /admin/status and is rendered in the same local format as the table dates.
+    expect(rows.textContent).toContain("2026-10-31 09:05:00");
+    // A kind that was never accepted says so instead of showing an empty cell.
+    expect(rows.textContent).toContain("not seen since this hub started");
+  });
+
+  it("[#113] states the honest limit instead of implying a client list", async () => {
+    const h = mount();
+    await connect(h);
+
+    const card = node(h, "presence-card");
+    expect(card.textContent).toContain("Last accepted credential");
+    expect(card.textContent).toContain("Readers are not tracked as individual clients");
+  });
+});
+
 describe("the admin page's controls", () => {
   it("[FR-6.8] exposes the documented element ids", () => {
     const h = mount();
@@ -357,6 +380,8 @@ describe("the admin page's controls", () => {
       "device-ttl",
       "device-mint",
       "devices-reload",
+      "presence-card",
+      "presence-rows",
       "mint-result",
       "token-value",
       "copy-token",

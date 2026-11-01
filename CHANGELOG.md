@@ -1,3 +1,64 @@
+## [0.11.5] - 2026-11-01
+
+### Added
+
+- **The admin surface reports credential presence.** The hub records the last accepted
+  authentication per credential kind (`token`, `secret`), at most once a minute, in memory only,
+  and never carrying a credential value. Both doors stamp it — the notes API and `POST {base}/mcp`
+  — so a client that only reads notes becomes visible (#113).
+- **An upgrade path is documented in `docs/DOCKER.md`.** Keep the volume (it holds the notes and
+  the generated shared secret), `pull` and `up -d`, recreate only for an added bind mount, and
+  accept the update on `/config` (version) and `/health` (#111).
+
+### Fixed
+
+- **The device list no longer implies a list of connected clients.** The label is "issued client
+  credentials" (en/de), the page states that one shared secret makes two clients indistinguishable,
+  and the `devices` field in `/admin/status` keeps its name for compatibility (#113).
+
+## [0.11.4] - 2026-11-01
+
+### Added
+
+- **The extension options page probes the hub.** A *Test connection* button calls
+  `GET {endpoint}/config` with a 5 s timeout and distinguishes an unreachable host, a timeout, a
+  wrong base path (404), a redirect, an invalid URL and a broken response, then shows name,
+  version, auth, readOnly, environment and federates (#110).
+- **Credential acceptance is reported.** With a credential configured the probe follows with a
+  status-only `GET {endpoint}/notes` using the header the layer sends: accepted on 200, rejected on
+  401/403, inconclusive when that second request fails after `/config` answered (#105).
+
+### Fixed
+
+- **The endpoint field names the full API base.** The placeholder showed only the origin, so the
+  obvious value 404ed; it now explains that the adapter appends `/notes` and still stores exactly
+  what was typed (#110).
+
+## [0.11.3] - 2026-11-01
+
+### Fixed
+
+- **`GET {base}/health` answers before the credential gate** (GET and HEAD), like `/config`: it
+  carries no note and no secret, so a liveness probe no longer needs a credential (#109).
+- **The CORS preflight is answered first.** `OPTIONS {base}/mcp` fell into the POST-only rule and
+  answered 405 even with `--cors`; the preflight now goes through one shared helper in
+  `server/cors.ts` used by the API, admin and static doors, and `OPTIONS {base}/config` and
+  `/health` are fixed with it (#102).
+- **The image `HEALTHCHECK` probes `/health`** instead of the gated route.
+
+## [0.11.2] - 2026-11-01
+
+### Fixed
+
+- **The shared secret is persisted beside the token.** The entrypoint skipped
+  `BLUEPENCIL_AUTH_SECRET` whenever `BLUEPENCIL_TOKEN_KEY` was set, so a token-configured hub ran
+  without the secret and `x-bluepencil-auth` clients stopped working; it is now read or generated
+  independently of the token key, written `0600`, and an empty secret file counts as absent
+  (#108).
+- **Both credentials are reported.** `/admin/status` shows `auth: "token+secret"` plus an additive
+  `credentials` array instead of only the strongest credential; `/config` keeps its three-value
+  vocabulary because the federation client only understands `none|secret|token` (#112).
+
 ## [0.11.1] - 2026-11-01
 
 ### Fixed

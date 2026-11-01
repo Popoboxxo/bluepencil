@@ -50,7 +50,7 @@ export interface AdminStrings {
   overviewAcceptedCredentials: string;
   overviewTokenIssuing: string;
   overviewRevocation: string;
-  overviewDevices: string;
+  overviewIssuedCredentials: string;
   overviewReadOnly: string;
   overviewFederates: string;
   credentialToken: string;
@@ -67,7 +67,14 @@ export interface AdminStrings {
   no: string;
   federatesYes: string;
   federatesNo: string;
-  devicesSummary: string;
+  issuedCredentialsSummary: string;
+
+  /* -- presence ----------------------------------------------------------- */
+  presenceHeading: string;
+  presenceHelp: string;
+  presenceToken: string;
+  presenceSecret: string;
+  presenceNever: string;
 
   /* -- notes -------------------------------------------------------------- */
   notesHeading: string;
@@ -161,12 +168,12 @@ const en: AdminStrings = {
   typeSecretFirst: "Type the admin secret first.",
   checking: "checking…",
   connected: "connected",
-  connectionLine: "{name} · v{version} · {environment} · {notes} note(s) · {devices} device(s)",
+  connectionLine: "{name} · v{version} · {environment} · {notes} note(s) · {issued} issued",
 
   sectionsLabel: "Sections",
   tabOverview: "Overview",
   tabNotes: "Notes",
-  tabDevices: "Devices & keys",
+  tabDevices: "Issued client credentials",
   tabActivity: "Activity",
 
   overviewHub: "Hub",
@@ -176,7 +183,7 @@ const en: AdminStrings = {
   overviewAcceptedCredentials: "Accepted credentials",
   overviewTokenIssuing: "Token issuing",
   overviewRevocation: "Revocation",
-  overviewDevices: "Devices",
+  overviewIssuedCredentials: "Issued client credentials",
   overviewReadOnly: "Read-only",
   overviewFederates: "Federates",
   credentialToken: "signed token (--token-key)",
@@ -193,7 +200,14 @@ const en: AdminStrings = {
   no: "no",
   federatesYes: "yes (registry configured)",
   federatesNo: "no",
-  devicesSummary: "{devices} ({revoked} revoked)",
+  issuedCredentialsSummary: "{issued} issued ({revoked} revoked)",
+
+  presenceHeading: "Last accepted credential",
+  presenceHelp:
+    "The honest limit: the hub records note writes and the client credentials it issued — one row per token, not one per connected browser. Readers are not tracked as individual clients. These two stamps say when each credential kind was last accepted on any door (notes API or MCP), at most once a minute, in memory only, and reset by a restart. They are captured when this page connects (as of page load) and do not update while it stays open — reload the page to see a newer value. They never contain a credential.",
+  presenceToken: "Signed token (--token-key)",
+  presenceSecret: "Shared secret (--auth-secret)",
+  presenceNever: "not seen since this hub started",
 
   notesHeading: "Notes",
   notePlaceholder: "New note — what should be looked at?",
@@ -216,7 +230,7 @@ const en: AdminStrings = {
   doneButton: "done",
   reopenButton: "reopen",
 
-  devicesHeading: "Devices & keys",
+  devicesHeading: "Issued client credentials",
   noIssuingBanner:
     "This hub has no --token-key, so it cannot issue tokens. Client access runs on the shared secret; restart the hub with a key to mint per-device tokens.",
   deviceNamePlaceholder: "device name (e.g. caro-laptop)",
@@ -230,7 +244,7 @@ const en: AdminStrings = {
   nameDeviceFirst: "Name the device first.",
   ttlError: "Lifetime must be a whole number of days from 1 to 365.",
   issuing: "issuing…",
-  devicesEmpty: "no tokens issued from this page yet.",
+  devicesEmpty: "no client credentials issued from this page yet.",
   devicesInventoryNote:
     "Tokens minted with bluepencil token are not listed here, but they can be revoked by their jti.",
   statusOk: "ok",
@@ -285,12 +299,12 @@ const de: AdminStrings = {
   typeSecretFirst: "Zuerst das Admin-Secret eingeben.",
   checking: "prüfe…",
   connected: "verbunden",
-  connectionLine: "{name} · v{version} · {environment} · {notes} Notiz(en) · {devices} Gerät(e)",
+  connectionLine: "{name} · v{version} · {environment} · {notes} Notiz(en) · {issued} ausgegeben",
 
   sectionsLabel: "Bereiche",
   tabOverview: "Übersicht",
   tabNotes: "Notizen",
-  tabDevices: "Geräte & Schlüssel",
+  tabDevices: "Ausgegebene Client-Credentials",
   tabActivity: "Aktivität",
 
   overviewHub: "Hub",
@@ -300,7 +314,7 @@ const de: AdminStrings = {
   overviewAcceptedCredentials: "Akzeptierte Anmeldedaten",
   overviewTokenIssuing: "Token-Ausstellung",
   overviewRevocation: "Widerruf",
-  overviewDevices: "Geräte",
+  overviewIssuedCredentials: "Ausgegebene Client-Credentials",
   overviewReadOnly: "Nur lesen",
   overviewFederates: "Föderiert",
   credentialToken: "signiertes Token (--token-key)",
@@ -317,7 +331,14 @@ const de: AdminStrings = {
   no: "nein",
   federatesYes: "ja (Registry konfiguriert)",
   federatesNo: "nein",
-  devicesSummary: "{devices} ({revoked} widerrufen)",
+  issuedCredentialsSummary: "{issued} ausgegeben ({revoked} widerrufen)",
+
+  presenceHeading: "Zuletzt akzeptiertes Credential",
+  presenceHelp:
+    "Die ehrliche Grenze: der Hub zeichnet Notiz-Schreibvorgänge und die ausgegebenen Client-Credentials auf — eine Zeile pro Token, nicht pro verbundenem Browser. Lesende Clients werden nicht als einzelne Clients geführt. Die beiden Zeitstempel nennen, wann welche Art von Credential zuletzt an einer der beiden Türen (Notiz-API oder MCP) akzeptiert wurde: höchstens einmal pro Minute, nur im Speicher und nach einem Neustart zurückgesetzt. Sie werden beim Verbinden dieser Seite erfasst (Stand beim Laden der Seite) und aktualisieren sich nicht, solange sie geöffnet bleibt — zum Aktualisieren die Seite neu laden. Sie enthalten nie ein Credential.",
+  presenceToken: "Signiertes Token (--token-key)",
+  presenceSecret: "Geteiltes Secret (--auth-secret)",
+  presenceNever: "seit dem Start dieses Hubs nicht gesehen",
 
   notesHeading: "Notizen",
   notePlaceholder: "Neue Notiz — was soll geprüft werden?",
@@ -340,7 +361,7 @@ const de: AdminStrings = {
   doneButton: "erledigt",
   reopenButton: "wieder öffnen",
 
-  devicesHeading: "Geräte & Schlüssel",
+  devicesHeading: "Ausgegebene Client-Credentials",
   noIssuingBanner:
     "Dieser Hub hat keinen --token-key und kann daher keine Token ausstellen. Der Client-Zugang läuft über das geteilte Secret; für Token pro Gerät den Hub mit einem Schlüssel neu starten.",
   deviceNamePlaceholder: "Gerätename (z. B. caro-laptop)",
@@ -354,7 +375,7 @@ const de: AdminStrings = {
   nameDeviceFirst: "Zuerst das Gerät benennen.",
   ttlError: "Die Laufzeit muss eine ganze Zahl von 1 bis 365 Tagen sein.",
   issuing: "stelle aus…",
-  devicesEmpty: "noch keine Token von dieser Seite ausgestellt.",
+  devicesEmpty: "noch keine Client-Credentials von dieser Seite ausgegeben.",
   devicesInventoryNote:
     "Mit bluepencil token ausgestellte Token erscheinen hier nicht, lassen sich aber über ihre jti widerrufen.",
   statusOk: "ok",

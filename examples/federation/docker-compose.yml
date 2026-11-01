@@ -82,7 +82,7 @@ services:
       BLUEPENCIL_AUTH_SECRET: "${BP_DEV_TOKEN:?BP_DEV_TOKEN is required (see .env.example)}"
     healthcheck:
       # `/config` needs no credential (FR-6.10), so this probe works on an authenticated hub.
-      # Pinned image predates #109; /health is unauthenticated from 0.11.2 on — use it when the pin moves.
+      # Pinned image predates #109; /health is unauthenticated from 0.11.3 on — use it when the pin moves.
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8787/api/v1/bluepencil/config"]
       interval: 10s
       timeout: 3s
@@ -104,7 +104,7 @@ services:
       BLUEPENCIL_ENVIRONMENT: staging
       BLUEPENCIL_AUTH_SECRET: "${BP_STAGING_TOKEN:?BP_STAGING_TOKEN is required (see .env.example)}"
     healthcheck:
-      # Pinned image predates #109; /health is unauthenticated from 0.11.2 on — use it when the pin moves.
+      # Pinned image predates #109; /health is unauthenticated from 0.11.3 on — use it when the pin moves.
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8787/api/v1/bluepencil/config"]
       interval: 10s
       timeout: 3s
@@ -171,7 +171,7 @@ services:
       hub-staging:
         condition: service_healthy
     healthcheck:
-      # Pinned image predates #109; /health is unauthenticated from 0.11.2 on — use it when the pin moves.
+      # Pinned image predates #109; /health is unauthenticated from 0.11.3 on — use it when the pin moves.
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8787/api/v1/bluepencil/config"]
       interval: 10s
       timeout: 3s

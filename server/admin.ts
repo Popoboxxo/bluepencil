@@ -45,6 +45,7 @@ import { corsHeaders, preflightResponse } from "./cors";
 import { writeAtomic } from "./atomic-write";
 import { renderAdminHtml } from "./admin-html";
 import { ADMIN_STRINGS, adminLanguage } from "./admin-i18n";
+import { presenceOf } from "./presence";
 import { acceptedCredentials, credentialMode } from "./credentials";
 
 /** The header an admin request carries; matched case-insensitively by the caller. */
@@ -259,7 +260,14 @@ function statusPayload(context: HandlerContext, registry: RegistryRead): Record<
     admin: true,
     tokenIssuing: context.tokenIssuer !== undefined,
     revocationDurable: context.revocationPath !== undefined,
+    // The number of *issued credentials* in the registry — one record per token minted here, NOT a
+    // count of connected clients. The key keeps its historical name for backward compatibility; the
+    // page labels it "Issued client credentials" and says what the hub cannot see.
     devices: registry.records.length,
+    // Additive presence signal (see `server/presence.ts`): when a credential kind was last accepted
+    // on either door. Timestamps only — never a credential value, never a client identity, never
+    // persisted. `null` means "not seen since this process started".
+    presence: presenceOf(context).snapshot(),
     // A broken registry must not look like an empty one; the route still answers 200 so the page
     // can render the rest of the status.
     ...(registry.error === undefined ? {} : { devicesError: registry.error }),

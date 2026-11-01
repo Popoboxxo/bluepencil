@@ -226,6 +226,10 @@ export async function handleMcpRoute(
   // the message, and a read-scoped device is not turned away from read tools merely because a POST
   // looks like a write.
   //
+  // This is also the second presence stamping site: `authorize()` records "a credential of this kind
+  // was accepted" on both doors (throttled and identity-free, see `server/presence.ts`), so an agent
+  // that only ever calls `list_notes` is visible on the admin page without writing anything.
+  //
   // No `{ allowAdminSecret }` here on purpose: the admin secret is a notes-route credential and
   // must never open the MCP door, not even for the operator's own page.
   const identity = authorize(request, context, "read");

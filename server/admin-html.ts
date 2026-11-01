@@ -177,6 +177,11 @@ export function renderAdminHtml(strings: AdminStrings): string {
         <button type="button" id="devices-reload">${escapeHtml(s.reloadButton)}</button>
       </div>
       <span class="bp-status" id="devices-status" role="status" aria-live="polite"></span>
+      <div class="bp-card" id="presence-card" aria-labelledby="presence-heading">
+        <h2 id="presence-heading">${escapeHtml(s.presenceHeading)}</h2>
+        <p class="bp-muted">${escapeHtml(s.presenceHelp)}</p>
+        <dl class="bp-kv" id="presence-rows"></dl>
+      </div>
       <div class="bp-card" id="mint-result" hidden aria-labelledby="mint-heading">
         <h2 id="mint-heading"></h2>
         <p class="bp-muted">${escapeHtml(s.tokenHelp)}</p>
@@ -302,14 +307,17 @@ export function renderAdminHtml(strings: AdminStrings): string {
         warning.textContent = '';
         warning.hidden = true;
       }
+      // status.devices is the issued-credential registry size (the JSON key keeps its old name for
+      // compatibility); the label says so and the presence card says what is *not* tracked.
       el('conn-line').textContent = fmt(T.connectionLine, {
         name: status.name,
         version: status.version,
         environment: status.environment,
         notes: status.notes,
-        devices: status.devices
+        issued: status.devices
       });
       renderOverview(status);
+      renderPresence(status);
       loadNotes();
       loadDevices();
       loadActivity();
@@ -353,7 +361,7 @@ export function renderAdminHtml(strings: AdminStrings): string {
       [T.overviewClientCredential, credentialLabel(status)],
       [T.overviewTokenIssuing, status.tokenIssuing ? T.issuingAvailable : T.issuingUnavailable],
       [T.overviewRevocation, status.revocationDurable ? T.revocationDurable : T.revocationLive],
-      [T.overviewDevices, fmt(T.devicesSummary, { devices: status.devices, revoked: status.revoked })],
+      [T.overviewIssuedCredentials, fmt(T.issuedCredentialsSummary, { issued: status.devices, revoked: status.revoked })],
       [T.overviewReadOnly, status.readOnly ? T.yes : T.no],
       [T.overviewFederates, status.federates ? T.federatesYes : T.federatesNo]
     ];
@@ -373,6 +381,28 @@ export function renderAdminHtml(strings: AdminStrings): string {
       list.appendChild(dd);
     });
     card.appendChild(list);
+  }
+
+  // What the hub can and cannot see. The two stamps are the only "is anyone there" signal this
+  // hub has; the paragraph above them states the limit rather than letting the table imply a
+  // client list. Presence is memory-only, so a restart shows "not seen since this hub started".
+  function renderPresence(status) {
+    var presence = status.presence || {};
+    var list = el('presence-rows');
+    list.textContent = '';
+    [
+      [T.presenceToken, presence.token],
+      [T.presenceSecret, presence.secret]
+    ].forEach(function (pair) {
+      var dt = document.createElement('dt');
+      dt.textContent = pair[0];
+      var dd = document.createElement('dd');
+      dd.textContent = pair[1] === undefined || pair[1] === null || pair[1] === ''
+        ? T.presenceNever
+        : fmtDate(pair[1]);
+      list.appendChild(dt);
+      list.appendChild(dd);
+    });
   }
 
   function emptyRow(colspan, primary, note) {
