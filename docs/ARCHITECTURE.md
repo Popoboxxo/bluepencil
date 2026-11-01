@@ -273,8 +273,10 @@ getUser:()=>({name:'reviewer'}),getRoute:()=>location.pathname});document.head.a
 ```
 
 * Default adapter is `localStorage`; export writes a JSON/Markdown file (FR-6.2).
-* Pages with a strict CSP that forbids external scripts will block the loader — documented
-  limitation with the workaround (self-hosted mode or extension) (NFR-6).
+* Pages with a strict CSP that forbids external scripts will block the loader, and a page that reaches
+  a hub additionally needs the hub origin in `connect-src` — `script-src` does not govern `fetch()`.
+  Documented limitation with the workaround (self-hosted mode or extension) (NFR-6,
+  [EMBED.md §2](EMBED.md#csp-script-src-and-connect-src)).
 * No `eval`, no inline handlers.
 
 ## 5b. Bundle format and exchange (FR-14)

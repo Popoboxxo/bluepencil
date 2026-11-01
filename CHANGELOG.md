@@ -1,5 +1,13 @@
 ## [0.11.6] - 2026-11-01
 
+### Documentation
+
+- **The integration docs now name `connect-src`, not only `script-src`.** A page that reaches a hub
+  must allow the hub origin in `connect-src` (or in `default-src` when `connect-src` is absent);
+  the loader's manifest and SRI fetches are `connect-src` too, while the element script stays under
+  `script-src`. The extension's worker relay is scoped to hub traffic only, and a page without the
+  extension still needs `connect-src` (#117).
+
 ### Fixed
 
 - **The extension's hub traffic leaves through the service worker.** A page with
