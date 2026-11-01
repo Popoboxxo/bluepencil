@@ -67,6 +67,12 @@ The adapter speaks the contract in [ARCHITECTURE.md §5](ARCHITECTURE.md#5-http-
 `src/adapters/http.ts`). The reference implementation is the hub in §5; any backend that implements
 the documented endpoints works.
 
+Under a strict Content-Security-Policy the page has to allow the hub origin in `connect-src`;
+`script-src` does not govern `fetch()`. When no `connect-src` is declared, `default-src` is the
+fallback, so `default-src 'self'` alone blocks every hub call. Recipes and the loader's own
+manifest/asset directives are in
+[EMBED.md — CSP: `script-src` and `connect-src`](EMBED.md#csp-script-src-and-connect-src).
+
 ## 3. Embedded, local only
 
 ```ts
@@ -83,13 +89,18 @@ user clears site data. Good for a single reviewer; not for a team.
 3. Click it on any page → the layer attaches, notes go to `localStorage`, export writes a file.
 
 Limits worth knowing: strict `script-src` CSP blocks external loaders, and nothing is shared
-between browsers. Note that a browser extension does **not** remove the CSP problem: the element
-layer has to run in the page's MAIN world (Chromium's isolated content-script world reports a null
-`customElements`, so the element cannot register there), and a MAIN-world inline `<style>` is still
-governed by the page's `style-src`. The element layer therefore verifies the stylesheet it inserted
-and falls back to a constructable `CSSStyleSheet` on `document.adoptedStyleSheets`, which a page
-CSP does not govern. Under a strict `style-src` you will see the layer mount unstyled if that
-fallback is unavailable; everything else works.
+between browsers. A page that reaches a hub needs `connect-src` for the hub origin as well — a
+`default-src 'self'` policy with no `connect-src` blocks the request after the layer mounts; see
+[EMBED.md](EMBED.md#csp-script-src-and-connect-src). Note that a browser extension does **not** remove
+the CSP problem: the element layer has to run in the page's MAIN world (Chromium's isolated
+content-script world reports a null `customElements`, so the element cannot register there), and a
+MAIN-world inline `<style>` is still governed by the page's `style-src`. The element layer therefore
+verifies the stylesheet it inserted and falls back to a constructable `CSSStyleSheet` on
+`document.adoptedStyleSheets`, which a page CSP does not govern. Under a strict `style-src` you will
+see the layer mount unstyled if that fallback is unavailable; everything else works. The extension
+(0.11.6+) is the one exception, and only for hub traffic: it relays the layer's hub calls through
+its service worker, so the page's `connect-src` no longer applies to them — see
+[EXTENSION.md](EXTENSION.md#an-extension-does-not-bypass-a-csp).
 
 ## 5. Self-hosted hub
 
@@ -329,6 +340,10 @@ init({ theme: { font: "inherit", "font-size": "inherit" } });
 ## 9. Security & privacy notes
 
 * The library stores no credentials and performs no request that the host has not configured.
+* The page's own CSP is the boundary for network access: the layer only requests the configured
+  endpoint, and that request needs the hub origin in `connect-src` (or in `default-src`, when
+  `connect-src` is absent). `script-src` does not cover `fetch()`. See
+  [EMBED.md](EMBED.md#csp-script-src-and-connect-src).
 * All user-provided text is rendered as **text**; HTML in a note is displayed literally (FR-9.3).
 * Notes are artefacts of a review, not a data store: assume they may contain internal wording.
   Keep the policy "no personal data in notes", purge after the round, and prefer local mode when
@@ -348,6 +363,7 @@ init({ theme: { font: "inherit", "font-size": "inherit" } });
 | Notes lose their element | Anchor resolved to an unstable path; add a `data-bluepencil`/`data-testid` hook to that element |
 | Marker drifts | Host CSS repositions the element after capture; re-check the note or switch to the hook-based anchor |
 | Bookmarklet blocked | CSP without external script allowance — self-host the loader, or run the layer in the page's MAIN world (an extension content script cannot: its isolated world has no usable `customElements`) |
+| Layer mounts, but nothing reaches the hub | The page's `connect-src` does not allow the hub origin (`default-src 'self'` without `connect-src` does not). Confirm in DevTools: the console names the blocked URL and directive — `Refused to connect … violates the following Content Security Policy directive: "connect-src …"` (or `"default-src …"`) — and Network shows the request as blocked. Allow the hub origin in `connect-src`, or run the layer through the extension, whose hub traffic leaves through the service worker |
 | Layer mounts but looks unstyled | Page CSP forbids inline styles. The layer should have fallen back to a constructable stylesheet; if the engine offers neither path, the unstyled mount is the visible symptom |
 
 ## 11. Embed / attach reference

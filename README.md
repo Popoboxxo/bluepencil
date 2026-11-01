@@ -166,6 +166,12 @@ On your own page it is one call — with the classic build from the table above 
 </script>
 ```
 
+Under a strict Content-Security-Policy the page needs the script URL in `script-src` **and** the hub
+origin in `connect-src`: `script-src` alone does not govern `fetch()`, and `default-src 'self'` with
+no `connect-src` mounts the layer and then blocks every hub call. Recipes for both the explicit and
+the `default-src`-only form are in
+[EMBED.md §2](docs/EMBED.md#csp-script-src-and-connect-src).
+
 ### The runtime handle
 
 `init()` returns a handle the host can switch at runtime, without a reload:
@@ -680,7 +686,11 @@ window.postMessage({ source: "bluepencil-page", kind: "request-mount" }, window.
 * The layer mounts in the page's **MAIN world**, because an isolated content-script world has no usable
   `customElements` to register the element in. That is also why the extension does **not** get around
   a page's CSP: the layer works *inside* the policy (falling back to constructable stylesheets when
-  `style-src` forbids inline styles), it does not bypass it.
+  `style-src` forbids inline styles), it does not bypass it. One exception since 0.11.6: **hub
+  traffic** is relayed through the extension's service worker and is outside the document's
+  `connect-src`. The loader's own manifest/asset fetches are still subject to the policy, and a page
+  that runs without the extension always needs `connect-src` for the hub — see
+  [docs/EXTENSION.md](docs/EXTENSION.md#an-extension-does-not-bypass-a-csp).
 
 ### Settings
 

@@ -92,9 +92,25 @@ runs against a strict-CSP host on purpose: it is the case that used to break.
 One part is different since 0.11.6: **hub traffic leaves through the extension's service worker**
 (#116). The layer's `fetch` still runs in the page, but it is routed page → isolated-world bridge →
 service worker, and the worker is outside the document's CSP. A page with `default-src 'self'` and
-no `connect-src` therefore no longer blocks note sync. The overlay's own CSS remains subject to
-`style-src`, and a plain embed or bookmarklet (no extension) still needs `connect-src` for its hub
-origin.
+no `connect-src` therefore no longer blocks note sync.
+
+The relay covers the hub's HTTP requests and nothing else. When the page uses the attach loader, its
+own manifest (`latest.json`) and asset/SRI fetches still run as page `fetch()` calls and still need
+`connect-src`; the element script itself stays under `script-src`. A page **without** the extension —
+a plain embed, a bookmarklet, an IIFE build — never gets this path and always needs `connect-src`
+for the hub origin. So `script-src` alone is still not enough for such a page. A blocked request
+names the URL and the directive it violated:
+
+```
+Refused to connect to 'https://hub.example/api/v1/bluepencil/notes' because it violates the following Content Security Policy directive: "connect-src 'self'".
+```
+
+(`"default-src …"` appears instead when the page declares no `connect-src`, which is the fallback
+directive.) Allow the origin in `connect-src`, or route the request through the extension. The full
+recipe, including the loader's manifest and SRI fetches, is in
+[EMBED.md — CSP: `script-src` and `connect-src`](EMBED.md#csp-script-src-and-connect-src).
+
+The overlay's own CSS remains subject to `style-src`.
 
 The page → bridge channel carries two things, and only the second reaches the worker: one
 `chrome.storage.local` call (the layer's own store, so notes survive a reload — the bridge answers

@@ -124,6 +124,52 @@ recognises these additional keys:
 2. `headers-from()` result → merged on top
 3. `token` → written last into the header named by `token-header` (wins)
 
+### CSP: `script-src` and `connect-src`
+
+An embedding page performs two kinds of network access, and a Content-Security-Policy has to allow
+both. `script-src` alone is not enough for a page that talks to a hub.
+
+| What the page fetches | Example | Directive |
+|---|---|---|
+| the loader script | `attach.js` | `script-src` |
+| the element build as a script | `bluepencil.element.min.js` — the sibling build, `data-src`, or the manifest's `element` | `script-src` |
+| the manifest, and the file the digest is checked against | `latest.json`; with `data-integrity="true"` the element file again | `connect-src` |
+| the hub API | `{base}/health`, `{base}/notes…`, `{base}/sessions` | `connect-src` |
+
+The loader's manifest read (`data-manifest`, `data-watch`, `reload()`) and the SRI check are
+`fetch()` calls in the page, so `connect-src` governs them; the element build is a script load, so
+`script-src` governs it (both the dynamic `import()` and the script-tag fallback). The mounted layer
+then talks to the hub through its HTTP adapter, whose requests are `connect-src` as well. The hub
+routes named in the table are the ones the adapter uses; `{base}/config` belongs to the extension's
+*Test connection* probe and `{base}/mcp` is the agent door — the browser layer calls neither.
+
+`connect-src` governs the page's scripted network access — `fetch()`, XHR, WebSocket and
+EventSource — and it does not inherit from `script-src`. When `connect-src` is absent, `default-src`
+is its fallback, so a policy of `default-src 'self'` with no `connect-src` mounts the layer and then
+blocks every hub call.
+
+A strict page with the loader and the hub on other origins:
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self' https://cdn.example; connect-src 'self' https://hub.example
+```
+
+The same policy written with `default-src` only — it governs scripts and connections alike, so both
+origins go there (and it also becomes the fallback for images, styles and fonts):
+
+```
+Content-Security-Policy: default-src 'self' https://cdn.example https://hub.example
+```
+
+`https://cdn.example` and `https://hub.example` stand for your loader and hub origins; the same values
+work in a `<meta http-equiv="Content-Security-Policy" content="…">` tag.
+
+The extension is the one exception, and only for hub traffic: with the Bluepencil extension
+installed, the layer's hub requests are relayed through the extension's service worker, so the
+page's `connect-src` no longer governs them. The loader's own manifest and asset fetches still do
+when you use the loader, and a page without the extension always needs `connect-src` for the hub.
+See [EXTENSION.md — An extension does not bypass a CSP](EXTENSION.md#an-extension-does-not-bypass-a-csp).
+
 ## 3. Updates at runtime (optional)
 
 The tag needs **no** `data-*` attribute at all: `<script src="/bluepencil/attach.js"></script>` already
@@ -254,9 +300,10 @@ only in unit tests. See [examples/attach/README.md](../examples/attach/README.md
 * **One script slot per page is the intended setup.** Several loader
   scripts are supported (one handle and one mount each), but they share
   the page — do not point them at different stores.
-* **CSP `script-src` must allow the loader origin.** A strict
-  `script-src` CSP needs an explicit allowlist entry for the URL of
-  `attach.js`.
+* **CSP `script-src` must allow the loader origin, and `connect-src` the hub.** A strict
+  `script-src` CSP needs an explicit allowlist entry for the URL of `attach.js` (and for the element
+  build); a page that talks to a hub also needs the hub origin in `connect-src` — `script-src`
+  alone does not cover `fetch()`. See [CSP: `script-src` and `connect-src`](#csp-script-src-and-connect-src).
 * **Subresource Integrity (SRI):** when `data-integrity="true"`, the
   manifest's `sha256` is verified with WebCrypto. The element file must
   be served from the **same origin** or with appropriate
@@ -483,7 +530,9 @@ Full host-side checklist: [INTEGRATION.md §6](INTEGRATION.md#6-admin-debug-mode
 * **CSP / TLS:** the loader must be served from the same origin or a
   trusted CORS origin. The API endpoint must be HTTPS in production.
   A strict `script-src` CSP needs an explicit allowlist entry for the
-  loader URL.
+  loader URL, and `connect-src` needs the hub origin (or `default-src`,
+  when `connect-src` is absent) — `script-src` does not govern `fetch()`.
+  See [CSP: `script-src` and `connect-src`](#csp-script-src-and-connect-src).
 * **Never load for production end users:** the gate is enforced in the
   UI (see §5) **and** on the server. Treat any unauthorised access to
   the API as a security incident.
@@ -499,6 +548,8 @@ Full host-side checklist: [INTEGRATION.md §6](INTEGRATION.md#6-admin-debug-mode
 | Nothing appears | `gate` returned false, or `enabled="false"` was set. | Check the `gate` global path resolves to a function or a boolean. Listen for `bp-error` and read `element.issues` — an unresolvable path is reported there. |
 | Clicks do nothing | Adapter failed on first load (buttons disabled). | Listen for `bp-error` events; check `window.bluepencilAttach` exists. |
 | `endpoint` returned HTML instead of JSON | Wrong origin, or the SPA does not proxy the API path. | Verify the endpoint URL returns `Content-Type: application/json`. Use `curl` to test. |
+| Layer mounts, but nothing reaches the hub | The page's `connect-src` does not allow the hub origin — a `default-src 'self'` with no `connect-src` does not. The console says `Refused to connect … violates the following Content Security Policy directive: "connect-src …"` (or `"default-src …"` when `connect-src` is absent). | Confirm in DevTools: the console violation names the URL and the directive, and Network shows the request as blocked. Allow the hub origin in `connect-src`, or run the layer through the extension — its hub traffic leaves through the service worker. See [CSP: `script-src` and `connect-src`](#csp-script-src-and-connect-src). |
+| Loader never updates / `bp-attach-error` on a manifest page | `connect-src` blocks `latest.json` (or the `data-integrity` fetch); `script-src` alone does not cover it. | Allow the loader origin in `connect-src`, then confirm the blocked request in DevTools → Network (the console error names both the URL and the directive). |
 | `401` / `403` from the API | Token is missing, expired, or misconfigured. | Check `data-token`, `data-token-header`, `data-token-scheme` on the script tag. |
 | Notes lose their element (marker drift) | Anchor resolved to an unstable path. | Add a stable `data-testid` or `data-bluepencil` hook to the target element. |
 | Version not updating (manifest cache) | Browser cached `latest.json`. | Ensure `latest.json` is served with `Cache-Control: no-store`. |
