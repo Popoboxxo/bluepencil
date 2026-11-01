@@ -1,3 +1,44 @@
+## [0.10.4] - 2026-11-01
+
+### Fixed
+
+**An authenticated hub now answers the CORS preflight, and allows the header the extension sends
+(#98, #99).** The two defects made the cross-origin pairing unusable whenever the hub ran with a
+credential — which the container's entrypoint guarantees by generating a secret on first start, so
+this was the *default* deployment, not an exotic one.
+
+`authorize()` ran before the OPTIONS branch, so a preflight — which by design carries no credential,
+because the browser cannot know one yet — was refused with 401. The credential check can only ever
+refuse that pairing, never protect a note: the answer is CORS metadata only, and an unauthenticated
+caller already learns that the path exists from the 401 it gets for a real request (a refusal is
+never a 404). The preflight branch now stands in front of the gate; everything carrying data still
+passes `authorize`.
+
+`access-control-allow-headers` named only `Content-Type, Authorization`, so after the preflight
+passed the browser still dropped `x-bluepencil-auth` — the header the extension carries the shared
+secret in. The list now names the full vocabulary any caller sends: `X-Bluepencil-Auth`,
+`X-Bluepencil-Client`, `X-Bluepencil-Actor`, `Mcp-Session-Id`.
+
+### Verified
+
+Against a *running* hub (`server-token-wiring.test.ts`, five new cases): preflight with
+`--auth-secret` + `--cors '*'` → **204** with `access-control-allow-origin: *` (was 401);
+`access-control-allow-headers` contains `x-bluepencil-auth`, `x-bluepencil-client`,
+`mcp-session-id`; the data-carrying requests keep the gate (no credential → 401, credential → 200);
+an unauthenticated hub answers the same 204; without `--cors` nothing changes (401, no CORS header).
+Measured end-to-end on the live v0.10.3 hub before the fix: `OPTIONS /notes` → 401.
+
+### Known gaps
+
+- **#102 stays open:** `OPTIONS` on `/mcp` still answers 405 (the POST-only rule runs before any
+  CORS handling), so the extension cannot use the MCP door cross-origin — the REST door
+  (`{base}/notes`) is the one this release unblocks, and it is the one the extension speaks.
+- The preflight exemption applies only when `--cors` is configured; without the flag an OPTIONS is
+  answered as before (credential check, then 405).
+
+---
+
+## [0.10.3] - 2026-10-31
 ## [0.10.3] - 2026-11-01
 
 ### Fixed

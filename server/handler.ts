@@ -528,7 +528,13 @@ export function corsHeaders(cors: string | undefined): Record<string, string> {
   return {
     "access-control-allow-origin": cors,
     "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
-    "access-control-allow-headers": "Content-Type, Authorization",
+    // Every header any caller of this API actually sends, or the browser drops it before the
+    // request leaves: `Authorization` (signed token), `x-bluepencil-auth` (shared secret, #99 —
+    // without it an authenticated cross-origin pairing fails after the preflight passes), and the
+    // identity/session pair both MCP and the notes API record (`x-bluepencil-client`,
+    // `mcp-session-id`, `x-bluepencil-actor` for the journal). Header names match case-insensitively.
+    "access-control-allow-headers":
+      "Content-Type, Authorization, X-Bluepencil-Auth, X-Bluepencil-Client, X-Bluepencil-Actor, Mcp-Session-Id",
     "access-control-max-age": "600",
     ...(cors === "*" ? {} : { vary: "Origin" }),
   };
@@ -1203,6 +1209,8 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   // Authentication comes before the method check and before any route, and that placement is the
   // security property rather than a style choice: an unauthenticated caller must not be able to
   // learn which paths exist by watching 405s turn into 404s, and no route may forget the check.
+  // (The single message in front of it is the CORS preflight answered above — an OPTIONS that
+  // carries no credential and whose answer is CORS metadata only, not a route.)
   //
   // It deliberately sits *after* the "not even under the base" 404. A request for something that is
   // not this API at all is not the hub's business, and answering 401 to it would turn every
@@ -1222,12 +1230,18 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   // `401 … no token key configured` the moment the header alone arms the check. What must not happen
   // is the *opposite* mistake: a presented token being dropped while a credential is required, which
   // is why the token path below is tried first whenever a verifier exists.
+  // A CORS preflight stands in front of this gate, and that is a rule of CORS rather than a hole in
+  // this hub: the browser sends OPTIONS without a credential — it cannot know one yet — so a check
+  // here could only refuse the pairing, never protect a note. The answer carries CORS metadata only,
+  // and an unauthenticated caller already learns that the path exists from the 401 it gets for a
+  // real request (a refusal is never a 404), so nothing is disclosed that the gate did not disclose
+  // before. Every request that carries data still passes `authorize` below (#98).
+  if (method === "OPTIONS" && context.cors !== undefined && context.cors !== "") {
+    return { status: 204, headers: corsHeaders(context.cors), body: "" };
+  }
   const refusal = authorize(request, context);
   if (refusal !== null) {
     return refusal;
-  }
-  if (method === "OPTIONS" && context.cors !== undefined && context.cors !== "") {
-    return { status: 204, headers: corsHeaders(context.cors), body: "" };
   }
   if (!allow.includes(method)) {
     const response = errorResponse(
