@@ -14,7 +14,7 @@ shared by UI, CLI, hub and MCP.
 
 | Section | What you find |
 |---|---|
-| [Status](#status) | What `0.11.5` contains — and what it honestly does not |
+| [Status](#status) | What `0.11.6` contains — and what it honestly does not |
 | [Why the name](#why-the-name) | Where the metaphor comes from |
 | [Quick start](#quick-start) | Build, artifact table, one `init()` call, the runtime handle |
 | [The pieces](#the-pieces) | Browser layer, five adapters, store, hub, two agent doors |
@@ -32,10 +32,11 @@ shared by UI, CLI, hub and MCP.
 
 ## Status
 
-**`0.11.5`** — the review layer, the headless data library and the CLI/MCP surfaces are on `main`.
-This patch hardens the optional admin surface introduced in `0.11.0`: the minted-token panel, the
-notes-only credential bridge, durable revocation, request limits and the page's own headers. What is
-in the tree:
+**`0.11.6`** — the review layer, the headless data library and the CLI/MCP surfaces are on `main`.
+This patch tightens four integration edges: extension hub traffic leaves through the service worker,
+the page-side storage relay only touches the layer's own keys, `registerHttpTransport` plugs in a
+process-wide HTTP transport, and the CSP guidance now covers `connect-src` alongside `script-src`.
+What is in the tree:
 
 - **The layer** — core model, anchoring (now including **transient container reveal**), capture,
   store and the five adapters (with a conformance suite); Markdown/JSON export; the collaboration
@@ -76,7 +77,7 @@ in the tree:
   silently reported as "no notes"; and `unverified` appears only when a peer's `/config` omits
   `app` — a missing `federates` is a start error, not a warning.
 - **Distribution.** No npm publish — install from the tag
-  (`npm i github:Popoboxxo/bluepencil#v0.11.5`; the `prepare` script builds `dist/` during
+  (`npm i github:Popoboxxo/bluepencil#v0.11.6`; the `prepare` script builds `dist/` during
   install) or use the release artifacts: loader, layer, package tarball, the MV3 browser
   extension, one `SHA256SUMS` over all of them, and the hub image on
   `ghcr.io/popoboxxo/bluepencil` ([docs/DOCKER.md](docs/DOCKER.md)).
@@ -390,7 +391,7 @@ process: `/notes` for the page, `/mcp` for the agent, `/config` to describe it w
 ```yaml
 services:
   hub:
-    image: ghcr.io/popoboxxo/bluepencil:0.11.5
+    image: ghcr.io/popoboxxo/bluepencil:0.11.6
     ports: ["127.0.0.1:8787:8787"]
     volumes: ["bluepencil-notes:/data"]
     environment:
@@ -482,7 +483,7 @@ docker run -i --rm --network bluepencil-federation \
   --env-file .env \
   --no-healthcheck \
   -v "$PWD/instances.json:/etc/bluepencil/instances.json:ro" \
-  ghcr.io/popoboxxo/bluepencil:0.11.5 bluepencil-federator \
+  ghcr.io/popoboxxo/bluepencil:0.11.6 bluepencil-federator \
   --registry /etc/bluepencil/instances.json --read-only --allow-insecure
 ```
 
@@ -783,11 +784,11 @@ flowchart LR
 
   subgraph beforeTag["before the tag"]
     scan["npm run secret-scan"] --> spec["npm run spec / spec:check"]
-    spec --> pre["release-preflight --tag v0.11.5"]
+    spec --> pre["release-preflight --tag v0.11.6"]
   end
 
   subgraph cut["release.yml"]
-    tag["tag v0.11.5"] --> rel["verify on the tagged commit"]
+    tag["tag v0.11.6"] --> rel["verify on the tagged commit"]
     rel --> assets["4 assets + one SHA256SUMS"]
     assets --> pub["publish + attest"]
     pub --> store["dispatch chrome-webstore.yml"]
@@ -852,7 +853,7 @@ tagged commit, builds the assets and publishes them — no manual upload steps.
   release's own extension zip to the Chrome Web Store (a release published with `GITHUB_TOKEN` does
   not start workflow runs, so the dispatch is explicit).
 
-Install without npm: `npm i github:Popoboxxo/bluepencil#v0.11.5`. The full procedure, failure modes
+Install without npm: `npm i github:Popoboxxo/bluepencil#v0.11.6`. The full procedure, failure modes
 and the store workflow are in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Documentation
