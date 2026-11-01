@@ -22,7 +22,8 @@ services:
       # than a container id.
       BLUEPENCIL_NAME: "${BLUEPENCIL_NAME:-bluepencil-hub}"
       # BLUEPENCIL_AUTH_SECRET            # leave unset: generated on the first start, kept in /data
-      # BLUEPENCIL_TOKEN_KEY              # literal HMAC key (no file-path lookup) for signed, revocable tokens
+      # BLUEPENCIL_TOKEN_KEY              # literal HMAC key (no file-path lookup) for signed, revocable
+      #                                   # tokens — *in addition* to the shared secret, never instead of it
     # Extra flags go straight to the hub: run read-only, use another base path, mirror to Markdown.
     # command: ["--read-only"]
 

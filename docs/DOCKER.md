@@ -42,17 +42,31 @@ the default URL and the container reports `unhealthy` while the hub is running f
 `docker/entrypoint.sh` is the entrypoint, and it does three things a plain `CMD node server.js` cannot:
 
 1. **It binds `0.0.0.0`** — reachable from outside, which is the point of a container.
-2. **It generates a credential when none was handed in**, stores it in `/data/.bluepencil-auth`
-   (mode `0600`) and reuses it afterwards. The first start prints it in one line so it can be pasted
-   into the extension; later starts only name the file, because a secret in every log line is a secret
-   on every laptop that ever ran `docker logs`.
+2. **It generates the shared secret when none was handed in**, stores it in
+   `/data/.bluepencil-auth` (mode `0600`) and reuses it afterwards. This happens **even when
+   `BLUEPENCIL_TOKEN_KEY` is set** — the hub then accepts both credentials and an operator can add
+   token signing without locking out clients that already hold the secret. The first start prints a
+   freshly generated secret in one line so it can be pasted into the extension; later starts only
+   name the file, because a secret in every log line is a secret on every laptop that ever ran
+   `docker logs`. A `0`-byte secret file counts as "not present" and is regenerated; a file that
+   cannot be written (read-only mount, missing directory) aborts the start with a message naming
+   `BLUEPENCIL_AUTH_SECRET`/`BLUEPENCIL_SECRET_FILE` instead of continuing with an unexported
+   secret.
 3. **It prints the address and the MCP endpoint** (`POST {base}/mcp`).
 
-Hand a credential in and it is used instead:
+Hand a shared secret in and it is used instead of generating one — with or without a token key.
+Keep that value stable across container re-creations, otherwise every restart invalidates every
+client: write it once to an `.env` file (or a Docker secret) rather than generating it per start:
 
 ```sh
-BLUEPENCIL_AUTH_SECRET="$(openssl rand -hex 32)" docker compose up -d
+printf 'BLUEPENCIL_AUTH_SECRET=%s\n' "$(openssl rand -hex 32)" >> .env   # once, not per start
+docker compose up -d
 ```
+
+The entrypoint always persists a shared secret unless `BLUEPENCIL_AUTH_SECRET` is handed in.
+Token acceptance is additive, not a replacement: setting `BLUEPENCIL_TOKEN_KEY` does not disable
+the secret, and there is no opt-out switch for it. `BLUEPENCIL_AUTH_SECRET=""` does not disable it
+either — an empty value counts as unset, so the entrypoint generates or reuses the file.
 
 ## Environment variables
 
@@ -65,10 +79,24 @@ BLUEPENCIL_AUTH_SECRET="$(openssl rand -hex 32)" docker compose up -d
 | `BLUEPENCIL_APP` | `bluepencil hub` | Identity reported as `/config.app`; a registry peer must match it |
 | `BLUEPENCIL_ENVIRONMENT` | `dev` | The one environment this hub is the store of record for |
 | `BLUEPENCIL_REGISTRY` | – | Registry file; makes `/mcp` an aggregate and `/config` report `federates:true` (the hub stays the store of record) |
-| `BLUEPENCIL_AUTH_SECRET` | generated | Shared secret; every client sends it in `x-bluepencil-auth` |
-| `BLUEPENCIL_TOKEN_KEY` | – | Signed per-device tokens instead (`Authorization: Bearer …`), individually revocable |
+| `BLUEPENCIL_AUTH_SECRET` | generated | Shared secret; every client sends it in `x-bluepencil-auth`. Generated into `BLUEPENCIL_SECRET_FILE` even when `BLUEPENCIL_TOKEN_KEY` is set — a hub with both accepts **both** credentials |
+| `BLUEPENCIL_TOKEN_KEY` | – | Signed per-device tokens (`Authorization: Bearer …`), individually revocable. Does not replace the shared secret; configure it *in addition* to keep both doors open |
 | `BLUEPENCIL_ADMIN_SECRET` | – | Opt-in admin surface at `{base}/admin`; at least 16 characters, or the hub refuses to start |
-| `BLUEPENCIL_SECRET_FILE` | `/data/.bluepencil-auth` | Where the generated secret is kept |
+| `BLUEPENCIL_SECRET_FILE` | `/data/.bluepencil-auth` | Where the generated secret is kept (reused on the next start). A `0`-byte file counts as not present and is regenerated; if it cannot be written the container refuses to start rather than run with an unpersisted secret |
+
+### Credentials and their headers
+
+| Credential | Sent in | Accepted on |
+|---|---|---|
+| shared secret (`BLUEPENCIL_AUTH_SECRET`) | `x-bluepencil-auth: <secret>` | the notes routes (`/notes`, `/notes/{id}`, `/notes/bulk-delete`, `/notes/{id}/messages`) |
+| signed token (`BLUEPENCIL_TOKEN_KEY`) | `Authorization: Bearer <token>` | the notes routes, same set |
+| admin secret (`BLUEPENCIL_ADMIN_SECRET`) | `x-bluepencil-admin: <secret>` | the admin surface, plus the notes routes as a second credential — never `/mcp` |
+
+A hub accepts as many of these as are configured; `{base}/config` names the strongest one, and
+`{base}/admin/status` lists all of them (`auth: "token+secret"`, `credentials: ["token","secret"]`).
+The admin secret is an operator credential, not a client one: alone it does not turn the client gate
+on. No route echoes a *configured* credential value; `POST {base}/admin/devices` deliberately
+returns the freshly minted token once, because the hub keeps only its id.
 
 Extra arguments go straight to the hub, e.g. a read-only hub with a Markdown mirror:
 
@@ -83,11 +111,22 @@ the routes behind it. Without it the surface does not exist: `{base}/admin` fall
 ordinary 404, so the container looks exactly like a hub that never had the feature.
 
 ```sh
+# once: mint the operator credentials into a file, not into the run command
+printf 'BLUEPENCIL_ADMIN_SECRET=%s\nBLUEPENCIL_TOKEN_KEY=%s\n' \
+  "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > bluepencil.env
+chmod 0600 bluepencil.env
+
 docker run -d --name bluepencil-hub -p 127.0.0.1:8787:8787 -v bluepencil-notes:/data \
-  -e BLUEPENCIL_ADMIN_SECRET="$(openssl rand -hex 32)" \
-  -e BLUEPENCIL_TOKEN_KEY="$(openssl rand -hex 32)" \
+  --env-file bluepencil.env \
   ghcr.io/popoboxxo/bluepencil:0.11.1
 ```
+
+The shared secret is deliberately absent here: the entrypoint generates it into the volume and
+reuses it on every start, which is already the stable form. Inlining
+`-e BLUEPENCIL_AUTH_SECRET="$(openssl rand -hex 32)"` into `docker run` instead would mint a new
+secret on every container re-creation, so every client that saved the old one loses access. If you
+must supply it yourself, append a stable `BLUEPENCIL_AUTH_SECRET=…` to `bluepencil.env` (or mount a
+Docker secret) — never generate it inline.
 
 At `{base}/admin` (`/admin/` is the same page) the operator:
 
