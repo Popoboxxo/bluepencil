@@ -138,7 +138,7 @@ docker run -i --rm --network bluepencil-federation \
   --env-file .env \
   --no-healthcheck \
   -v ./instances.json:/etc/bluepencil/instances.json:ro \
-  ghcr.io/popoboxxo/bluepencil:0.10.0 bluepencil-federator \
+  ghcr.io/popoboxxo/bluepencil:0.10.3 bluepencil-federator \
   --registry /etc/bluepencil/instances.json --read-only --allow-insecure
 ```
 

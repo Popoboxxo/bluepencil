@@ -655,18 +655,18 @@ would be needed for non-loopback `http` or private targets, never for link-local
 ```yaml
 services:
   hub-dev:
-    image: ghcr.io/popoboxxo/bluepencil:0.10.0
+    image: ghcr.io/popoboxxo/bluepencil:0.10.3
     command: ["--store","/data/dev.json","--app","my-web-tool",
               "--environment","dev","--name","dev-web","--auth-secret","${DEV_SECRET}"]
     volumes: ["dev-data:/data"]
     ports: ["8787:8787"]
   hub-staging:
-    image: ghcr.io/popoboxxo/bluepencil:0.10.0
+    image: ghcr.io/popoboxxo/bluepencil:0.10.3
     command: ["--store","/data/staging.json","--app","my-web-tool",
               "--environment","staging","--name","staging-web","--auth-secret","${STAGING_SECRET}"]
     volumes: ["staging-data:/data"]
   hub-aggregator:
-    image: ghcr.io/popoboxxo/bluepencil:0.10.0
+    image: ghcr.io/popoboxxo/bluepencil:0.10.3
     entrypoint: ["/usr/local/bin/bluepencil-hub"]
     user: "${BLUEPENCIL_UID:-1000}:${BLUEPENCIL_GID:-1000}"
     command: ["--store","/tmp/aggregator.json",
@@ -713,7 +713,7 @@ docker run -i --rm --network bluepencil-federation \
   --env-file .env \
   --no-healthcheck \
   -v ./instances.json:/etc/bluepencil/instances.json:ro \
-  ghcr.io/popoboxxo/bluepencil:0.10.0 bluepencil-federator \
+  ghcr.io/popoboxxo/bluepencil:0.10.3 bluepencil-federator \
   --registry /etc/bluepencil/instances.json --read-only --allow-insecure
 ```
 
