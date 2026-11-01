@@ -321,19 +321,45 @@ export function renderAdminHtml(strings: AdminStrings): string {
     }
   }
 
+  function credentialKinds(status) {
+    return Array.isArray(status.credentials) ? status.credentials : [];
+  }
+
+  function credentialNames(status) {
+    return credentialKinds(status).map(function (kind) {
+      if (kind === 'token') return T.credentialKindToken;
+      if (kind === 'secret') return T.credentialKindSecret;
+      return String(kind);
+    });
+  }
+
+  function credentialLabel(status) {
+    var names = credentialNames(status);
+    if (status.auth === 'token+secret') return T.credentialTokenAndSecret;
+    if (status.auth === 'token') return T.credentialToken;
+    if (status.auth === 'secret') return T.credentialSecret;
+    // A mode this page does not know yet must not read as "none" while the payload lists
+    // accepted credentials: saying "none" about a gated hub is the one wrong answer.
+    if (names.length > 0) return names.join(' + ');
+    return T.credentialNone;
+  }
+
   function renderOverview(status) {
+    var accepted = credentialNames(status);
     var rows = [
       [T.overviewHub, status.name + ' (v' + status.version + ')'],
       [T.overviewEnvironment, status.environment],
       [T.overviewNotes, String(status.notes)],
-      [T.overviewClientCredential, status.auth === 'token' ? T.credentialToken :
-        status.auth === 'secret' ? T.credentialSecret : T.credentialNone],
+      [T.overviewClientCredential, credentialLabel(status)],
       [T.overviewTokenIssuing, status.tokenIssuing ? T.issuingAvailable : T.issuingUnavailable],
       [T.overviewRevocation, status.revocationDurable ? T.revocationDurable : T.revocationLive],
       [T.overviewDevices, fmt(T.devicesSummary, { devices: status.devices, revoked: status.revoked })],
       [T.overviewReadOnly, status.readOnly ? T.yes : T.no],
       [T.overviewFederates, status.federates ? T.federatesYes : T.federatesNo]
     ];
+    if (accepted.length > 0) {
+      rows.splice(5, 0, [T.overviewAcceptedCredentials, accepted.join(' + ')]);
+    }
     var card = el('overview-card');
     card.textContent = '';
     var list = document.createElement('dl');

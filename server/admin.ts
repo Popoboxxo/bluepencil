@@ -45,6 +45,7 @@ import { corsHeaders } from "./cors";
 import { writeAtomic } from "./atomic-write";
 import { renderAdminHtml } from "./admin-html";
 import { ADMIN_STRINGS, adminLanguage } from "./admin-i18n";
+import { acceptedCredentials, credentialMode } from "./credentials";
 
 /** The header an admin request carries; matched case-insensitively by the caller. */
 export const ADMIN_HEADER = "x-bluepencil-admin";
@@ -250,7 +251,11 @@ function statusPayload(context: HandlerContext, registry: RegistryRead): Record<
     readOnly: context.readOnly === true,
     federates: context.federates === true,
     notes: context.store.notes.length,
-    auth: context.verifyToken !== undefined ? "token" : context.authSecret !== undefined ? "secret" : "none",
+    // Both credentials are named (#112): `auth` says `token+secret` when the hub accepts both, and
+    // `credentials` lists them in preference order. Both come from the one helper in
+    // `server/credentials.ts`; no value ever enters this payload.
+    auth: credentialMode(context),
+    credentials: acceptedCredentials(context),
     admin: true,
     tokenIssuing: context.tokenIssuer !== undefined,
     revocationDurable: context.revocationPath !== undefined,
