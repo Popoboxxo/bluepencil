@@ -27,9 +27,15 @@ Then, from your machine:
 curl -s http://localhost:8787/api/v1/bluepencil/config | jq .
 ```
 
-`{base}/config` needs no credential (FR-6.10), which is what makes it usable as a probe: it reports
-the name, the version, **which** credential the hub asks for and the binding the process actually has.
-That is also the image's `HEALTHCHECK`.
+`{base}/health` and `{base}/config` need no credential (FR-6.10, #109), which is what makes them
+usable as probes: `/health` answers the liveness fields, `/config` also reports the name, **which**
+credential the hub asks for and the binding the process actually has. The image's `HEALTHCHECK`
+uses `/health`, the cheaper of the two; `/config` remains the richer status read.
+
+The `HEALTHCHECK` builds its URL from the **environment** (`$BLUEPENCIL_PORT$BLUEPENCIL_BASE`), not
+from the runtime arguments. If you start the hub with `--port` or `--base`, set
+`BLUEPENCIL_PORT` / `BLUEPENCIL_BASE` to the same values as well — otherwise the probe keeps calling
+the default URL and the container reports `unhealthy` while the hub is running fine.
 
 ## What the container does on start
 
@@ -106,9 +112,11 @@ Security caveats:
   credentials other clients use; publishing it is publishing the key ring.
 - **Terminate TLS in front of it.** The image has no TLS of its own, and the admin secret crosses
   the wire on every request.
-- **The journal is public.** `GET {base}/journal` is answered without a credential (like
-  `{base}/config`); do not expose a hub on an untrusted network and expect the audit trail to stay
-  private.
+- **The probes and the journal are public.** `GET {base}/health`, `GET {base}/config` and
+  `GET {base}/journal` are answered without a credential, and so is the CORS `OPTIONS` preflight on
+  the API routes (when `--cors` is set); the probes carry no note data, but the journal does — it
+  names the audited `noteId`, the `actor` and a `summary`. Do not expose a hub on an untrusted
+  network and expect the audit trail to stay private.
 - **The admin throttle keys on the socket peer address.** Behind a reverse proxy all operators
   share one budget (10 failures per 5 minutes), because every request arrives from the proxy's
   address. Bind the admin surface to a dedicated origin/loopback, or set a separate trust boundary
@@ -159,8 +167,10 @@ container's process user: the image runs as uid 1000 (`node`), so either `chown 
 file or set `user:` / `BLUEPENCIL_UID`/`BLUEPENCIL_GID` to the host uid/gid that owns it. A file
 owned by another user with the default `user: 1000` is refused the same way.
 
-**Health and ordering.** Each leaf has a `HEALTHCHECK` against `{base}/config`, which needs no
-credential; the aggregator uses `depends_on: service_healthy`, so it does not try to verify peers
+**Health and ordering.** The image built from this repository defines a `HEALTHCHECK` against
+`{base}/health`, which needs no credential since #109 (0.11.2); the federation example still pins
+`0.10.3`, where `/health` is gated, so its compose healthchecks use `{base}/config` until the pin
+moves. The aggregator uses `depends_on: service_healthy`, so it does not try to verify peers
 before they answer. A peer that is merely unreachable at start does not take the aggregator down
 (it starts degraded and reports `partial`); a registry, identity or nesting error is a start
 refusal (exit 4) and `restart: on-failure:5` stops the loop after a few attempts.
@@ -191,7 +201,7 @@ docker run -i --rm --network bluepencil-federation \
 admits RFC1918/ULA/CGNAT addresses but never link-local or cloud-metadata targets. `--env-file .env`
 supplies the registry credentials (`BP_DEV_TOKEN` and `BP_STAGING_TOKEN` — both instance entries
 reference them), `--user` keeps the `0600` owner check satisfied when the host uid differs from the
-image's `node` user, and `--no-healthcheck` disables the image's hub-only `/config` probe: a
+image's `node` user, and `--no-healthcheck` disables the image's hub-only `/health` probe: a
 federator has no HTTP endpoint and would otherwise report `unhealthy` forever.
 
 **Both bins are in the image.** It ships `dist/server.js` and `dist/federator.js` behind the

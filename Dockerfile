@@ -43,8 +43,8 @@ RUN chmod 0755 /usr/local/bin/bluepencil-entrypoint \
   # can write its store and its generated credential. A *bind* mount keeps the host's ownership
   # instead — those need `chown 1000:1000` on the host, which docs/DOCKER.md says out loud.
   && mkdir -p /data && chown node:node /data \
-  # busybox wget is enough: `{base}/config` needs no credential (FR-6.10), which is what makes it
-  # usable as a health probe on an authenticated hub.
+  # busybox wget is enough: `{base}/health` needs no credential (#109) and answers three fields,
+  # which is exactly what a container probe is for.
   && true
 USER node
 
@@ -56,7 +56,7 @@ VOLUME ["/data"]
 EXPOSE 8787
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget -q -O /dev/null "http://127.0.0.1:${BLUEPENCIL_PORT}${BLUEPENCIL_BASE}/config" || exit 1
+  CMD wget -q -O /dev/null "http://127.0.0.1:${BLUEPENCIL_PORT}${BLUEPENCIL_BASE}/health" || exit 1
 
 # The hub stays the default: it owns the credential bootstrap, so `docker run …` and Compose keep
 # working unchanged. The same script dispatches `bluepencil-federator` before it prints anything (a

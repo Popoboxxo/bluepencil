@@ -152,6 +152,38 @@ describe("GET {base}/config — the answer itself", () => {
     expect(handleRequest(request, context()).status).toBe(404);
     expect(get("/notes").status).toBe(200);
   });
+
+  it("answers a CORS preflight without a credential (#102)", () => {
+    // A browser sends OPTIONS before it can know which credential to bring; the answer carries CORS
+    // metadata only, never the config body and never a 401.
+    const response = handleRequest(
+      {
+        method: "OPTIONS",
+        url: `${BASE}/config`,
+        headers: { origin: "https://app.example", "access-control-request-method": "GET" },
+        body: "",
+      },
+      context({ cors: "*", authSecret: SHARED }),
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.body).toBe("");
+    expect(response.headers["access-control-allow-origin"]).toBe("*");
+    // `GET` is what `/config` documents; the preflight advertises exactly that plus OPTIONS, never
+    // the notes API's `POST`/`PATCH` (#102).
+    expect(response.headers["access-control-allow-methods"]).toBe("GET, OPTIONS");
+  });
+
+  it("keeps the 405 without --cors, because there is no cross-origin caller to answer", () => {
+    const response = handleRequest(
+      { method: "OPTIONS", url: `${BASE}/config`, headers: {}, body: "" },
+      context({ authSecret: SHARED }),
+    );
+
+    expect(response.status).toBe(405);
+    expect(response.headers.allow).toBe("GET");
+    expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+  });
 });
 
 describe("GET {base}/config — against a running hub", () => {

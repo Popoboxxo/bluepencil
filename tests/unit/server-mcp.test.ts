@@ -190,6 +190,77 @@ describe("the MCP door: what it accepts", () => {
   });
 });
 
+/**
+ * The browser preflight (#102). A cross-origin MCP client sends `OPTIONS` before it can know a
+ * credential, so the answer has to be CORS metadata only — and it has to name every header the real
+ * request carries, or the browser drops that request before it is sent.
+ */
+describe("the MCP door: the CORS preflight (#102)", () => {
+  it("answers OPTIONS with the CORS headers and needs no credential", async () => {
+    const answered = await mcp(
+      {},
+      { method: "OPTIONS", overrides: { cors: "*", authSecret: SHARED } },
+    );
+
+    expect(answered.status).toBe(204);
+    expect(answered.body).toEqual({});
+    expect(answered.headers["access-control-allow-origin"]).toBe("*");
+
+    // The preflight names what this door documents and nothing else: no `GET`/`PATCH` from the notes
+    // vocabulary may leak into the MCP answer (#102).
+    expect(answered.headers["access-control-allow-methods"]).toBe("POST, OPTIONS");
+
+    const allowed = (answered.headers["access-control-allow-headers"] ?? "").toLowerCase();
+    for (const name of ["content-type", "authorization", "x-bluepencil-auth", "mcp-protocol-version"]) {
+      expect(allowed, name).toContain(name);
+    }
+  });
+
+  it("keeps the 405 without --cors, because there is no cross-origin caller to answer", async () => {
+    const answered = await mcp({}, { method: "OPTIONS", overrides: { authSecret: SHARED } });
+
+    expect(answered.status).toBe(405);
+    expect(answered.headers["allow"]).toBe("POST");
+    expect(answered.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  it("keeps the credential gate on the POST itself while CORS is on", async () => {
+    const refused = await mcp(
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      { overrides: { cors: "*", authSecret: SHARED } },
+    );
+    expect(refused.status).toBe(401);
+
+    const allowed = await mcp(
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      { overrides: { cors: "*", authSecret: SHARED }, headers: { "x-bluepencil-auth": SHARED } },
+    );
+    expect(allowed.status).toBe(200);
+  });
+
+  it("answers the preflight through a running hub, before the credential gate", async () => {
+    // The hub routes the MCP door before the notes handler, so a unit call alone cannot prove the
+    // wiring. This drives the real socket with a real auth secret and no credential at all.
+    const server = await startServer({
+      storePath: tempStorePath(),
+      port: 0,
+      authSecret: SHARED,
+      cors: "*",
+      quiet: true,
+    });
+    servers.push(server);
+
+    const response = await fetch(`http://127.0.0.1:${server.port}${BASE}/mcp`, {
+      method: "OPTIONS",
+      headers: { origin: "https://app.example", "access-control-request-method": "POST" },
+    });
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect((response.headers.get("access-control-allow-methods") ?? "").toLowerCase()).toContain("post");
+  });
+});
+
 describe("the MCP door: who gets in", () => {
   it("needs the credential the notes API needs", async () => {
     const refused = await mcp({ jsonrpc: "2.0", id: 1, method: "tools/list" }, { overrides: { authSecret: SHARED } });
