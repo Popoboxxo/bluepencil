@@ -82,12 +82,18 @@ async function request(
   port: number,
   path: string,
   init: { method?: string; headers?: Record<string, string> } = {},
-): Promise<{ status: number; body: string }> {
+): Promise<{ status: number; body: string; headers: Record<string, string> }> {
   const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: init.method ?? "GET",
     headers: init.headers ?? {},
   });
-  return { status: response.status, body: await response.text() };
+  // Lowercased: the assertions below are about CORS metadata, whose names the spec matches
+  // case-insensitively and which Node surfaces as lowercased keys.
+  const headers: Record<string, string> = {};
+  response.headers.forEach((value, key) => {
+    headers[key.toLowerCase()] = value;
+  });
+  return { status: response.status, body: await response.text(), headers };
 }
 
 describe("a running hub actually enforces --auth-secret", () => {
@@ -115,6 +121,72 @@ describe("a running hub actually enforces --auth-secret", () => {
     const response = await request(port, "/api/v1/bluepencil/notes");
 
     expect(response.status).toBe(200);
+  });
+});
+
+/**
+ * The preflight of an authenticated, CORS-enabled hub (#98, #99) — the pairing the extension in a
+ * page on another origin needs. A browser sends OPTIONS with no credential by design, so a
+ * credential check on it can only refuse the pairing; and once the preflight passes, the answer
+ * must still name the header the extension carries, or the real request never leaves the browser.
+ */
+describe("an authenticated hub answers the CORS preflight", () => {
+  const PREFLIGHT = {
+    method: "OPTIONS",
+    headers: {
+      origin: "http://localhost:5173",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "content-type, x-bluepencil-auth",
+    },
+  };
+
+  it("answers 204 rather than 401, because a preflight carries no credential (#98)", async () => {
+    const port = await serve({ authSecret: CREDENTIAL, cors: "*" });
+
+    const response = await request(port, "/api/v1/bluepencil/notes", PREFLIGHT);
+
+    expect(response.status).toBe(204);
+    expect(response.headers["access-control-allow-origin"]).toBe("*");
+  });
+
+  it("names the header the extension sends, so the real request is not dropped (#99)", async () => {
+    const port = await serve({ authSecret: CREDENTIAL, cors: "*" });
+
+    const response = await request(port, "/api/v1/bluepencil/notes", PREFLIGHT);
+    const allowed = (response.headers["access-control-allow-headers"] ?? "").toLowerCase();
+
+    expect(allowed).toContain("x-bluepencil-auth");
+    expect(allowed).toContain("x-bluepencil-client");
+    expect(allowed).toContain("mcp-session-id");
+  });
+
+  it("keeps the gate on every request that carries data", async () => {
+    const port = await serve({ authSecret: CREDENTIAL, cors: "*" });
+
+    const refused = await request(port, "/api/v1/bluepencil/notes");
+    const accepted = await request(port, "/api/v1/bluepencil/notes", {
+      headers: { "x-bluepencil-auth": CREDENTIAL },
+    });
+
+    expect(refused.status).toBe(401);
+    expect(accepted.status).toBe(200);
+  });
+
+  it("answers the same preflight of an unauthenticated hub, because nothing is being asked", async () => {
+    const port = await serve({ cors: "*" });
+
+    const response = await request(port, "/api/v1/bluepencil/notes", PREFLIGHT);
+
+    expect(response.status).toBe(204);
+  });
+
+  it("sends no CORS answer at all without --cors, because that is the contract", async () => {
+    const port = await serve({ authSecret: CREDENTIAL });
+
+    const response = await request(port, "/api/v1/bluepencil/notes", PREFLIGHT);
+
+    expect(response.status).toBe(401);
+    expect(response.headers["access-control-allow-origin"]).toBeUndefined();
   });
 });
 
