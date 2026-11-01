@@ -80,7 +80,7 @@ ordinary 404, so the container looks exactly like a hub that never had the featu
 docker run -d --name bluepencil-hub -p 127.0.0.1:8787:8787 -v bluepencil-notes:/data \
   -e BLUEPENCIL_ADMIN_SECRET="$(openssl rand -hex 32)" \
   -e BLUEPENCIL_TOKEN_KEY="$(openssl rand -hex 32)" \
-  ghcr.io/popoboxxo/bluepencil:0.11.1
+  ghcr.io/popoboxxo/bluepencil:0.11.2
 ```
 
 At `{base}/admin` (`/admin/` is the same page) the operator:
@@ -88,13 +88,25 @@ At `{base}/admin` (`/admin/` is the same page) the operator:
 - **mints per-device tokens** — this needs `--token-key`; without a signing key the page says so
   and offers the shared secret instead;
 - **revokes by `jti`** — live at once and durable when `--revoked-tokens` names a file;
-- **reads status and activity** — version, environment, credential mode, note/device counts, and
-  whether token issuing and durable revocation are available.
+- **reads status and activity** — version, environment, credential mode, the number of issued
+  client credentials, whether token issuing and durable revocation are available, and when each
+  credential kind was last accepted (see below).
 
 Issued ids are recorded in `devices.json` next to the store (for example `/data/devices.json` next
 to `/data/notes.bluepencil.json`). The token itself is shown once and never stored; the hub keeps
 the id. A token minted with `bluepencil token` is not listed there, but it can still be revoked by
-its jti.
+its jti. That file is a list of **issued credentials**, one row per token — not a list of connected
+clients; the page labels it accordingly.
+
+**What the surface can and cannot see.** It records note writes, the credentials issued from this
+page and the last acceptance time per credential kind: `presence: { "token": …, "secret": … }` in
+`GET {base}/admin/status`, each an ISO-8601 timestamp or `null`. The stamp is set by the shared
+authentication gate, so it covers both doors (the notes API and `POST {base}/mcp`) and a reader that
+only fetches notes becomes visible. It is written at most once a minute per kind, kept in memory
+only (a restart resets it) and never contains a credential value. The hub does **not** list
+connected clients: one shared secret makes two browsers indistinguishable, and there is no session
+state to count. The `devices` field in that JSON keeps its historical name for compatibility; it is
+the number of issued-credential records.
 
 The admin credential is its own header (`x-bluepencil-admin`) and is **not** a client credential:
 it is admitted as a second credential on the notes routes only, never on `/mcp`. It also does not
@@ -210,6 +222,24 @@ positional argument that names one of those two wrappers dispatches to it (so
 - **One writer per store file.** Two hubs on the same file is two truths fighting; run one container
   per store.
 - **`latest` tracks the newest stable release.** Prerelease tags publish `<version>` and `hub` only.
+
+## Updating
+
+The **named volume is the hub**: keep `-v bluepencil-notes:/data`, or the notes *and* the generated
+shared secret are gone and every client has to be re-paired.
+
+```sh
+docker compose pull && docker compose up -d     # root docker-compose.yml, published image
+docker compose up -d --force-recreate           # only if you added a bind mount and its files changed
+```
+
+The shipped root `docker-compose.yml` mounts a named volume, not a bind mount, so a normal image
+update needs no second command. If you added a bind mount, Compose does not recreate for a
+bind-mount change — the old process keeps running until you recreate it. Compose also does not adopt
+a hand-started container: with `container_name` set, `up` fails on the name conflict, so
+`docker rm -f bluepencil-hub` first (the volume survives). Accept the update only
+when `GET {base}/config` reports the new `version`, `GET {base}/health` answers 200 (with the
+credential when the hub needs one) and the notes are still listed.
 
 ## Which image tags exist
 

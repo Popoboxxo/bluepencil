@@ -148,6 +148,13 @@ opt-in and warns about the tab's storage. The page is served with `cache-control
 `x-frame-options: DENY`, `content-security-policy: frame-ancestors 'none'` and
 `referrer-policy: no-referrer`.
 
+**What the admin surface can see.** It shows note writes, the client credentials it issued (one
+record per token, not one per connected browser) and the last time each credential kind was accepted
+on either door — `presence: { "token": …, "secret": … }` in `{base}/admin/status`, ISO-8601 or
+`null`, throttled to one write per kind per minute and kept in memory only. Readers are not tracked
+as individual clients: a shared secret makes two browsers indistinguishable, and a hub with no client
+credential has no gate to observe.
+
 Prefer the environment variable over the flag in every case: a value on a command line is visible in
 the process list to every other user on the machine.
 
