@@ -108,6 +108,17 @@ describe("GET {base}/config — the answer itself", () => {
     expect(configOf({ verifyToken: () => ({ ok: false, reason: "expired" }) })["auth"]).toBe("token");
   });
 
+  it("keeps the three-value vocabulary when both credentials are configured", () => {
+    // `/config` is the pre-credential probe every client parses; the federation client accepts
+    // only none | secret | token. A hub that accepts both still names the stronger one here — the
+    // richer `token+secret` answer lives on `/admin/status` (#112).
+    const both = configOf({
+      authSecret: SHARED,
+      verifyToken: () => ({ ok: false, reason: "expired" }),
+    });
+    expect(both["auth"]).toBe("token");
+  });
+
   it("reports name, version, base, environment and read-only", () => {
     const body = configOf({ hubName: "Unraid", readOnly: true, environment: "staging" });
     expect(body["name"]).toBe("Unraid");

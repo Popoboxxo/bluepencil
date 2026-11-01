@@ -74,6 +74,7 @@ import { canonicalNote } from "../src/data/canonical";
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { validateNote } from "../src/data/schema";
 import { corsHeaders } from "./cors";
+import { credentialMode } from "./credentials";
 // The admin surface answers before the credential gate, so it must not import the gate — the
 // dependency runs one way: this router delegates to `handleAdmin`, whose only dependency on this
 // module is its types (erased at runtime, so the cycle never materialises in the bundle).
@@ -569,13 +570,13 @@ export function isLoopbackAddress(host: string): boolean {
  * from the network" even when `--host localhost` bound `::1` instead of `127.0.0.1`.
  */
 function configResponse(context: HandlerContext): ServerResponse {
-  const secret = context.authSecret;
-  const auth =
-    context.verifyToken !== undefined
-      ? "token"
-      : typeof secret === "string" && secret.length > 0
-        ? "secret"
-        : "none";
+  // One helper decides which credentials exist (`server/credentials.ts`). `/config` deliberately
+  // keeps its three-value vocabulary (`none` | `secret` | `token`) because it is the pre-credential
+  // probe clients parse — `src/federation/client.ts` accepts exactly those three — so a hub that
+  // accepts both reports the stronger one here. The richer `token+secret` answer plus the accepted
+  // list live on `/admin/status` (#112).
+  const mode = credentialMode(context);
+  const auth = mode === "token+secret" ? "token" : mode;
   const bind = context.bind;
   return json(
     200,
