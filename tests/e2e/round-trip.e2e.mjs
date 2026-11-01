@@ -304,9 +304,17 @@ async function saveComposer(browser, target, body) {
 /**
  * Creates one note through the real capture path: arm a mode, click the target, fill the composer,
  * save. Polls the store for the new note (the http write is asynchronous) and returns it.
+ *
+ * The new note is identified by its **body**, not by a `before + 1` count delta. A hub-backed store
+ * starts an initial `reload()` when the layer mounts, and that list can land after this function has
+ * sampled `before` but before the optimistic note is pushed: the reload brings the *other* strand's
+ * note in, so the count jumps by two and `before + 1` is never reached. That window is real and was
+ * measured in the extension strand after the hub traffic moved through the service worker (#116) —
+ * the relayed `GET /notes` resolves a few hops later, which makes a latent race deterministic.
+ * Matching on the body states exactly what this call created and cannot be thrown off by a
+ * concurrent refresh.
  */
 async function createNote(browser, { target, body, mode = "text", feedback = false }) {
-  const before = (await notesOf(browser)).length;
   await armMode(browser, `mode-${mode}`);
   // `feedback-only` is a flag armed in addition to a mode; set explicitly so a previous note's
   // intent cannot leak into this one.
@@ -314,7 +322,8 @@ async function createNote(browser, { target, body, mode = "text", feedback = fal
   await browser.click(target);
   await saveComposer(browser, target, body);
   await browser.waitFor(
-    `document.querySelector('bluepencil-notes').blueprint.store.notes().length === ${before + 1}`,
+    `document.querySelector('bluepencil-notes').blueprint.store.notes().some((n) =>
+       String(n.body ?? "").includes(${JSON.stringify(body)})) === true`,
     { timeoutMs: 10000 },
   );
   const notes = await notesOf(browser);

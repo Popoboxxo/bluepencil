@@ -163,6 +163,26 @@ describe("page relay — installation", () => {
     expect(state[PAGE_TRANSPORT_PENDING_KEY]).toBeInstanceOf(Map);
   });
 
+  it("does not latch the guard when the registration throws", () => {
+    // Latching first left the document claiming a relay it never had: the adapter silently fell back
+    // to the page's own `fetch` (blocked by a strict `connect-src`) and every later mount skipped the
+    // install because the flag was already set. A failed registration must stay retryable.
+    const state: Record<string, unknown> = {};
+    const { target } = fakeTarget();
+    const broken = () => {
+      throw new Error("the transport registry is unavailable");
+    };
+    expect(() => installPageTransport({ register: broken, state, target })).toThrow(
+      /transport registry is unavailable/,
+    );
+    expect(state[PAGE_TRANSPORT_KEY]).toBeUndefined();
+
+    const register = vi.fn(() => () => undefined);
+    expect(installPageTransport({ register, state, target })).toBe(true);
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(state[PAGE_TRANSPORT_KEY]).toBe(true);
+  });
+
   it("registers a fetch that posts the page protocol kind and rebuilds the answer", async () => {
     const state: Record<string, unknown> = {};
     const registered: ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)[] = [];

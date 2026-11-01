@@ -21,6 +21,7 @@
  * - `fetch` — one hub request, relayed to the worker and back (#116). This hop is **not** a trust
  *   boundary: any page script can post the envelope, so the worker validates it (`hub-fetch.ts`).
  */
+import { relayHubRequest } from "./bridge-fetch";
 import { PAGE_FETCH_KIND } from "./hub-fetch";
 import { relayPageStorage } from "./storage-relay";
 
@@ -131,15 +132,13 @@ window.addEventListener("message", (event: MessageEvent) => {
       });
       return;
     }
-    void chrome.runtime
-      .sendMessage({ type: "bluepencil:fetch", requestId, request: data.request })
-      .then((reply: unknown) => answerPage(data, reply))
-      .catch((error: unknown) =>
-        answerPage(data, {
-          ok: false,
-          error: { code: "network", message: error instanceof Error ? error.message : String(error) },
-        }),
-      );
+    // `chrome.runtime.sendMessage` can throw synchronously (an invalidated extension context) and
+    // can return nothing at all. Both are answered instead of thrown: an exception here would be
+    // swallowed by the event listener and the page would wait out its whole 35 s budget
+    // (`bridge-fetch.ts`).
+    relayHubRequest(chrome.runtime, { requestId, request: data.request }, (reply) =>
+      answerPage(data, reply),
+    );
     return;
   }
 

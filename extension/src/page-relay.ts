@@ -224,16 +224,19 @@ export interface InstallPageTransportOptions {
  * registry itself is deliberately never unregistered (see `src/adapters/transport.ts`): it belongs
  * to this document, not to an element instance.
  *
+ * The guard is latched **after** the registration succeeded. Latching first would make a throwing
+ * registration permanent: `registerHttpTransport` would not have run, so the adapter would silently
+ * fall back to the page's own `fetch` — blocked by a strict `connect-src` — and every later mount
+ * would skip the install because the flag already said one was there.
+ *
  * Returns `true` when this call installed the transport, `false` when one was already there.
  */
 export function installPageTransport(options: InstallPageTransportOptions): boolean {
   const state = options.state ?? (globalThis as unknown as Record<string, unknown>);
   if (state[PAGE_TRANSPORT_KEY] === true) return false;
-  state[PAGE_TRANSPORT_KEY] = true;
 
   const target = options.target ?? pageWindow();
   const pending = createPendingReplies(target);
-  state[PAGE_TRANSPORT_PENDING_KEY] = pending;
 
   let sequence = 0;
   options.register(
@@ -243,5 +246,8 @@ export function installPageTransport(options: InstallPageTransportOptions): bool
       nextRequestId: () => `bp-fetch-${++sequence}`,
     }),
   );
+
+  state[PAGE_TRANSPORT_PENDING_KEY] = pending;
+  state[PAGE_TRANSPORT_KEY] = true;
   return true;
 }
