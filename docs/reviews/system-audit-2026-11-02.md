@@ -256,3 +256,62 @@ Scope: `extension/` (manifest, service worker, isolated-world bridge, page relay
 - **Capture:** `captureContext` records the tag, classes, a fixed style subset, the box, the scheme and the viewport (`src/core/capture.ts:234-268`). It records no form values (password inputs included), no screenshots and no storage or cookies. The quote is only the user's explicit selection. The URL query is SEC-19.
 - **Voice (FR-21):** opt-in per host, no audio stored, no core network call. Chromium's Web Speech API may send audio to a browser service. This is disclosed to integrators (`docs/EMBED.md:92`, `docs/INTEGRATION.md:282`, `:353`), and `voice-engine` allows an offline recogniser. End users get no in-UI notice, which is a product decision rather than a code defect.
 - **Markdown bodies:** multi-line text uses a fence longer than any backtick run in the content (`markdown.ts:246-263`), and HTML is entity-escaped in inline fields. The remaining gap is SEC-17.
+
+## 4. Security — Secrets, dependencies, Docker, CI
+
+Scope: tracked files (including `examples/`, `docs/`, `docker/`, `tests/`, `.env*`), `.gitignore`/`.dockerignore`, `package.json` and `package-lock.json`, `Dockerfile`, `docker-compose.yml`, `examples/federation/docker-compose.yml`, `docker/entrypoint.sh` and `docker/bin/*`, `.github/workflows/*.yml`, `scripts/`, `.githooks/`, and the npm `files` field. Method: `git grep` for key/token/private-key patterns and hard-coded credential literals, `git log --all -G` over history for the same patterns, `npm run secret-scan` (OK, 2103 files), `npm audit --omit=dev` and `npm audit` (both run, 0 vulnerabilities), `npm outdated`, a license tally from the lockfile, and source reading. No secret values appear in this section.
+
+### Findings
+
+#### SEC-22 — GitHub Actions pinned to mutable tags; a third-party action receives the Web Store OAuth refresh token
+- **Severity:** medium
+- **Location:** `.github/workflows/chrome-webstore.yml:139`, `:148`, `:157` (`wdzeng/chrome-extension@v2` with `client-id`/`client-secret`/`refresh-token`); every other `uses:` in `ci.yml`, `release.yml`, `extension.yml`, `pages.yml` (`actions/*@v7`, `docker/*@v4`/`@v7`, `actions/attest-build-provenance@v4`)
+- **Description:** No action is pinned to a commit SHA. A moved or compromised tag runs new code with whatever the job holds. The worst case is `wdzeng/chrome-extension`, a single-maintainer third-party action: it receives the Chrome Web Store client secret and refresh token, which are enough to publish any build to every installed user. `release.yml` jobs that hold `contents: write`, `actions: write`, `id-token: write` and `packages: write` also run tag-pinned actions (`docker/login-action`, `docker/build-push-action`).
+- **Recommendation:** Pin every action to a full commit SHA (with the tag as a comment) and let Dependabot/Renovate bump them. For the Web Store leg, prefer a SHA-pinned action or a short script against the Web Store API so the refresh token never reaches third-party code.
+
+#### SEC-23 — The npm tarball and the release `.tgz` ship all of `docs/`, including this unresolved security audit
+- **Severity:** low
+- **Location:** `package.json:77-79` (`"files": ["dist", "docs", …]`); no `.npmignore`; `docs/reviews/system-audit-2026-11-02.md`, `docs/plans/`, `docs/spikes/`, `docs/specs/`
+- **Description:** `files` lists the whole `docs` directory. `npm pack` (run in `release.yml` "Collect the assets") therefore publishes internal plans, spikes and this audit, with exploit-level detail on findings that are still open, as a release asset with signed provenance. `scripts/pack-smoke.mjs` checks that required `dist/` files exist but does not limit what else is shipped.
+- **Recommendation:** List the user-facing docs explicitly in `files` (or exclude `docs/reviews`, `docs/plans`, `docs/spikes`), and add a deny check to `pack-smoke.mjs` so internal paths fail the pack.
+
+#### SEC-24 — Compose publishes plaintext HTTP on all host interfaces, from `:latest`, with no container hardening
+- **Severity:** low
+- **Location:** `docker-compose.yml:11` (`ghcr.io/popoboxxo/bluepencil:latest`), `:17` (`"${BLUEPENCIL_PORT:-8787}:8787"`, no host address); `docker/entrypoint.sh` (final `exec … --host 0.0.0.0`); no `read_only`, `cap_drop` or `security_opt: no-new-privileges` in either compose file
+- **Description:** The default stack listens on every host interface over cleartext HTTP. The generated shared secret then travels in `x-bluepencil-auth` unencrypted on the LAN, the same exposure as SEC-18 on the server side. `:latest` means a `docker compose pull` silently changes the running version. The container runs as `node` (uid 1000, good) but keeps the default capability set and a writable root filesystem, although it only needs `/data`.
+- **Recommendation:** Default the published port to `127.0.0.1:` and document how to widen it. Document a TLS-terminating reverse proxy for LAN or remote use. Default the image to a pinned version (the federation example already pins one). Add `read_only: true`, `tmpfs: /tmp`, `cap_drop: [ALL]` and `security_opt: [no-new-privileges:true]`. (Judgment: the binding and the tag are verifiable; how much hardening is enough is a judgment call.)
+
+#### SEC-25 — Base image not pinned by digest
+- **Severity:** low
+- **Location:** `Dockerfile:23`, `:29` (`FROM node:22-alpine`)
+- **Description:** Both stages use a floating tag. A release build is not reproducible, and the image that `release.yml` signs depends on whatever `node:22-alpine` pointed to on that day. Provenance attests the build, not the stability of the base.
+- **Recommendation:** Pin `node:22-alpine@sha256:…` and let Dependabot (`package-ecosystem: docker`) bump it.
+
+#### SEC-26 — Build context and root `.gitignore` do not exclude local secret files
+- **Severity:** low
+- **Location:** `.dockerignore` (whole file; no `.env*`, `.meta-config/secrets.local.yaml`, `.mcp.json`, `*.bluepencil.json`, `.claude/`); `Dockerfile:25` (`COPY . .`); `.gitignore` (no root `.env`/`.env.*` entry; only `examples/federation/.gitignore:3` covers `.env`)
+- **Description:** `COPY . .` sends the whole checkout, including git-ignored local secret files (`.meta-config/secrets.local.yaml`, `.mcp.json`, local review stores), to the Docker daemon and into the build stage's layers and cache. The final image copies only the two bundles, so the published image is clean, but local or remote builders and their cache keep the files. The root `.gitignore` relies on the per-example `.gitignore`. A `.env` created at the repo root (the usual habit with Compose and the root `docker-compose.yml`) is not ignored and can be committed. `secret-scan` would catch known token formats, but not a random hex secret.
+- **Recommendation:** Add `.env`, `.env.*` (with `!.env.example`) to the root `.gitignore`. Add the same plus the agent-meta local files, `*.bluepencil.json` and `.claude/` to `.dockerignore`, or switch the build stage to an explicit `COPY` list.
+
+#### SEC-27 — CI workflow has no `permissions` block; release job restores the shared npm cache while holding write tokens
+- **Severity:** low
+- **Location:** `.github/workflows/ci.yml` (no `permissions:` key at workflow or job level); `.github/workflows/release.yml:59` (`cache: npm`) in the job with `contents: write`, `actions: write`, `id-token: write` (`:46-49`)
+- **Description:** `ci.yml` runs on `push` and `pull_request` with the repository default token scope, which is `write-all` on older repositories and any repository where the setting was never changed. Fork PRs get a read-only token, but pushes to `feat/**`/`fix/**`/`chore/**` get the default. The release job restores the `setup-node` npm cache, which branch workflows also populate. Cache poisoning is a known path into a job that publishes signed artifacts, though `npm ci` integrity-checks against the lockfile, which limits it. (Judgment: the missing block is verifiable; how exploitable the cache is depends on the repository settings.)
+- **Recommendation:** Add `permissions: contents: read` at the top of `ci.yml`. Drop `cache: npm` from the release job (it runs rarely, so the speed cost is negligible).
+
+#### SEC-28 — `reqmd` binary is verified against a checksum from the same release
+- **Severity:** info
+- **Location:** `.github/workflows/ci.yml` "Install reqmd" step, `release.yml` "Spec is in sync" step (`curl … v0.2-alpha/reqmd-linux-amd64` and `SHA256SUMS.txt` from the same release, then `sudo mv`)
+- **Description:** The checksum guards against corrupted downloads only. Anyone who can replace the release asset can replace `SHA256SUMS.txt` too. The binary then runs in the release job with write tokens.
+- **Recommendation:** Hard-code the expected SHA-256 in the workflow.
+
+### Checked, no finding
+
+- **Secrets in tracked files and history:** no private keys, cloud keys, GitHub/npm/Slack tokens or high-entropy credential literals in tracked files. History hits are the detection regexes in `scripts/secret-scan.mjs` and `.claude/hooks/lib/hook_common.sh` only. `examples/federation/.env.example` holds names and ports, and its token lines are commented out and empty. `data-token="dev-review-token"` (`examples/attach/index.html:284`) and the `set-in-your-shell` values in `docs/FEDERATION.md:638` are visible placeholders. `npm run secret-scan` reports OK.
+- **Dependencies:** `dependencies: {}` (NFR-4 holds). Five devDependencies, lockfile v3 present, `npm ci` used everywhere. `npm audit --omit=dev` and the full `npm audit` both report 0 vulnerabilities. `npm outdated` shows only a `@types/node` patch. No deprecated packages in the lockfile. Install scripts are limited to `esbuild` and the optional `fsevents`. Dev licenses: MIT, Apache-2.0, ISC, BSD, MPL-2.0, BlueOak, CC0, all compatible with an MIT package, and none ship in the bundles.
+- **npm lifecycle scripts:** there is no `postinstall`. `prepare` runs `npm run build` for git-ref installs (standard behaviour, exercised by `smoke:install:git`).
+- **Docker runtime:** multi-stage build, and the runtime has no `node_modules` and only the bundles plus the shell wrappers. Runs as `USER node`. `/data` is owned by `node`. `HEALTHCHECK` targets the unauthenticated `/health` on loopback. The generated secret is 32 bytes from `/dev/urandom`, written with `umask 077` and `chmod 600`, and the start refuses to continue if it cannot persist the secret. Printing it once is SEC-12. A secret supplied through `BLUEPENCIL_AUTH_SECRET` is visible to anyone with `docker inspect` rights, which is the documented trade-off and equals host-root access.
+- **Entrypoint injection:** all variables are double-quoted, there is no `eval`, `"$@"` is passed through as an array, and the bin dispatch is an exact `case` match on two names. `docker/bin/*` are plain `exec node … "$@"`.
+- **Federation compose example:** leaf secrets are required (`${VAR:?…}`), the aggregator is published on `127.0.0.1` only, it runs `--read-only` as a configured uid, and the registry is mounted read-only. Its default image `0.10.3` lags the current release, which is cosmetic because `.env` overrides it.
+- **Workflows:** no `pull_request_target`, no `workflow_run`. User-controllable values (`inputs.tag`, release tag names) reach `run:` only through `env:` and are never interpolated into the script. `github.base_ref` in `ci.yml:126` is an existing target branch name and is not attacker-chosen. Top-level `contents: read` in `release.yml`, `extension.yml` and `chrome-webstore.yml`, with write scopes raised per job. Prereleases are kept out of the Web Store. `pages.yml` (`contents: write`) runs only on `main` pushes and dispatch, and it clears the checkout extraheader so only one credential is on the wire. Release assets get SHA-256 sums and build provenance. The image push gets provenance by digest.
+- **`scripts/` and hooks:** every child process uses `execFileSync`/`spawn`/`spawnSync` with argument arrays and no `shell: true`. `scripts/hermes-mcp-wrapper.sh` quotes all expansions and builds args as a bash array. `.githooks/pre-push` runs only fixed npm scripts.
