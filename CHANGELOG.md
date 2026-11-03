@@ -1,3 +1,15 @@
+## [Unreleased]
+
+### Removed
+
+- **Voice dictation is removed (G13).** The whole feature goes in 0.12.0: `src/ui/voice.ts`, the
+  composer mic button and its live region, the `composer.voice.*` messages, the dictation styles,
+  and the public `voice`/`voiceEngine` layer options. The `voice` and `voice-engine` element and
+  loader attributes are no longer part of the vocabulary; a page that still carries them is
+  **silently ignored** — no error, no throw, no `element.issues` entry, no layout change (unlike
+  the removed `token*` attributes). Requirements FR-21.1–FR-21.8 are withdrawn, not reused; see
+  `docs/REQUIREMENTS.md` § *Withdrawn in 0.12.0*.
+
 ## [0.11.6] - 2026-11-01
 
 ### Documentation

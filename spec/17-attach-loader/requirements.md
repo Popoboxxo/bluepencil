@@ -31,7 +31,7 @@ version: 1
 requires-trace-from: []
 ```
 
-One attribute vocabulary for element and loader: every element attribute has a data-* mirror on the loader, and only non-empty loader values are forwarded (so data-voice without a value is not forwarded). The same module decides attribute names, defaults and the attribute-to-configuration rules for both the custom element and the loader. A global path (gate, headers-from, route-from, can-annotate, annotate-selectors, keymap, modes, dock) that cannot be resolved or parsed is reported, never silently ignored
+One attribute vocabulary for element and loader: every element attribute has a data-* mirror on the loader, and only non-empty loader values are forwarded (so data-modes without a value is not forwarded). The same module decides attribute names, defaults and the attribute-to-configuration rules for both the custom element and the loader. A global path (gate, headers-from, route-from, can-annotate, annotate-selectors, keymap, modes, dock) that cannot be resolved or parsed is reported, never silently ignored
 
 *Acceptance criteria:* Every documented element attribute is accepted in its `data-*` form with the same meaning; an empty `data-*` value is not forwarded as an empty attribute; an unresolvable global path produces an `element.issues` entry (element) or a `bp-attach-error` plus one `console.debug` line (loader) instead of a silent no-op
 

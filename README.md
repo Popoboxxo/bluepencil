@@ -58,16 +58,13 @@ What is in the tree:
   flag.
 - **The extension** — a **Chromium MV3 extension** that mounts the layer in pages you do not build
   yourself, with its settings reaching the layer and its rounds kept in the extension's own storage.
-- **Dictation** — **opt-in composer dictation** (`voice`, off by default — a mic button that
-  appends the browser's transcript without saving it).
 - **Federation (`0.10.0`)** — federation as an **agent-side layer**: a registry, an aggregating hub
   (`--registry`) and a separate stdio **federator** for one agent over several hubs. Browsers never
   federate — a browser still writes to exactly one hub.
 - **Proof in the tree** — the vanilla fixture app, the unit suite and the browser legs of the embed,
   end-to-end, round-trip, bookmarklet, parity, extension and federation smokes; `smoke:components`
-  binds those surfaces into one matrix, while `smoke:auth`, `smoke:hermes`, `smoke:voice` and
-  `smoke:docker` cover the auth gate, the Hermes wrapper, dictation and the container/Compose
-  shape.
+  binds those surfaces into one matrix, while `smoke:auth`, `smoke:hermes` and `smoke:docker`
+  cover the auth gate, the Hermes wrapper and the container/Compose shape.
 
 ### Known gaps
 
@@ -86,8 +83,6 @@ What is in the tree:
   remains manual.
 - **Testing.** The E2E suite is hand-rolled over the CDP pipe rather than Playwright (NFR-4 says no
   test framework).
-- **Dictation.** It leans on the browser's own Web Speech API (Chromium/Safari only — no Firefox;
-  Chromium may send audio to a browser service, so inject `voiceEngine` to stay offline).
 - **UI.** No import/merge surface; no bulk delete or retention control; i18n only `en`/`de`.
 
 How a release is cut: [docs/RELEASING.md](docs/RELEASING.md). Milestones and their state are
@@ -815,12 +810,11 @@ flowchart LR
 | `smoke:components` | `scripts/components-e2e.mjs` | the binding matrix over every component; `--list` runs the coverage gate, `--no-browser`/`--no-docker` skip prerequisites |
 | `smoke:auth` | `scripts/auth-smoke.mjs` | signed tokens, revocation, the shared secret and the token-gated HTTP `/mcp` door |
 | `smoke:hermes` | `scripts/hermes-wrapper-smoke.mjs` | the documented Hermes wrapper path over stdio, including the read-only default and the write opt-in |
-| `smoke:voice` | `scripts/voice-smoke.mjs` | opt-in dictation with an injected engine in a real browser |
 | `smoke:docker` | `scripts/docker-smoke.mjs` | the container image and the Compose federation shape (requires a Docker daemon) |
 | `secret-scan` | `scripts/secret-scan.mjs` | scans the tree for committed secrets |
 | `spec` | `scripts/build-reqmd-spec.py` | regenerate `spec/` from `docs/REQUIREMENTS.md` |
 | `spec:check` | `reqmd check spec/` | validate the generated spec; CI also fails on drift (`git status spec/`) |
-| `verify` | — | `typecheck` (root + extension), unit tests, `build` (library + extension), `verify:sync`, the size guard, then `smoke:components -- --no-docker` — the component matrix, which includes the auth, Hermes and voice suites; Docker is excluded by `--no-docker` |
+| `verify` | — | `typecheck` (root + extension), unit tests, `build` (library + extension), `verify:sync`, the size guard, then `smoke:components -- --no-docker` — the component matrix, which includes the auth and Hermes suites; Docker is excluded by `--no-docker` |
 
 CI (`.github/workflows/ci.yml`) runs the whole set as seven jobs: `spec`, `bump`, `verify`,
 `parity`, `install`, `image` and `docker-smoke`; `docker-smoke` is `workflow_dispatch`-only and not a
@@ -828,7 +822,7 @@ pull-request gate.
 
 The CI `verify` job first runs `smoke:components -- --list` as a coverage gate (the documented
 matrix and the runner manifest must agree), then runs the individual steps: typechecks, unit tests,
-build, size guard and the CLI, MCP, auth, Hermes, federation, pack, embed, e2e, bookmarklet, voice,
+build, size guard and the CLI, MCP, auth, Hermes, federation, pack, embed, e2e, bookmarklet,
 webstore, extension and round-trip smokes. It is not the same one-line `npm run verify` chain — the
 matrix gate and the individual steps are separate, `parity`, `install` and `image` are separate
 jobs, and `docker-smoke` runs only on `workflow_dispatch`. The `image` job builds the image and
@@ -888,8 +882,7 @@ transport adapter (memory, `localStorage`, `chromeStorage`, file, HTTP, and thro
 server). Notes carry an **intent** (`implement` or `feedback`) and a **status** (`open`, `done`,
 `needs_decision`) plus a **thread** of human and agent messages — so an AI agent can read the set,
 implement what is unambiguous, ask for a decision where it is not, and report back in the same
-thread. A note can also be dictated: an opt-in (`voice`, off by default) puts a mic button in the
-composer that appends the browser's transcript to the note body without saving it.
+thread.
 
 ### Work where the code runs
 
@@ -940,10 +933,6 @@ and validators as the UI.
   variable (`auth: { "env": "BP_DEV_TOKEN" }`), never a token, and must be mode `0600`; any
   group/world bit refuses the start with `invalid_registry`. The federator never presents a browser
   endpoint and is stdio-only.
-* **Dictation is opt-in and text-only (FR-21).** The `voice` opt-in adds a mic button to the composer;
-  only the transcript text is kept — no audio is stored, and the core makes no request of its own.
-  Chromium's Web Speech API may still send audio to a browser service, so a host that must avoid that
-  injects its own engine (`voiceEngine`).
 * **Notes may contain internal wording.** A note is a review artefact, not a data store; treat it as
   if it names internal features, customers or drafts. The policy is **"no personal data in notes"**:
   purge a round once it is worked off, and prefer the local (`localStorage`) or file adapter when in

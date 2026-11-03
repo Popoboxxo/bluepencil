@@ -279,6 +279,46 @@ describe("embed attributes — loader options", () => {
 });
 
 /* -------------------------------------------------------------------------- */
+/* withdrawn voice vocabulary (AC-G03, G13)                                    */
+/* -------------------------------------------------------------------------- */
+
+describe("embed attributes — the withdrawn voice vocabulary is silently ignored", () => {
+  it("does not forward data-voice or data-voice-engine from the loader", () => {
+    expect(ALL_ATTRIBUTES).not.toContain("voice");
+    expect(ALL_ATTRIBUTES).not.toContain("voice-engine");
+
+    const script = document.createElement("script");
+    script.setAttribute("data-voice", "");
+    script.setAttribute("data-voice-engine", "hostVoice.engine");
+    script.setAttribute("data-modes", "text");
+    document.head.append(script);
+
+    const data = collectDataAttributes(script);
+    // The old keys are still read off the tag, but they are not part of the vocabulary any more.
+    expect(data.voice).toBe("");
+    expect(data["voice-engine"]).toBe("hostVoice.engine");
+
+    const options = parseLoaderOptions(data);
+    expect(options.attributes).toEqual({ modes: "text" });
+    expect(Object.keys(options.attributes)).not.toContain("voice");
+    expect(Object.keys(options.attributes)).not.toContain("voice-engine");
+  });
+
+  it("mounts an element that still carries voice attributes without an issue or a mic", () => {
+    const element = mount({
+      adapter: "memory",
+      voice: "true",
+      "voice-engine": "hostVoice.engine",
+    });
+
+    // Silent ignore, deliberately unlike the removed `token*` attributes: no config error at all.
+    expect(element.issues).toEqual([]);
+    expect(document.querySelector(".bp-voice")).toBeNull();
+    expect(document.querySelector('[data-bp-action="composer-voice"]')).toBeNull();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
 /* host capture-mode ceiling (FR-4.10)                                        */
 /* -------------------------------------------------------------------------- */
 

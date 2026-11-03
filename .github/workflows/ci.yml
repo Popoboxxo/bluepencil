@@ -204,13 +204,6 @@ jobs:
           BP_REQUIRE_BROWSER: "1"
         run: npm run smoke:bookmarklet
 
-      - name: Voice dictation smoke (injected engine, real browser)
-        env:
-          # The injected engine only exists in the browser; a missing browser must fail this leg
-          # rather than turn the dictation path into a silent no-op.
-          BP_REQUIRE_BROWSER: "1"
-        run: npm run smoke:voice
-
       - name: Build extension (MV3)
         run: npm run build:ext
 

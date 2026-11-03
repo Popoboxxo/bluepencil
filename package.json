@@ -106,7 +106,6 @@
     "smoke:bookmarklet": "node scripts/bookmarklet-smoke.mjs",
     "smoke:auth": "node scripts/auth-smoke.mjs",
     "smoke:hermes": "node scripts/hermes-wrapper-smoke.mjs",
-    "smoke:voice": "node scripts/voice-smoke.mjs",
     "smoke:docker": "node scripts/docker-smoke.mjs",
     "smoke:components": "node scripts/components-e2e.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",

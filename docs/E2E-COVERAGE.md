@@ -1,7 +1,7 @@
 # End-to-end coverage
 
 This file is the binding coverage matrix for every bluepencil end-to-end surface. The runner manifest
-has **16 components**; this table documents **21 coverage IDs** (surfaces), because one component can
+has **15 components**; this table documents **20 coverage IDs** (surfaces), because one component can
 cover more than one public surface — `federation` covers `federator` and `aggregating-hub`, `auth`
 covers `hub-auth` and `hub-mcp-door`, and `pack` and `install` both cover `pack-install`.
 It is machine-read by `scripts/components-e2e.mjs`: the runner extracts the coverage IDs between the
@@ -32,7 +32,6 @@ feature is new: several of these suites are new in 0.10.0 while the behaviour th
 | `journal` | Hub journal backends | `--journal`, `--journal-dir`, `--journal-coalesce`, `GET /journal` | `npm run smoke:embed` → `scripts/embed-smoke.mjs` | The file backend records a mutation as entry seq 1 with a sha256 hash and a summary naming the note; `journal.jsonl` holds exactly one line; `?since=1` does not repeat the first entry; the git backend creates exactly one commit and reports `backend=git`. | build | covered |
 | `federator` | `bluepencil-federator` (`dist/federator.js`) | Stdio JSON-RPC, `--registry`, `--allow-write`, `--read-only`, `--no-self`, `--include-self` | `npm run smoke:federation` → `scripts/federation-smoke.mjs` | `initialize` reports `bluepencil-federator` with ten tools; `list_notes` aggregates dev and staging with qualified ids and `partial=false`; `create_note` changes only the targeted store and answers with a qualified id; writes are refused without `--allow-write` and under `--read-only` without touching disk; `--include-self` is exit 1; a pre-0.10 `/config` is `federates_missing` exit 4; nested federation and a reserved `self` id exit 4; a dead peer degrades to a partial aggregate; EOF exits 0. | build | covered |
 | `aggregating-hub` | Hub in aggregate mode (`--registry --no-self`) | `/config` `federates:true`, local `/notes`, federated `/mcp` | `npm run smoke:federation` → `scripts/federation-smoke.mjs` | `/config` reports `federates:true`; `/notes` stays local and empty; `/mcp` `tools/list` exposes ten tools including `list_instances`; `list_notes` aggregates dev and staging; `list_instances` excludes self; a peer that itself reports `federates:true` is `nested_federation` exit 4. | build | covered |
-| `voice` | Composer dictation (`voiceEngine`) | `.bp-voice` mic, interim live region, transcript append | `npm run smoke:voice` → `scripts/voice-smoke.mjs` | Opt-in shows the mic button only after the composer opens and creates no recogniser yet; the mic click creates the injected engine and calls `start()` once, setting `aria-pressed` and `is-listening`; interim text stays in the live region and not in the textarea; a final transcript is appended, the composer stays open and nothing auto-saves; Escape stops the engine and clears the state; `disable()` and `destroy()` are idempotent; opt-out has no mic and a working composer. | build, browser | covered |
 | `presentation` | Read-only single-file presentation deck | `attach()` without a backend, `theme-accent`, `language` | `npm run smoke:embed` → `scripts/embed-smoke.mjs` | A jsdom read-only attach mounts with exactly one `style[data-bp-styles]` and forwards `theme-accent`; the browser deck mounts one element with the `localStorage` adapter and `language=de`; the three slides are left intact; the element build is `bluepencil.element.min.js`. | build, browser | covered |
 | `pack-install` | Published package and tarball install | `exports` map, `bin`, `npm pack` | `npm run smoke:pack` → `scripts/pack-smoke.mjs`; `npm run smoke:install` → `scripts/install-smoke.mjs` | Every exports entry exists and imports, with the element syntax-checked; `main`, `module`, `types` and every `bin` resolve; `npm pack` ships the twelve required artefacts; the tarball installs offline into a scratch project; every subpath imports by bare specifier with its expected named exports; the installed `bluepencil --help` exits 0. | build | covered |
 | `docker` | Container image and Compose federation | `bluepencil-e2e:<runId>` (per-run tag), generated compose, healthcheck | `npm run smoke:docker` → `scripts/docker-smoke.mjs` | Every run rebuilds/refreshes the image from this checkout under its own tag, so no run reuses a stale image; two leaf hubs start with bind-mounted stores, and both leaf containers run as the host uid/gid (asserted per container); `/config` reports secret auth; `/notes` is 401 without `x-bluepencil-auth` and 200 with it; a leaf write is readable back; the aggregator reports `federates:true` and keeps `/notes` empty; `/mcp` `list_instances` reports dev and staging with exactly the allowed fields and no leaf secret; cleanup leaves no containers, volumes or networks and force-removes the per-run image (`docker rmi -f`). | build, docker | covered |
@@ -45,7 +44,7 @@ feature is new: several of these suites are new in 0.10.0 while the behaviour th
 `Requires` names what the assertions need. A `browser` entry means at least one scenario needs Chrome;
 whether a missing browser skips only that leg or the whole component depends on the runner entry. The
 components whose manifest `requires` includes `browser` (`e2e`, `bookmarklet`, `round-trip`, `parity`,
-`ext`, `voice`) are skipped wholesale without Chrome. `embed` is the mixed case: the runner requires only
+`ext`) are skipped wholesale without Chrome. `embed` is the mixed case: the runner requires only
 `build`, so its jsdom legs still run and `BP_NO_BROWSER=1` suppresses only the browser leg.
 
 ## How to run
@@ -65,8 +64,8 @@ npm run smoke:components -- --no-docker  # skip the Docker suite
 
 - **Manifest component IDs** — the runner entries: `cli`, `mcp`, `federation`, `pack`, `install`,
   `embed`, `e2e`, `bookmarklet`, `round-trip`, `parity`, `ext`, `webstore`, `auth`, `hermes`,
-  `voice`, `docker`. `--only=cli,auth` selects exactly those two suites.
-- **Coverage IDs** — the IDs in the table above: `element`, `hub-auth`, `hub-http`, `voice`, ….
+  `docker`. `--only=cli,auth` selects exactly those two suites.
+- **Coverage IDs** — the IDs in the table above: `element`, `hub-auth`, `hub-http`, `e2e`, ….
   `--only=hub-auth` expands to every component whose `covers` list contains that ID (here `auth`).
 
 An unknown ID in either namespace is a usage error (exit 2) that lists both namespaces.
@@ -134,7 +133,7 @@ release check that requires browser or Docker coverage must set the matching `BP
 
 The runner executes the suites sequentially in **manifest order** (never in `--only` argument
 order), so two suites cannot share a port or workspace. Each suite gets its own workspace under
-`.tmp/<name>/`; the auth, voice and Hermes suites append a per-run `<pid>` segment, and the Docker
+`.tmp/<name>/`; the auth and Hermes suites append a per-run `<pid>` segment, and the Docker
 suite appends `<pid>-<random>` (`.tmp/docker-smoke/<pid>-<random>/`), so no run reuses a previous
 store or registry. Most suites bind free loopback ports; the MV3 extension smoke is the exception and
 uses its fixed `9431` port. A component is covered only by the entry (or entries) named in its row;

@@ -6,7 +6,7 @@
  * and the runner never depends on a shell or on PATH.
  *
  *   node scripts/components-e2e.mjs                       run every component (browser/docker optional)
- *   node scripts/components-e2e.mjs --only=auth,voice     run a subset (manifest order)
+ *   node scripts/components-e2e.mjs --only=auth,hermes    run a subset (manifest order)
  *   node scripts/components-e2e.mjs --only=hub-auth       run every component covering that ID
  *   node scripts/components-e2e.mjs --list                manifest + coverage gate
  *   node scripts/components-e2e.mjs --json                one machine-readable object on stdout
@@ -192,15 +192,6 @@ const MANIFEST = [
     requires: ["build"],
     timeoutMs: 300000,
     covers: ["hermes-wrapper"],
-  },
-  {
-    id: "voice",
-    label: "Voice dictation (real browser)",
-    entry: "scripts/voice-smoke.mjs",
-    requires: ["build", "browser"],
-    // Cold Docker start-up budget for the real-browser legs on a loaded CI runner.
-    timeoutMs: 300000,
-    covers: ["voice"],
   },
   {
     id: "docker",
