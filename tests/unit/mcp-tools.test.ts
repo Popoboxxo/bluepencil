@@ -736,6 +736,26 @@ describe("tool surface projection (F1)", () => {
   });
 });
 
+describe("dispatch table (AC-L02)", () => {
+  it("answers an unknown name exactly as before and has a handler for every advertised tool", async () => {
+    const session = await openSession();
+
+    const unknown = await call(session.context, "no_such_tool");
+    expect(unknown.isError).toBe(true);
+    expect(unknown.text).toBe('error: unknown tool "no_such_tool"');
+
+    // `TOOL_HANDLERS` is the dispatch: a name without an entry falls back to the pre-table refusal
+    // text. No advertised name may land there — `tools/list` must never offer a tool that cannot
+    // run. Empty arguments keep every call on its validation/dry-run path, so nothing is written.
+    const before = session.file.text;
+    for (const definition of TOOL_DEFINITIONS) {
+      const answered = await call(session.context, definition.name);
+      expect(answered.text, definition.name).not.toContain("is not implemented");
+    }
+    expect(session.file.text).toBe(before);
+  });
+});
+
 describe("read-only sessions (FR-16.2)", () => {
   it("refuses every write tool and does not touch the medium", async () => {
     const note = makeNote({ id: "n-dev", body: "dev note", environment: "dev" });
