@@ -12,19 +12,32 @@
 **Verzeichnisstruktur:**
 ```
 src/
-  core/       # model, store, anchor, capture, protocol, export/ (UI-unabhaengig, DOM nur in anchor/capture)
-  data/       # HEADLESS: schema, validate, canonical, bundle, merge, migrate (kein DOM)
+  core/       # model, store, anchor, capture, protocol, adapter, export/{markdown,json} (UI-unabhaengig)
+  data/       # HEADLESS: schema (inkl. Validierung), bundle, canonical, merge, migrate, order (kein DOM)
   cli/        # bluepencil inspect|validate|merge|export|import
-  adapters/   # memory, local-storage, file, http
-  ui/         # layer, composer, panel, legend, styles.css
+  adapters/   # memory, local-storage, chrome-storage, file, http + transport.ts (registerHttpTransport-Seam)
+  ui/         # layer, composer, panel, legend, modes, present, voice, keymap, styles.ts
   i18n/       # en, de
-  mcp/        # MCP-Server (thin wrapper ueber src/data)
+  element/    # <bluepencil-notes> custom element
+  embed/      # attach.js one-tag loader (attributes, version)
+  federation/ # federator: aggregate, backend, registry, client, net-policy
+  mcp/        # MCP server (server, tools, protocol, stdio, backend, options)
   index.ts    # oeffentliche API: init(), mount(), enable(), disable(), destroy()
-server/       # Referenz-Server (Sidecar-Modus)
-examples/     # vanilla, react, home-assistant, round-trip
+server/       # Referenz-Hub (HTTP + MCP door) und Federator
+              # credentials.ts (credentialMode/acceptedCredentials), cors.ts (preflightResponse),
+              # presence.ts (in-memory Presence), admin*.ts (admin surface), tokens/mint/registry/journal
+extension/    # MV3-Chromium-Extension
+  src/        # sw.ts, bridge.ts, connection.ts (Test-connection-Probe), handoff.ts, hub-fetch.ts,
+              # page-relay.ts, storage-relay.ts, bootstrap.ts, detect.ts, options.ts, settings.ts
+examples/     # vanilla, attach, parity, presentation, round-trip, voice, federation
+scripts/      # build.mjs, dev.mjs, size-guard.mjs, verify-sync.mjs, check-version-bump.mjs, *-smoke.mjs
+tests/        # unit (vitest), e2e (dependency-freier CDP-Harness, kein Playwright)
 spec/         # GENERIERTE reqmd-Spec aus docs/REQUIREMENTS.md (nicht handeditieren)
-tests/        # unit (vitest), e2e (Playwright)
-docs/         # CONCEPT, REQUIREMENTS, ARCHITECTURE, PROTOCOL, INTEGRATION
+docs/         # CONCEPT, REQUIREMENTS, ARCHITECTURE, PROTOCOL, RELEASING, DOCKER, EMBED, EXTENSION, ...
+  plans/      # Feature-Plaene (spec-plan-workflow); archive/ fuer abgeschlossene Plaene
+  specs/      # Feature-Spezifikationen (spec-plan-workflow)
+  spikes/     # Zeitbox-Erkundungen (spec-plan-workflow, Namensmuster *-spike.md)
+docker/       # entrypoint.sh + bin wrappers; Dockerfile + docker-compose.yml im Root
 
 ```
 
@@ -39,13 +52,21 @@ docs/         # CONCEPT, REQUIREMENTS, ARCHITECTURE, PROTOCOL, INTEGRATION
 - Nutzertexte immer als Text rendern, nie als HTML (FR-9.3)
 - Keine Netzwerkaufrufe ausser zum host-konfigurierten Adapter (FR-9.4, NFR-7)
 - Kanonische, stabile Serialisierung fuer diffbare Bundles (NFR-17)
+- Transport-Seam ist additiv: registerHttpTransport() ergaenzt, ersetzt aber nie den Default-fetch (src/adapters/http.ts)
+- Extension-Hub-Zugriff nur page -> bridge -> service worker; CSP connect-src braucht diese Ausnahme,
+  Reichweite strikt Endpoint-Origin+Base, Methoden GET/POST/PATCH, Header-Allowlist, {base}/admin nie
+- Credential-Paritaet: shared secret UND signed tokens sind gleichzeitig akzeptiert (server/credentials.ts);
+  /config und /health bleiben credential-frei, Notiz-Routen nie
+- Presence ist in-memory, max. 1 Update/Minute, nie persistiert und nie mit Secret
+- OPTIONS-Preflight kommt aus genau einer Implementierung (server/cors.ts preflightResponse)
+- Bundle-Budget ist knapp: IIFE 44.2/45 kB, Element 47.0/48 kB (min+gzip) - Feature-Zuwachs explizit begruenden
 
 
 ## Code-Konventionen
 
 - TypeScript strict, ESM, keine Default-Exports im Kern
 - Dateinamen snake_case-frei: kebab-case fuer Dateien, camelCase fuer Symbole
-- Oeffentliche Typen in src/core/model.ts, alles andere importiert von dort
+- Public **data-model** types live in `src/core/model.ts`; adapter, layer and store interfaces/options stay in their own modules (`core/adapter.ts`, `ui/layer.ts`, `core/store.ts`, `adapters/transport.ts`) — deliberate exceptions, not drift
 - Tests neben der Sache: tests/unit/<modul>.test.ts
 - Dokumentation und Code-Kommentare auf Englisch (externe Doku), Kommunikation auf Deutsch
 
@@ -75,45 +96,14 @@ Kategorien für `docs/REQUIREMENTS.md`:
 - UI, Filter & A11y (FR-4.x, FR-11.x)
 - Adapter, Export & Bundles (FR-6.x, FR-7.x, FR-14.x)
 - Headless/CLI/MCP (FR-13.x, FR-15.x, FR-16.x)
-
-## Spec-Workflow (reqmd)
-
-`spec/` ist die **generierte, maschinenprüfbare Projektion** von `docs/REQUIREMENTS.md`.
-Die Quelle bleibt das Markdown-Tabelle; `spec/` wird nie handeditiert.
-
-```bash
-npm run spec           # spec/ aus docs/REQUIREMENTS.md neu erzeugen
-npm run spec:check     # reqmd check spec/  (Exit 0 = gültig)
-npm run spec:ls        # Tabelle aller Knoten
-npm run spec:stats     # Attribut-Verteilung je Dokument
-```
-
-Hard rules (nach [reqmd.dev/ai](https://reqmd.dev/ai/)):
-
-1. **Quelle zuerst.** Eine Anforderung wird in `docs/REQUIREMENTS.md` geändert, nie in `spec/`.
-   Danach `npm run spec` — CI prüft, dass `spec/` zur Quelle passt.
-2. **Nach jeder Änderung `reqmd check`.** Läuft in Millisekunden; ein roter Exit blockiert.
-3. **ID nie ändern.** `FR-1.3` ist der Trace-Ziel. Eine geänderte Identität = neue
-   Anforderung, alte mit `disposition: rejected`.
-4. **Neues Attribut zuerst ins `schema.yaml`.** `additionalProperties: false` — ein
-   nicht deklariertes Attribut macht `reqmd check` rot.
-5. **`requires-trace-from: []` statt fehlendem `trace:`** — expliziter Opt-out, kein Mehrdeutig.
-6. **`id-prefix` ist global eindeutig** (`FR-1.`, `FR-12.`, …), nicht `FR-` — sonst
-   `prefix already used … collision`.
-
-Der Generator bricht mit einer klaren Meldung ab, wenn er eine Zeile der Quelltabelle nicht
-versteht — stillschweigend fehlende Anforderungen wären die schlimmste Fehlerklasse, weil
-`reqmd check` dann grün bleibt, ohne die Lücke zu sehen.
+- Hub-Betrieb, Auth & Extension-Relay (FR-6.7, FR-6.10-6.16, FR-10.4, CSP connect-src)
 
 
 
 <!-- agent-meta:managed-begin -->
-> **ROUTING:**
-
- Opencode->AGENTS.md |
- Gemini->AGENTS.md
+> **AI ROUTING:** Claude -> CLAUDE.md | Opencode -> AGENTS.md
 > **ENTRY:** `orchestrator`-Agent (für alle Dev-Tasks).
-`agent-meta v1.2.0-beta.2` | DoD: `standard` | REQ-Trace: `false`
+`agent-meta v2.0.0-beta.6` | DoD: `standard` | REQ-Trace: `false`
 
 
 
@@ -140,17 +130,18 @@ statt sie ad hoc zu wiederholen.
 
 `orchestrator-guard.sh` ist primär eine **convention boundary** (siehe Lücken unten),
 mit einzelnen **security-boundary**-Eigenschaften für spezifische Fälle (z.B. das
-Destructive-Gate aus #516, das auch bei gültigem `git`-Sentinel blockt). `dod-push-check.sh`
+Destructive-Gate aus #516/#809, das auch bei gültigem `git`-Sentinel blockt). `dod-push-check.sh`
 ist als **security boundary** gegen fehlendes/kaputtes `python3` fail-closed (#595).
 
 ## Bekannte Grenzen
 
-Die technische Durchsetzung (`orchestrator-guard.sh`) erkennt Git-Mutationen über eine tokenisierte Analyse des Bash-Befehls (gemeinsamer Tokenizer für Destructive- und Mutation-Gate, Issue #551), kein vollständiger Shell-Parser. Bekannte Lücken:
+Die technische Durchsetzung (`orchestrator-guard.sh`) erkennt Git-Mutationen über eine tokenisierte Analyse des Bash-Befehls (gemeinsamer Tokenizer für Destructive- und Mutation-Gate, Issue #551), kein vollständiger Shell-Parser. Das Destructive-Gate deckt zusätzlich die kanonischen Shell-Katastrophen ab (Issue #809): rekursives `rm` auf einem gefährlichen Root (`/`, `~`/`$HOME`, Top-Level-Systemverzeichnisse wie `/etc`) sowie eine rekursive Fork-Bomb (`` :(){ :|:& };: ``). Benigne In-Repo-Löschungen (`rm -rf .tmp/...`) bleiben erlaubt. Bekannte Lücken:
 
 1. `eval "git commit ..."` wird nicht erkannt.
 2. Direkte Schreibzugriffe auf `.git/` werden nicht geprüft.
 3. Andere Git-Tools (`hub`, `gh repo ...`) sind nicht erfasst.
-4. Command-Substitution und Indirektion (`$(...)`, Backticks, `xargs`, `eval`) können eine Git-Mutation am Tokenizer vorbeischleusen, weil der Hook den Befehl weder ausführt noch die Shell vollständig parst (Issue #592). Ein echter Shell-Interpreter wäre unverhältnismäßig für ein Konventions-Tool.
+4. Command-Substitution und Indirektion (`$(...)`, Backticks, `xargs`, `eval`) können eine Git-Mutation am Tokenizer vorbeischleusen, weil der Hook den Befehl weder ausführt noch die Shell vollständig parst (Issue #592). Ein echter Shell-Interpreter wäre unverhältnismäßig für ein Konventions-Tool. Für das FS-Destructive-Gate (#809) gilt dasselbe: nur direkte `rm`-Aufrufe (ggf. hinter `sudo`/`env`/KEY=VALUE) werden erkannt; indirekte Löschungen (`find ... -delete`, `xargs rm`, Variablen-/`$(...)`-Expansion eines Pfads, gequoteter ANSI-C-Pfad, `rm` über einen Wrapper-Alias), Pfad-Traversal (`rm -rf /var/tmp/../etc`) sowie eine als String-Literal gequotete `:(){ :|:& };:`-Definition bzw. indirekte Fork-Bombs (`eval`, base64) bleiben möglich — ein Tippfehler-/Akzident-Netz, kein Ersatz für Backups.
+5. Der Fork-Bomb-Scan des Destructive-Gates beendet den Funktionskörper am ersten ungequoteten `}` (keine Verschachtelung): Bomben mit `${…}` oder `{ …; }` vor dem Selbstaufruf (z. B. `f(){ : ${x}; f|f& };f`) werden nicht erkannt. Ein Funktionskörper ohne ungequotetes `}` in den ersten 512 Zeichen wird dagegen geblockt (fail-closed, mögliche Fehlalarme). Fix: Folge-Issue.
 
 Bewusster Trade-off, kein Bug (siehe Kommentar-Header in `.claude/hooks/orchestrator-guard.sh`) — nur relevant für Nutzer, die sich vollständig auf den Schutz statt auf die Konvention verlassen.
 
@@ -187,7 +178,7 @@ Tests: Test vorhanden & grün
 # MCP Hard Prohibitions
 
 > Kurzfassung der harten Tool-Verbote aktiver MCP-Server. Vollständige Tool-Listen und
-> Hinweise: pro Provider in `.gemini/skills bzw. .opencode/skills bzw. .agents/skills bzw. .zcode/skills bzw. .kimi-code/skills` — jeweils `mcp-<server>/SKILL.md` (`use-lazy-rules.md`).
+> Hinweise: pro Provider in `.opencode/skills` — jeweils `mcp-<server>/SKILL.md` (`use-lazy-rules.md`).
 
 - (keine aktiven MCP-Server mit gesperrten Tools)
 
@@ -220,12 +211,12 @@ niemand implementiert Security-Logik selbst neu.
 
 | Block | Abdeckt | Eigentümer-Agent |
 |-------|---------|------------------|
-| `auth-flow` | Authentifizierung (Login, Session, Token) | `security-auditor` |
+| `auth-flow` | Authentifizierung (Login, Session, Token) | *(keine aktive Eigentümer-Rolle)* |
 | `dependency-check` | SBOM + CVE-Scan der Abhängigkeiten | `dependency-auditor` |
-| `input-validation` | Eingabevalidierung (Schema, Sanitizing) | `security-auditor` |
+| `input-validation` | Eingabevalidierung (Schema, Sanitizing) | *(keine aktive Eigentümer-Rolle)* |
 | `rate-limiting` | Rate-Limiting / Throttling | `devops-engineer` |
-| `cors-config` | CORS-Konfiguration | `security-auditor` |
-| `secret-scanning` | Secret-Scan (Leaks in Diffs, Commits, Logs) | `security-auditor` |
+| `cors-config` | CORS-Konfiguration | *(keine aktive Eigentümer-Rolle)* |
+| `secret-scanning` | Secret-Scan (Leaks in Diffs, Commits, Logs) | *(keine aktive Eigentümer-Rolle)* |
 
 ## Enforcement
 
@@ -234,7 +225,7 @@ niemand implementiert Security-Logik selbst neu.
 - **Für neue Features:** den `auth-flow`-Block nutzen statt Auth selbst zu bauen.
 
 DIY-Security ist eine Anti-Pattern: jede Variante erzeugt unbekannte Lücken.
-Abweichungen vom Block-Katalog werden als Review-Befund von `security-auditor`
+Abweichungen vom Block-Katalog werden als Review-Befund
 gemeldet, nicht als Eigenbau gerechtfertigt.
 
 
@@ -260,7 +251,7 @@ CISO Lovable):
 
 # Lazy-Loaded Rules
 
-> Nicht immer geladen — bei Bedarf per `Read` öffnen: `.gemini/skills bzw. .opencode/skills bzw. .agents/skills bzw. .zcode/skills bzw. .kimi-code/skills/<skill>/SKILL.md` (jeweils).
+> Nicht immer geladen — bei Bedarf per `Read` öffnen: `.opencode/skills/<skill>/SKILL.md` (jeweils).
 
 | Skill | Wann |
 |---|---|
@@ -274,19 +265,18 @@ CISO Lovable):
 | lifecycle-tasks | Session-Start, pending-tasks.md vorhanden |
 | session-conclusion | Feature-Abschluss |
 | provider-agnostic | agents/1-generic editieren |
-| mcp-reqogniloom | ReqogniLoom-MCP-Tools |
-| mcp-honcho | Honcho-MCP-Memory-Tools |
-| mcp-playwright | Playwright-MCP-Browser-Tools |
 | mcp-viz-logger | viz-logger Event-Logging |
-| tool-graphify | Architektur-/Datei-Fragen mit graphify |
 
 Harte MCP-Tool-Verbote: siehe `mcp-guardrails.md` (always-on).
 
 
 
-# CRITICAL GATE
-MAIN CHAT darf nicht selbst editieren. ALLES -> `orchestrator`. Keine Ausnahmen.
+# CRITICAL GATE (runtime-partially enforced)
+MAIN CHAT darf nicht selbst editieren. ALLES -> `orchestrator`.
+Provider-native Permissions block Main-Chat-Writes; Delegations-Provenienz ist
+NICHT erzwungen (Prompt + Permission-Layer).
 
+**Spec/Plan-Gate (Convention boundary):** Auch Nicht-Pipeline-Anfragen (Ad-hoc-Dispatch, `quick-fix`, `bugfix`) erst über die Classify-Route (`S`/`M`/`L`/`XL`) führen — kein Direkteinstieg in die Implementierung ohne freigegebene Spec/Plan (`Status: APPROVED`). Details: Master-Rule `spec-plan-workflow`.
 ## Git Delegation
 Git Mutationen (commit, push, add etc) -> `git` Agent. Read-only (status, log) im Main Chat ok.
 
@@ -303,90 +293,51 @@ Anti-Recursion: Worker dürfen nicht an `orchestrator` zurück delegieren.
 ## Übrige Regeln (Lazy-Load)
 
 Nicht-Kern-Regeln werden NICHT in diesen Block eingebettet (Progressive Disclosure, #192):
-sie liegen pro Provider als separate Dateien in .gemini/skills bzw. .opencode/skills bzw. .agents/skills bzw. .zcode/skills bzw. .kimi-code/skills — jeweils `<rule-name>/SKILL.md`.
+sie liegen pro Provider als separate Dateien in .opencode/skills — jeweils `<rule-name>/SKILL.md`.
 Bei Bedarf mit `Read` laden; verfügbare Regeln via `ls` im jeweiligen Verzeichnis.
 
 
 ## Agent Directory
-> ⚠️ **ACHTUNG:** Agenten (Prompts) liegen in `.gemini/agents bzw. .opencode/agents bzw. .codex/agents bzw. .zcode/agents bzw. .kimi-code/agents`.
+> ⚠️ **ACHTUNG:** Agenten (Prompts) liegen in `.opencode/agents`.
 
 | Agent | Core Capabilities |
 |-------|-------------------|
-
 | `accessibility-specialist` | WCAG 2.1/2.2 Compliance-Audit, ARIA-Checks, Keyboard-Navigation |
-
 | `agent-meta-manager` | agent-meta verwalten: Upgrade, Sync, Feedback |
-
 | `agent-meta-scout` | Claude-Ökosystem scouten: neue Skills, Rollen, Rules |
-
 | `api-specialist` | OpenAPI/Contract-First API Design, Schnittstellen-Spezifikationen |
-
 | `bug-feature-analyzer` | Issue-Triage: Eingehende Bug-Meldungen, Feature-Requests analysieren, k |
-
 | `code-reviewer` | Clean Code Gatekeeper: Blast-Radius-Analyse, SOLID/DRY Prüfung, Code-Qualität |
-
 | `concept-architect` | Systemdesign für komplexe Änderungen: Komponenten, Schnittstellen, Trade-offs |
-
 | `concept-reviewer` | Konzept-Critic: reviewt Design-Docs, Konzepte auf Vollständigkeit, Logik |
-
 | `concept-specifier` | Technische Spezifikationen aus Anforderungen, Codebase-Kontext — implementiert nicht |
-
 | `dependency-auditor` | Supply-Chain-Hygiene: SBOM-Analyse, Lizenz-Kompatibilität, Version-Drift und |
-
 | `design-system-architect` | Design-System-Schema → echte Token-Artefakte, Farbharmonie, Variant-Contracts |
-
 | `developer` | Feature-Implementierung, Bugfixes |
-
 | `devops-engineer` | CI/CD, Infrastructure as Code, Kubernetes |
-
 | `documenter` | CODEBASE_OVERVIEW, ARCHITECTURE, README |
-
 | `e2e-tester` | E2E-Tests, visuelle Regression, Accessibility-Audits via Playwright |
-
 | `effort-estimator` | Schätzt Aufwände für Entwicklungsaufgaben basierend auf Task-Typ, LLM-Kali |
-
 | `explorer` | Read-only Codebase-Recherche, Dependency, Impact-Mapping |
-
 | `feedback` | Projekt-Feedback standardisieren: Bugs, Features, Verbesserungen als GitHub I |
-
 | `frontend-component-engineer` | Screen-Spec + Token-Contract → produktionsreife UI-Komponenten |
-
 | `git` | Commits, Branches, Tags |
-
 | `ideation` | Neue Ideen explorieren, Vision schärfen, Übergabe an requirements |
-
 | `junior-developer` | Triviale Code-Änderungen (≤2 Dateien, kein Architektur-Impact) |
-
 | `log-analyzer` | System, Applikations-Logs analysieren: Frequency-Clustering, Severity-Kla |
-
 | `meta-feedback` | Verbesserungsvorschläge für agent-meta als GitHub Issues einreichen |
-
 | `orchestrator` | Einstiegspunkt für alle Entwicklungsaufgaben |
-
 | `performance-optimizer` | Big-O Bottleneck-Identifikation, datengetriebene Performance-Optimierung |
-
 | `planner` | Umsetzungsplanung |
-
-| `principal-developer` | Last-Resort-Eskalationsstufe |
-
 | `prompt-engineer` | Der ultimative Experte für Prompt-Engineering |
-
 | `refactoring-specialist` | Systematische großflächige Code-Transformation mit Sicherheitsnetz: Strangler |
-
 | `release` | Versioning, Changelog, Build-Artifact |
-
 | `requirements` | Anforderungen aufnehmen, REQ-IDs vergeben, REQUIREMENTS.md pflegen |
-
 | `senior-developer` | Komplexe Features, Architektur-Entscheidungen, schwierige Bugs |
-
 | `technical-writer` | Externe entwickler, nutzergerichtete Doku: API-Referenzen, Getting-Starte |
-
 | `test-executor` | Bestehende Test-Suiten ausführen — kein Test-Design, kein Code-Schreiben |
-
 | `tester` | TDD, Test-Suite ausführen, Testabdeckung sichern |
-
 | `ui-ux-designer` | UI-Spezifikationen, Mockups, Design-Systeme erstellen |
-
 | `validator` | Code gegen REQs prüfen, DoD-Checkliste, Traceability-Audit |
 
 

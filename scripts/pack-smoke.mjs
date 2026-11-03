@@ -8,6 +8,10 @@
  * while the manifest advertised `dist/bluepencil.js`, which made every documented import fail with
  * ERR_MODULE_NOT_FOUND (FR-10.2/FR-15.1, NFR-16).
  *
+ * It also guards the published surface itself (SEC-23, AC-K01/AC-K06): the tarball must not
+ * contain internal working material, and the headless example in `docs/ARCHITECTURE.md` must
+ * really execute against the built `bluepencil/data` entry point.
+ *
  * Usage: node scripts/pack-smoke.mjs      (requires `npm run build` first)
  */
 import { execFileSync } from "node:child_process";
@@ -127,8 +131,108 @@ try {
   } else {
     pass(`npm pack ships all ${required.length} required artefacts (${result.files?.length ?? 0} files total)`);
   }
+
+  // SEC-23 / AC-K06: `files` is an allowlist of user-facing docs, never the whole `docs/` tree.
+  // Internal plans, reviews, spikes and generated specs are working material and must not ship.
+  const INTERNAL_PATHS = [
+    "docs/plans/",
+    "docs/reviews/",
+    "docs/spikes/",
+    "docs/specs/",
+    "docs/INDEX.md",
+    ".github/",
+    ".tmp/",
+    "tests/",
+    "src/",
+    "scripts/",
+    "spec/",
+    "examples/",
+    "extension/",
+    "docker/",
+    "AGENTS.md",
+    "CLAUDE.md",
+  ];
+  const internal = [...packed].filter((file) =>
+    INTERNAL_PATHS.some((prefix) => file === prefix || file.startsWith(prefix)),
+  );
+  if (internal.length > 0) {
+    fail(`npm pack would ship internal paths: ${internal.slice(0, 10).join(", ")}`);
+  } else {
+    pass(`npm pack ships no internal paths (${INTERNAL_PATHS.length} deny rules, ${packed.size} files scanned)`);
+  }
+
+  const listed = pkg.files ?? [];
+  const bareDocs = listed.filter((entry) => entry === "docs" || entry === "docs/");
+  if (bareDocs.length > 0) {
+    fail("package.json files must list user-facing docs explicitly, not the whole docs/ tree");
+  }
+  const internalEntries = listed.filter((entry) =>
+    INTERNAL_PATHS.some((prefix) => entry === prefix.replace(/\/$/u, "") || entry.startsWith(prefix)),
+  );
+  if (internalEntries.length > 0) {
+    fail(`package.json files lists internal paths: ${internalEntries.join(", ")}`);
+  }
+  const shippedDocs = listed.filter((entry) => entry.startsWith("docs/") && entry.endsWith(".md"));
+  const absentDocs = shippedDocs.filter((entry) => !packed.has(entry));
+  if (absentDocs.length > 0) {
+    fail(`npm pack would omit listed docs: ${absentDocs.join(", ")}`);
+  } else {
+    pass(`npm pack ships ${shippedDocs.length} explicitly listed user-facing doc(s)`);
+  }
 } catch (error) {
   fail(`npm pack --dry-run failed: ${error.message}`);
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * AC-K01: the ARCHITECTURE headless example executes against the built data surface
+ * ---------------------------------------------------------------------------------------------- */
+
+/** The contents of the first fenced code block after `heading`, language line stripped. */
+function codeBlockAfter(markdown, heading) {
+  const headingAt = markdown.indexOf(heading);
+  if (headingAt < 0) throw new Error(`missing heading: ${heading}`);
+  const fenceStart = markdown.indexOf("```", headingAt);
+  if (fenceStart < 0) throw new Error(`missing code block after: ${heading}`);
+  const fenceEnd = markdown.indexOf("```", fenceStart + 3);
+  if (fenceEnd < 0) throw new Error(`unterminated code block after: ${heading}`);
+  return markdown.slice(fenceStart + 3, fenceEnd).replace(/^[a-zA-Z0-9_-]*\n/u, "");
+}
+
+try {
+  const dataEntry = resolve(root, "dist/data.js");
+  if (!existsSync(dataEntry)) {
+    fail("dist/data.js is missing — run `npm run build` before smoke:pack");
+  } else {
+    const architecture = readFileSync(join(root, "docs/ARCHITECTURE.md"), "utf8");
+    const example = codeBlockAfter(architecture, "### Headless use");
+    if (!example.includes('from "bluepencil/data"')) {
+      fail('the headless example no longer imports from "bluepencil/data"');
+    } else {
+      for (const gone of ["mergeBundles", "createStore"]) {
+        if (example.includes(gone)) {
+          fail(`the headless example still calls ${gone}, which bluepencil/data does not export`);
+        }
+      }
+      const dataUrl = pathToFileURL(dataEntry).href;
+      // Keep the example verbatim; only resolve the documented package subpath to the built file.
+      const executable = example
+        .split('"bluepencil/data"')
+        .join(JSON.stringify(dataUrl));
+      const encoded = Buffer.from(executable, "utf8").toString("base64");
+      try {
+        execFileSync(process.execPath, ["--input-type=module", "-e", `await import("data:text/javascript;base64,${encoded}")`], {
+          cwd: root,
+          stdio: "pipe",
+        });
+        pass("docs/ARCHITECTURE.md headless example runs against dist/data.js");
+      } catch (error) {
+        const detail = String(error.stderr ?? error.message).slice(0, 300);
+        fail(`docs/ARCHITECTURE.md headless example threw: ${detail}`);
+      }
+    }
+  }
+} catch (error) {
+  fail(`headless example check failed: ${error.message}`);
 }
 
 console.log(failures === 0 ? "packaging smoke: OK" : `packaging smoke: ${failures} failure(s)`);

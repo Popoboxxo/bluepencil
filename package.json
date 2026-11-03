@@ -76,9 +76,26 @@
   },
   "files": [
     "dist",
-    "docs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/ARCHITECTURE.md",
+    "docs/BUILD-SYNC.md",
+    "docs/CONCEPT.md",
+    "docs/DOCKER.md",
+    "docs/E2E-COVERAGE.md",
+    "docs/EMBED.md",
+    "docs/EXTENSION.md",
+    "docs/FEDERATION.md",
+    "docs/HERMES.md",
+    "docs/INTEGRATION.md",
+    "docs/INTERNAL-API.md",
+    "docs/MCP.md",
+    "docs/PRIVACY.md",
+    "docs/PROTOCOL.md",
+    "docs/RELEASING.md",
+    "docs/REQUIREMENTS.md",
+    "docs/WEBSTORE.md",
+    "docs/images"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",

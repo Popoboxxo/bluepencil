@@ -97,8 +97,8 @@ not name as something to think about, not as license to skip a leg.
 
 ### Version bumps and the federator
 
-`package.json` and `extension/manifest.json` carry the release version (currently `0.10.3`), and the
-matching `## [<version>]` section in `CHANGELOG.md` has to agree. The federator bin is **not** an
+`package.json` and `extension/manifest.json` carry the release version, and the matching
+`## [<version>]` section in `CHANGELOG.md` has to agree. The federator bin is **not** an
 element bundle: `scripts/build.mjs` has a separate `federator` job that emits `dist/federator.js`
 from `server/federator.ts`, declared as `"bluepencil-federator"` in `package.json`. `verify:sync` stays element-focused — it pins the element
 IIFE and the extension, not the federator — so do not add `dist/federator.js` to its hash.
