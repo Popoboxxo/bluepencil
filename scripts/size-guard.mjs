@@ -2,104 +2,146 @@
 /**
  * Size guard (NFR-3).
  *
- * The requirement budgets the **core** bundle at ≤ 33 kB minified+gzipped and explicitly excludes
- * the adapters, so the hard check runs against `dist/bluepencil.core.js` — the same build with the
+ * The headline budget is the **core** bundle (`dist/bluepencil.core.js`) — the same build with the
  * four built-in adapters aliased to a stub. The full browser bundles (IIFE and the custom-element
- * module, which carry the adapters and both language tables) are measured against a separate,
- * deliberately larger budget so a regression there still fails the build.
+ * module) carry the adapters and both language tables, so they are measured against their own
+ * budgets. The attach loader has a separate gate (FR-17).
  *
- * Raised from 30 kB to 31 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13),
- * measured at 30.5 kB. Raised again to 33 kB for the transient container reveal feature (issue #20)
- * and the app/build-ref/exportedBy bundle metadata (issue #21), measured at 31.9 kB, i.e. 96.6% of
- * the new budget — the guard is meant to catch *drift*, and this was a decision, so the number
- * moved openly instead of being worked around.
+ * The budget is a snapshot, not a target. Rule (spec G4):
+ * Core = measured + 10 %, IIFE = measured + 1.5 kB, Element = measured + 1.5 kB; the attach loader
+ * stays separate. Measurement date:
+ * **2026-11-03** (release cut, after the voice removal in G13), minified + gzip:
  *
- * Raised from 33 kB to 100 kB for the presentation mode (FR-20): presenter panel, talk timer,
- * read/edit switch and the second-tab audience view. At 33 kB the headroom was 0.6 kB gzip
- * against a measured ~0.95 kB for that surface, so the feature could not ship in the core at all
- * — the ceiling, not the code, was the blocker. 100 kB restores room for a second feature of this
- * shape and keeps the guard useful: 32.4 kB is 32% of the new budget, so real drift is still
- * visible on the same number.
+ *   core    40.7 kB → budget 44.7 kB
+ *   IIFE    44.4 kB → budget 45.9 kB
+ *   element 47.6 kB → budget 49.1 kB
+ *   attach   4.1 kB → unchanged 8 kB ceiling (separate gate)
  *
- * The same raise reached the custom element (40 kB → 45 kB, measured 40.9 kB gzip): that bundle
- * carries the adapters and both locales on top of the layer, so the presenter surface lands there
- * too. Measured with the presentation mode in place: core 35.2 kB, IIFE 38.5 kB, element 40.9 kB.
- *
- * Raised the IIFE from 40 kB to 45 kB for voice dictation (FR-21): the measured pre-change IIFE was
- * 39.9 kB gzip of a 40 kB ceiling — 0.1 kB of headroom — so *any* feature overflowed it. The voice
- * surface (adapter module, composer wiring, six i18n keys, styles) measured 1.4 kB gzip, landing the
- * IIFE at 41.3 kB. 45 kB aligns it with the custom-element budget and leaves ~3.7 kB headroom, so
- * real drift stays visible. Measured after the raise: core 37.7 kB, IIFE 41.3 kB, element 44.0 kB.
- *
- * Raised the custom element from 45 kB to 48 kB for the capture presets (FR-1.13/1.14), feature
- * priority (FR-3.7), mode visibility (FR-4.10) and the version line (FR-4.9): measured 46.9 kB gzip,
- * i.e. 1.9 kB over the old ceiling. The IIFE stays at 44.1 kB of 45 kB. 48 kB leaves ~1.1 kB
- * headroom, so real drift is still visible on the same number.
+ * Numbers are never raised preventively: an increase needs a decision, a reason in the PR and a
+ * fresh measurement. A temporary overshoot fails.
  *
  * Exits non-zero on any violation so CI can fail.
  */
 import { gzipSync } from "node:zlib";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const KB = 1024;
 
-const checks = [
+/** The date the budgets below were derived from (NFR-3 headline carries the same date). */
+export const MEASUREMENT_DATE = "2026-11-03";
+
+/** Minified+gzip size of each measured artifact, in bytes, on {@link MEASUREMENT_DATE}. */
+export const MEASURED_GZIP_BYTES = Object.freeze({
+  core: 41640,
+  attach: 4227,
+  iife: 45496,
+  element: 48709,
+});
+
+/** The rule's headroom over a measurement: 10 % for the core, +1.5 kB for IIFE and element. */
+const IIFE_ELEMENT_HEADROOM = 1.5 * KB;
+
+const measured = MEASURED_GZIP_BYTES;
+
+/**
+ * The checks, derived mechanically from the measurement above so the rule cannot drift from the
+ * numbers by hand. The attach loader keeps its own 8 kB ceiling (FR-17): it ships to hosts that
+ * take no bundler, so it must stay a rounding error.
+ */
+export const CHECKS = Object.freeze([
   {
     file: join(root, "dist/bluepencil.core.js"),
-    // Raised from 30 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13),
-    // then to 33 kB for reveal hints + bundle metadata, then to 100 kB for the presentation mode
-    // (FR-20) — see the header. Keep this number honest: it is the line between "we decided" and
-    // "it drifted".
-    budget: 100 * KB,
+    budget: Math.round(measured.core * 1.1),
     label: "core without adapters (NFR-3)",
   },
   {
-    // FR-17: the loader ships to hosts that take no bundler — it must stay a rounding error.
     file: join(root, "dist/attach.js"),
     budget: 8 * KB,
     label: "attach loader (FR-17)",
   },
   {
     file: join(root, "dist/bluepencil.iife.js"),
-    // Raised from 40 kB to 45 kB for voice dictation (FR-21) — see the header. The old ceiling left
-    // 0.1 kB headroom, so it failed on any feature; 45 kB matches the custom-element budget.
-    budget: 45 * KB,
+    budget: measured.iife + IIFE_ELEMENT_HEADROOM,
     label: "IIFE incl. adapters + en/de",
   },
   {
-    // Raised from 40 kB to 45 kB for the presentation mode (FR-20): the custom element bundles the
-    // adapters and both locales on top of the layer, so it carries the presenter panel and the talk
-    // timer as well. Measured before the raise: 40.9 kB gzip against the old 40 kB ceiling.
-    // Raised from 45 kB to 48 kB for the capture presets (FR-1.13/1.14), feature priority (FR-3.7),
-    // mode visibility (FR-4.10) and the version line (FR-4.9): measured 46.9 kB gzip, 1.9 kB over
-    // the old ceiling. 48 kB leaves ~1.1 kB headroom, so the guard still catches drift instead of
-    // tracking it.
     file: join(root, "dist/bluepencil.element.js"),
-    budget: 48 * KB,
+    budget: measured.element + IIFE_ELEMENT_HEADROOM,
     label: "custom element incl. adapters + en/de",
   },
-];
+]);
 
-let failed = false;
-for (const check of checks) {
-  if (!existsSync(check.file)) {
-    console.error(`[size] missing build artifact: ${check.file} — run "npm run build" first`);
-    failed = true;
-    continue;
-  }
+/**
+ * Measure one check.
+ *
+ * @param {{ file: string, budget: number, label: string }} check
+ * @returns {null | { label: string, rawBytes: number, gzipBytes: number, budget: number, over: boolean }}
+ *   `null` when the artifact is missing.
+ */
+export function measure(check) {
+  if (!existsSync(check.file)) return null;
   const raw = readFileSync(check.file);
-  const gz = gzipSync(raw, { level: 9 });
-  const pct = ((gz.length / check.budget) * 100).toFixed(1);
-  const over = gz.length > check.budget;
-  console.log(
-    `[size] ${check.label}: ${(raw.length / KB).toFixed(1)} kB raw, ` +
-      `${(gz.length / KB).toFixed(1)} kB gzip of ${(check.budget / KB).toFixed(0)} kB (${pct}%) — ` +
-      `${over ? "OVER BUDGET" : "ok"}`,
-  );
-  if (over) failed = true;
+  const gzipBytes = gzipSync(raw, { level: 9 }).length;
+  return {
+    label: check.label,
+    rawBytes: raw.length,
+    gzipBytes,
+    budget: check.budget,
+    over: gzipBytes > check.budget,
+  };
 }
 
-process.exit(failed ? 1 : 0);
+/**
+ * Run the guard.
+ *
+ * @param {ReadonlyArray<{ file: string, budget: number, label: string }>} [checks]
+ * @param {(line: string) => void} [log]
+ * @returns {boolean} `false` when any artifact is missing or over budget.
+ */
+export function run(checks = CHECKS, log = console.log) {
+  let failed = false;
+  for (const check of checks) {
+    const result = measure(check);
+    if (result === null) {
+      log(`[size] missing build artifact: ${check.file} — run "npm run build" first`);
+      failed = true;
+      continue;
+    }
+    const pct = ((result.gzipBytes / result.budget) * 100).toFixed(1);
+    log(
+      `[size] ${result.label}: ${(result.rawBytes / KB).toFixed(1)} kB raw, ` +
+        `${(result.gzipBytes / KB).toFixed(1)} kB gzip of ${(result.budget / KB).toFixed(1)} kB ` +
+        `(${pct}%) — ${result.over ? "OVER BUDGET" : "ok"}`,
+    );
+    if (result.over) failed = true;
+  }
+  return !failed;
+}
+
+/**
+ * True only when this file is the process entry point.
+ *
+ * `import.meta.url` resolves to the real path while `process.argv[1]` keeps the symlink path, so a
+ * direct `===` comparison is fail-open through a symlink: the guard would silently do nothing and
+ * exit 0. Compare realpaths instead; a broken link (realpath throws) is "not direct", never a false OK.
+ *
+ * @returns {boolean}
+ */
+function isDirectRun() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(entry) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+// Only execute when invoked directly (`node scripts/size-guard.mjs`); importing the module (e.g.
+// from `tests/unit/size-guard.test.ts`) must stay side-effect-free.
+if (isDirectRun()) {
+  process.exit(run() ? 0 : 1);
+}

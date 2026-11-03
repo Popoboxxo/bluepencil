@@ -269,25 +269,29 @@ describe("requirement baseline — the rewritten sections", () => {
 });
 
 describe("requirement baseline — the size budget rule", () => {
-  it("[NFR-3] states the measurement rule and the release-cut caveat without invented numbers", () => {
+  it("[NFR-3] names the measured values, the measurement date and the derivation rule", () => {
     const text = textFor("NFR-3");
     expect(text).toContain("Core = measured + 10 %");
     expect(text).toContain("IIFE = measured + 1.5 kB");
     expect(text).toContain("Element = measured + 1.5 kB");
     expect(text).toContain("attach loader");
-    // The caveat: the numbers arrive at the release cut, they are not invented here.
-    expect(text).toContain("measurement date");
-    expect(text).toContain("release-cut");
-    expect(text).toContain("Zahlen folgen im Release-Cut (F-Messung)");
+
+    // Real numbers with the measurement date, not the old release-cut caveat.
+    expect(text).toContain("2026-11-03");
+    expect(text).toContain("Core 40.7 kB");
+    expect(text).toContain("44.7 kB");
+    expect(text).toContain("IIFE 44.4 kB");
+    expect(text).toContain("45.9 kB");
+    expect(text).toContain("Element 47.6 kB");
+    expect(text).toContain("49.1 kB");
+    expect(text).toContain("attach 4.1 kB");
     expect(text).toContain("never raised preventively");
     expect(text).toContain("no historical budget figure");
+    expect(text).not.toContain("Zahlen folgen im Release-Cut");
 
-    // No carried-forward headline figure (the old 33 kB claim) …
+    // No carried-forward headline figure (the old 33 kB and 100 kB claims) …
     expect(text).not.toMatch(/33\s?kB/i);
-    // … and the only kB figures are the two rule increments, never a measured value.
-    const kBFigures = [...text.matchAll(/(\d+(?:\.\d+)?)\s*kB/g)].map((match) => match[1] ?? "");
-    expect(kBFigures).toHaveLength(2);
-    expect(new Set(kBFigures)).toEqual(new Set(["1.5"]));
+    expect(text).not.toMatch(/100\s?kB/i);
   });
 });
 

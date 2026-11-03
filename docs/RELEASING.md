@@ -142,6 +142,33 @@ only after that. Like RC-1…RC-3, this point is confirmed by the approval of th
 environment; no test proves it, because it is a decision about when to publish, not a property of the
 code.
 
+## The 0.12.0 threat model at the release cut
+
+Re-answered against the final state on **2026-11-03** (spec §4.5, §6(3)/(4)); the substance is in
+spec §4.2 (properties) and §4.3 (residual risks).
+
+1. **What is built?** A review layer injected into foreign web apps (browser + Node) with a headless
+   data layer, CLI, MCP server, reference hub, federator and an MV3 Chromium extension. Notes live in
+   `chrome.storage.local` per origin, optionally on a self-hosted hub, and in exportable bundles. The
+   hub accepts a shared secret and/or per-device signed tokens; the page never sees a credential.
+2. **What can go wrong?** A cross-site read through the page relay, a credential leak into the page
+   context, mounting without a gesture, a hub gate bypass (Host header, unthrottled guessing, body
+   before auth), SSRF/oversized federation answers, a downgrade that reopens the shared bucket, and
+   supply-chain/container drift.
+3. **What do we do about it?** Each risk has a property with a test: worker-only credential and
+   sender-bound relays, optional host permissions and on-demand injection, the Host check plus one
+   shared throttle and auth-before-body, bounded federation responses, path-only routes, and pinned
+   actions with hardened container defaults. The remaining risks are named in spec §4.3.
+4. **What are the consequences?** A residual leak would expose review notes (reputation and trust,
+   no financial or health data). A hub without a credential on a non-loopback bind stays readable —
+   deliberate and warned. A broken `origin` contract would be data loss, so imports are copy-only with
+   a visible regression instead of a silent migration.
+
+**Checklist status.** RC-1, RC-2, RC-3 and RC-4 are mandatory steps of the protected `release`
+environment and are **not confirmed by this document**; the approver confirms them on a real Chrome
+profile with the release build (the approval confirms, it does not prove). This cut records them as
+required, not as performed.
+
 ## Deliberately not automated
 
 - **npm publish.** The package is installable from the tag —

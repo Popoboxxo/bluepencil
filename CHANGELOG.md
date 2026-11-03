@@ -1,7 +1,10 @@
-## [Unreleased]
+## [0.12.0] - 2026-11-03
 
-### Changed
+### Breaking
 
+- **Every bundle hash changes.** `origin: null` is emitted for every note, so the canonical hash of
+  each bundle changes. There is no new migration step: `migrateNote`/`migrateBundle` read 0.11
+  bundles unchanged and an unassigned note takes an incoming origin only on import.
 - **The extension's credential is worker-only (G6, ADR-0.12-S3).** The page settings object no longer
   carries `auth` or a token: the service worker appends `Authorization: Bearer …` or
   `x-bluepencil-auth: …` itself, and a relay request that names either header is refused with
@@ -9,23 +12,32 @@
   `issues` entry pointing at the extension options page, where the credential is configured now.
 - **The default store key is per origin (G5).** `chromeStorage` derives one bucket from the page's
   origin (`bluepencil:v2:<origin>`) and never touches the shared `bluepencil:default:v1` blob. Hosts
-  that relied on the shared default must pass `key: chromeStorageKey()` explicitly. Legacy notes are
-  kept, but they no longer appear in the page overlay after the upgrade: they are visible only on the
-  review page, read-only, and can be copied into an origin with an explicit confirm (undo removes
-  only the copy).
+  that relied on the shared default must pass `key: chromeStorageKey()` explicitly.
+- **The route default is path-only (G8, ADR-0.12-S5).** `route="url"` stores `location.pathname`;
+  `route="url-with-query"` is the explicit opt-in with `query-allow`/`query-deny`. The extension
+  always writes `route="url"` and never opts into the query.
+- **`file://` is memory-only.** An opaque origin has no persistent bucket, so the store degrades to
+  memory there; use the local adapter or a hub when notes must survive a reload.
+- **The `token`, `token-header` and `token-scheme` attributes are removed** — see *Removed*.
+- **Downgrading is not supported: clear extension storage before downgrading (RVW-14).** 0.11 reads
+  every key, so a `v2` note set is invisible to it; keeping `v2` data across a downgrade reopens the
+  shared-bucket problem and is a **confidentiality regression**. Read `docs/EXTENSION.md` *Upgrading
+  from 0.11* before downgrading.
+
+### Added
+
+- **A review page carries the legacy notes.** Notes from the shared 0.11 blob no longer appear in the
+  page overlay; they are visible only on the review page, read-only, and can be copied into an origin
+  with an explicit confirm (undo removes only the copy).
+
+### Changed
+
 - **The options page loses *Turn on here* / *Turn off here*.** Mounting runs through the toolbar
   button and Alt+Shift+B; the options page links the review page instead (AC-B48).
 - **Host access is optional.** The manifest declares no `host_permissions` and no content script;
   `optional_host_permissions: ["http://*/*", "https://*/*"]` is granted per hub origin the first time
   an HTTP endpoint is saved, inside the click context. The overlay is injected on demand after a
   gesture and is not kept alive across a navigation.
-- **The route default is path-only (G8, ADR-0.12-S5).** `route="url"` stores `location.pathname`;
-  `route="url-with-query"` is the explicit opt-in with `query-allow`/`query-deny`. The extension
-  always writes `route="url"` and never opts into the query.
-- **Every bundle hash changes.** `origin: null` is emitted for every note, so the canonical hash of
-  each bundle changes. There is no new migration step.
-- **`file://` is memory-only.** An opaque origin has no persistent bucket, so the store degrades to
-  memory there; use the local adapter or a hub when notes must survive a reload.
 - **The loader's integrity check is a download check.** The element bytes are hashed before import;
   real assurance needs the host pin. The vocabulary no longer calls it by a browser integrity
   mechanism it does not use — see `docs/EMBED.md`.
@@ -43,12 +55,25 @@
   through `element.issues` rather than dropped silently; the credential lives in the extension's
   worker.
 
-### Upgrade notes
+### Fixed
 
-- **Downgrading is not supported: clear extension storage before downgrading (RVW-14).** 0.11 reads
-  every key, so a `v2` note set is invisible to it; keeping `v2` data across a downgrade reopens the
-  shared-bucket problem and is a **confidentiality regression**. Read `docs/EXTENSION.md` *Upgrading
-  from 0.11* before downgrading.
+- **The hub gate no longer trusts the Host header or guesses.** Loopback requests with a foreign
+  `Host` answer `403 host_not_allowed`; every credential comparison runs through one throttle with
+  separate budgets per peer and credential kind (`429 throttled` after N failures); authentication
+  runs before the body is read; `--auth-secret` below 16 characters and `--token-key` below 32 fail
+  at startup instead of degrading silently.
+- **Federation answers are bounded per peer.** Each response body is capped while it arrives (8 MiB,
+  64 KiB for `/config`), reads are time-bounded and concurrency-limited, and an oversize answer is
+  reported as `invalid_response` rather than buffered into memory.
+
+### Security
+
+- **The supply chain is pinned.** Every workflow `uses:` is a 40-hex commit SHA with a readable tag
+  comment, and the reqmd download is checked against a digest stored in the workflow itself.
+- **Container defaults are hardened.** `read_only`, `cap_drop: ALL`, `no-new-privileges`, `/tmp` on
+  tmpfs and `/data` as the only writable volume; the compose image tag is exact (no `:latest`).
+- **No runtime dependencies were added** (NFR-4); the note logic still has exactly one implementation
+  shared by UI, CLI, hub, federator, extension and MCP.
 
 ## [0.11.6] - 2026-11-01
 
