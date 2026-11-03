@@ -94,6 +94,7 @@
     "verify:sync": "node scripts/verify-sync.mjs",
     "check-version-bump": "node scripts/check-version-bump.mjs",
     "smoke:ext": "node extension/smoke.mjs",
+    "smoke:ext:review": "node extension/smoke-review.mjs",
     "smoke:webstore": "node scripts/webstore-compliance.mjs",
     "build:site": "node scripts/build-site.mjs",
     "smoke:cli": "node scripts/cli-smoke.mjs",

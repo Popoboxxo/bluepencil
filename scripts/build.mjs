@@ -267,8 +267,15 @@ async function cleanDist() {
   }
 }
 
-/** The jobs whose output the extension loads verbatim; only they trigger an extension rebuild. */
-const ELEMENT_JOBS = new Set(["element", "element-iife"]);
+/**
+ * The jobs whose output the extension consumes; only they trigger an extension rebuild.
+ *
+ * The element bundles are loaded verbatim, and the review page bundles the built `dist/data.js`,
+ * which in turn imports the adapters it names. A `--watch` run that rebuilt only the element would
+ * leave `extension/dist/review.js` on a stale data bundle — an old aggregation behind a fresh UI.
+ * `data` and `adapters` are therefore in the set (contract B.2).
+ */
+const ELEMENT_JOBS = new Set(["element", "element-iife", "data", "adapters"]);
 
 /**
  * Watch-time hook: rebuild `extension/dist/` whenever the element bundles change.
@@ -309,7 +316,7 @@ function createExtensionSync() {
       }
       settled = true;
       if (ok) {
-        console.log("[build] extension/dist rebuilt (triggered by the element bundle)");
+        console.log("[build] extension/dist rebuilt (triggered by an extension input)");
       } else {
         console.warn(`[build] extension auto-build failed (${detail}) — run: npm run build:ext`);
       }
@@ -359,7 +366,7 @@ async function main() {
     const { context } = await import("esbuild");
     const makeExtensionSyncPlugin = createExtensionSync();
     for (const job of runnable) {
-      // Only the two element contexts trigger the extension rebuild; other jobs keep their own
+      // Only the extension-input contexts trigger the extension rebuild; other jobs keep their own
       // plugins (e.g. the core job's adapterStubPlugin) untouched.
       const plugin = ELEMENT_JOBS.has(job.name) ? makeExtensionSyncPlugin() : null;
       const options = plugin

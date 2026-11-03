@@ -18,22 +18,23 @@
  *    MCP, HTTP host) never mistakes an unpersisted write for a saved one; `"degrade"` is the
  *    documented `localStorage` path that resolves and reports once.
  */
-import {
-  BluepencilValidationError,
-  createNote,
-  type Note,
-  type NoteFilter,
-} from "../core/model";
+import { createNote, type Note, type NoteFilter } from "../core/model";
 import {
   applyPatch,
   cloneNote,
   cloneNotes,
-  coerceNote,
-  isRecord,
   matchesFilter,
   type Adapter,
   type AdapterPatch,
 } from "../core/adapter";
+import { parseNoteSet, serializeNoteSet } from "../data/note-set";
+
+/**
+ * The stored note-set codec lives in the headless data layer (`src/data/note-set.ts`) because the
+ * extension review page and the MCP backend read the same blobs. Re-exported here so the adapter's
+ * public API — and `bluepencil/adapters/memory` — is unchanged.
+ */
+export { parseNoteSet, serializeNoteSet };
 
 /** Adapter name reported to the store and to hosts. */
 export const MEMORY_ADAPTER_NAME = "memory";
@@ -111,53 +112,6 @@ export function createMemoryAdapter(options: { seed?: Note[] } = {}): Adapter {
     },
   };
   return adapter;
-}
-
-/* ------------------------------------------------------------------------------------------------
- * JSON blob codec (FR-6.5: one blob, written as a whole)
- * ---------------------------------------------------------------------------------------------- */
-
-/** The persisted shape: a version tag plus the note set, readable by any 20-line script (NFR-19). */
-interface NoteSetBlob {
-  version: number;
-  notes: Note[];
-}
-
-export function serializeNoteSet(notes: readonly Note[]): string {
-  const blob: NoteSetBlob = { version: 1, notes: cloneNotes(notes) };
-  return JSON.stringify(blob);
-}
-
-/**
- * Reads a stored note set. Accepts the documented `{ notes: [] }` blob and a bare array, and
- * rejects anything else so that a broken file never silently becomes "no notes".
- */
-export function parseNoteSet(text: string | null): Note[] {
-  if (text === null || text.trim() === "") {
-    return [];
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text) as unknown;
-  } catch {
-    throw new BluepencilValidationError(["the stored note set is not valid JSON"]);
-  }
-  const list = Array.isArray(parsed)
-    ? parsed
-    : isRecord(parsed) && Array.isArray(parsed.notes)
-      ? parsed.notes
-      : null;
-  if (!list) {
-    throw new BluepencilValidationError(["the stored note set must be a JSON array or { notes: [] }"]);
-  }
-  const notes: Note[] = [];
-  for (const entry of list) {
-    const note = coerceNote(entry);
-    if (note) {
-      notes.push(note);
-    }
-  }
-  return notes;
 }
 
 /* ------------------------------------------------------------------------------------------------

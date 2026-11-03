@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bluepencil — review</title>
+<!--
+  The page's whole policy, stated once.
+
+  `script-src 'self'` is the requirement; the rest follows from it. `connect-src 'none'` and
+  `default-src 'none'` are deliberate: this page reads `chrome.storage.local` (not a fetch) and
+  renders text. It has no reason to reach the network, and no host permission to do so either.
+  `style-src 'unsafe-inline'` covers the single inline <style> block below; scripts stay external
+  and same-origin.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bp-border: #d1d5db;
+    --bp-muted: #4b5563;
+    --bp-flag: #b45309;
+    --bp-error: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bp-border: #52525b;
+      --bp-muted: #a1a1aa;
+      --bp-flag: #fbbf24;
+      --bp-error: #fca5a5;
+    }
+  }
+  body {
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0 auto; padding: 2rem 1.5rem 4rem; max-width: 56rem;
+    background: Canvas; color: CanvasText;
+  }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+  p.lede { margin: 0 0 1rem; color: var(--bp-muted); }
+  #review-status { margin: 0 0 1.5rem; font-size: .9rem; color: var(--bp-muted); }
+  section.bp-review-group {
+    border: 1px solid var(--bp-border); border-radius: 8px;
+    margin: 0 0 1.25rem; padding: 1rem 1.15rem 1.15rem;
+  }
+  section.bp-review-group h2 { font-size: 1.05rem; margin: 0 0 .15rem; overflow-wrap: anywhere; }
+  .bp-review-key { margin: 0 0 .75rem; font-family: ui-monospace, monospace; font-size: .8rem;
+    color: var(--bp-muted); overflow-wrap: anywhere; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { border-top: 1px solid var(--bp-border); padding: .7rem 0; }
+  li:first-child { border-top: 0; }
+  .bp-review-body { margin: 0 0 .25rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bp-review-meta { margin: 0; font-size: .8rem; color: var(--bp-muted); overflow-wrap: anywhere; }
+  .bp-review-flag { margin: .3rem 0 0; font-size: .82rem; color: var(--bp-flag); }
+  .bp-review-error { margin: .5rem 0 0; color: var(--bp-error); }
+  .bp-review-copy { font-size: .85rem; color: var(--bp-muted); }
+  .bp-review-empty { margin: 0; color: var(--bp-muted); font-style: italic; }
+</style>
+</head>
+<body>
+  <h1>Bluepencil review</h1>
+  <p class="lede">
+    Every note store in this browser profile, grouped by origin. Legacy notes are read-only here.
+    Nothing on this page leaves the extension.
+  </p>
+  <p id="review-status" role="status" aria-live="polite">Reading the local stores…</p>
+  <main id="review-root"></main>
+  <script type="module" src="./review.js"></script>
+</body>
+</html>

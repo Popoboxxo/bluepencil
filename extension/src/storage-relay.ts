@@ -1,25 +1,26 @@
 /**
- * The page-side `chrome.storage.local` relay — and the one write rule a page cannot talk its way out
- * of.
+ * The page-side `chrome.storage.local` relay — one key, derived from the bridge's own location.
  *
  * The layer runs in the page's MAIN world, where `chrome.storage` does not exist; the isolated-world
  * bridge does have it, so the store's `chromeStorage` adapter asks the bridge to perform one storage
- * call (#53). That channel is what makes notes survive a reload — and it is also reachable by **any**
- * page script, not only the layer.
+ * call (#53). That channel is reachable by **any** page script, not only the layer.
  *
- * `bluepencil:settings` is extension state: it carries the hub endpoint and the credential. A page
- * that could write it could repoint the hub relay at an arbitrary origin and use the service worker
- * as a CSP-bypassing egress path, which is exactly the guarantee #116 is selling (CR-116-01). So
- * writes and removes are scoped to the layer's own store blob, `bluepencil:<instance>:v1`
- * (`chromeStorageKey` in `src/adapters/chrome-storage.ts`). Everything else is extension state.
+ * Since 0.12 the extension partitions `chrome.storage.local` per origin (`bluepencil:v2:<origin>`,
+ * G5). A page may therefore reach exactly **one** key: the one the bridge derives from its own
+ * `window.location` (`storageKeyForLocation`). There is no origin/key parameter on the envelope and
+ * no catch-all bucket — a spoofed field cannot select a foreign store, and an opaque origin
+ * (`file:`, `"null"`) has no bucket at all (SEC-13).
  *
- * **Reads stay available, deliberately.** The settings read exposure predates this rule (the page
- * could always `get` the blob) and the layer needs its own store back; hiding it is a separate
- * piece of work. It is documented in `docs/EXTENSION.md` rather than silently ignored.
+ * The relay also refuses everything that is not note data: `bluepencil:settings` (hub endpoint and
+ * credential, SEC-14), the legacy shared blob `bluepencil:default:v1`, `bluepencil:ui:*` and the
+ * assign sidecar `bluepencil:assign:<origin>`. They are not the derived key, so they are refused as
+ * `foreign_key` before any `chrome.storage` call happens.
  *
- * Kept free of `chrome.*` and the DOM so both the allow and the deny paths are unit-testable; the
- * bridge only supplies the area handle (`chrome.storage?.local`).
+ * Every answer is a named code, never a silent drop: `opaque_origin`, `foreign_key`,
+ * `invalid_envelope`, `unavailable`, `storage_failure`. Kept free of `chrome.*` and the DOM so the
+ * allow and the deny paths are unit-testable; the bridge only supplies the area handle and location.
  */
+import { storageKeyForLocation } from "../../src/data/origin";
 
 /** The slice of `chrome.storage.local` the relay uses. */
 export interface PageStorageArea {
@@ -35,77 +36,124 @@ export interface PageStorageEnvelope {
   items?: unknown;
 }
 
-/**
- * The only keys a page may write: the layer's own store blob. The instance segment is what
- * `chromeStorageKey()` produces (`default`, a host name, a team name …). `settings` and `ui` are
- * extension/UI state, not note data, so they are refused even with a version suffix —
- * `bluepencil:settings` itself has no suffix and could never match the rest of the pattern.
- */
-const PAGE_WRITABLE_KEY = /^bluepencil:(?!settings:|ui:)[A-Za-z0-9._-]+:v1$/;
+/** Named refusals of the page storage relay (B.1). */
+export type PageStorageErrorCode =
+  | "opaque_origin"
+  | "foreign_key"
+  | "invalid_envelope"
+  | "unavailable"
+  | "storage_failure";
 
-/** Is `key` part of the layer's own store namespace? */
-export function isPageWritableStorageKey(key: string): boolean {
-  return PAGE_WRITABLE_KEY.test(key);
-}
+/** The bridge's answer shape; the page-side adapter keeps its existing unwrap path. */
+export type PageStorageReply =
+  | { ok: true; value?: Record<string, unknown> }
+  | { ok: false; code: PageStorageErrorCode; error: string };
+
+/** The only fields a storage envelope may carry. Anything else is `invalid_envelope` (B.1). */
+const ALLOWED_FIELDS: readonly string[] = ["op", "keys", "items"];
+
+const STORAGE_OPS: readonly string[] = ["get", "set", "remove"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The refusal text names the namespace, not a copied key value. */
-const WRITE_REFUSED = "a page may only write the layer's own store keys (bluepencil:<instance>:v1)";
-
 /** Normalise a `keys` payload to a string list, or `null` when it is not one. */
 function keyList(raw: unknown): string[] | null {
   if (typeof raw === "string") return [raw];
-  if (Array.isArray(raw) && raw.every((key) => typeof key === "string")) return raw;
+  if (Array.isArray(raw) && raw.every((key) => typeof key === "string")) return raw as string[];
   return null;
 }
 
+/** The one key a page may name: exactly the key the bridge derived from its own location. */
+function isDerivedKey(keys: readonly string[], derivedKey: string): boolean {
+  return keys.length === 1 && keys[0] === derivedKey;
+}
+
+function refused(code: PageStorageErrorCode, error: string): PageStorageReply {
+  return { ok: false, code, error };
+}
+
+function foreignKey(): PageStorageReply {
+  return refused(
+    "foreign_key",
+    "a page may only reach the note store of its own origin (bluepencil:v2:<origin>)",
+  );
+}
+
+function invalidEnvelope(error: string): PageStorageReply {
+  return refused("invalid_envelope", error);
+}
+
+function unavailable(): PageStorageReply {
+  return refused("unavailable", "chrome.storage.local is unavailable in this extension world");
+}
+
+/** A throwing area is an answer, not an escape: the caller never sees a rejection. */
+function storageFailure(error: unknown): PageStorageReply {
+  return refused("storage_failure", error instanceof Error ? error.message : String(error));
+}
+
 /**
- * Perform one storage call on behalf of the page, applying the write rule.
+ * Perform one storage call on behalf of the page, scoped to the derived per-origin key.
  *
- * The answer shape is the bridge's own (`{ok:true, value?}` / `{ok:false, error}`), so the page-side
- * adapter can keep its existing unwrap path. A refused write performs **no** storage call at all: a
- * partial write would leave the blob in a state the next read cannot explain.
+ * Decision order: opaque origin → envelope shape → key match → area availability → the call.
+ * A refusal performs **no** storage access at all; a partial write would leave the per-origin blob
+ * in a state the next read cannot explain.
  */
 export async function relayPageStorage(
   area: PageStorageArea | undefined,
   envelope: PageStorageEnvelope,
-): Promise<unknown> {
-  if (area === undefined) {
-    return { ok: false, error: "chrome.storage.local is unavailable in this extension world" };
+  location: { origin?: unknown } | null | undefined,
+): Promise<PageStorageReply> {
+  // The key is derived only from the isolated world's location. No envelope field takes part.
+  const derivedKey = storageKeyForLocation(location);
+  if (derivedKey === null) {
+    return refused("opaque_origin", "this page has an opaque origin and therefore no note store");
   }
+
+  if (!isRecord(envelope)) {
+    return invalidEnvelope("a page storage request must be an object");
+  }
+  if (Object.keys(envelope).some((field) => !ALLOWED_FIELDS.includes(field))) {
+    return invalidEnvelope("a storage envelope may only carry op, keys and items");
+  }
+  const op = envelope.op;
+  if (typeof op !== "string" || !STORAGE_OPS.includes(op)) {
+    return invalidEnvelope("a storage request needs the operation get, set or remove");
+  }
+
+  if (op === "get" || op === "remove") {
+    const keys = keyList(envelope.keys);
+    if (keys === null) {
+      return invalidEnvelope("a storage read or remove needs a key or a list of keys");
+    }
+    // Empty, wildcard or multi-key lists are well-formed but foreign — including the legacy blob,
+    // settings, UI state and the assign sidecar, which are all "not this origin's key".
+    if (!isDerivedKey(keys, derivedKey)) return foreignKey();
+    if (area === undefined) return unavailable();
+    try {
+      if (op === "get") {
+        return { ok: true, value: await area.get(derivedKey) };
+      }
+      await area.remove(derivedKey);
+      return { ok: true };
+    } catch (error) {
+      return storageFailure(error);
+    }
+  }
+
+  // `set`: the item keys are the write footprint, so they are the key check.
+  const items = envelope.items;
+  if (!isRecord(items)) {
+    return invalidEnvelope("a storage write needs an items object");
+  }
+  if (!isDerivedKey(Object.keys(items), derivedKey)) return foreignKey();
+  if (area === undefined) return unavailable();
   try {
-    if (envelope.op === "get") {
-      // Deliberately unrestricted: a read cannot repoint the relay, and the layer needs its own
-      // blob. The settings exposure is documented (docs/EXTENSION.md, "Page-side storage relay").
-      return { ok: true, value: await area.get((envelope.keys ?? []) as string | string[]) };
-    }
-    if (envelope.op === "set") {
-      const items = envelope.items;
-      if (!isRecord(items)) {
-        return { ok: false, error: "a storage write needs an items object" };
-      }
-      if (!Object.keys(items).every(isPageWritableStorageKey)) {
-        return { ok: false, error: WRITE_REFUSED };
-      }
-      await area.set(items);
-      return { ok: true };
-    }
-    if (envelope.op === "remove") {
-      const keys = keyList(envelope.keys);
-      if (keys === null) {
-        return { ok: false, error: "a storage remove needs a key or a list of keys" };
-      }
-      if (!keys.every(isPageWritableStorageKey)) {
-        return { ok: false, error: WRITE_REFUSED };
-      }
-      await area.remove(keys);
-      return { ok: true };
-    }
-    return { ok: false, error: `unknown storage operation ${String(envelope.op)}` };
+    await area.set(items);
+    return { ok: true };
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    return storageFailure(error);
   }
 }
