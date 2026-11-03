@@ -34,6 +34,57 @@ const ALLOW_HEADERS: readonly string[] = [
   "MCP-Protocol-Version",
 ];
 
+/** A safety warning `--cors` can raise; structurally compatible with the hub's `StartupWarning`. */
+export interface CorsWarning {
+  code: "cors_wildcard";
+  message: string;
+}
+
+/**
+ * What `--cors` resolved to, or why it was refused (SEC-06, ADR-0.12-S1).
+ *
+ * `origin: null` means "no `--cors` at all" — the default, and the only value that emits no CORS
+ * header. A refusal carries the machine-readable code the usage error and the tests quote.
+ */
+export type CorsOriginPolicy =
+  | { ok: true; origin: string | null; warning?: CorsWarning }
+  | { ok: false; code: "cors_value_missing" | "cors_wildcard_unauthenticated" };
+
+/** The one warning `--cors '*'` produces; the hub prefixes it with its own name on stderr. */
+export const CORS_WILDCARD_WARNING: CorsWarning = {
+  code: "cors_wildcard",
+  message:
+    "WARNING (cors_wildcard): --cors '*' admits every origin to the notes API — any page a " +
+    "browser visits can read and write every note it can reach, and the client credential is the " +
+    "only boundary left. Name one origin instead of '*'.",
+};
+
+/**
+ * Resolves the `--cors` flag (ADR-0.12-S1, SEC-06).
+ *
+ * A bare `--cors` used to mean `*` silently, which turned "I enabled CORS" into "every website may
+ * read every note". The value is now required: absent means no CORS at all, `--cors ''` is a usage
+ * error (`cors_value_missing`), and the wildcard has to be spelled out as `'*'` *and* needs a
+ * configured client credential (`cors_wildcard_unauthenticated` otherwise) — the wildcard is only
+ * survivable when the gate behind it is real. An explicit origin is passed through unchanged.
+ *
+ * `hasCredential` is the *client* gate (`--auth-secret` / `--token-key`), never the admin secret:
+ * the admin secret guards an operator surface, it does not authenticate a browser.
+ */
+export function corsOriginPolicy(
+  raw: string | undefined,
+  hasCredential: boolean,
+): CorsOriginPolicy {
+  if (raw === undefined) return { ok: true, origin: null };
+  const value = raw.trim();
+  if (value === "") return { ok: false, code: "cors_value_missing" };
+  if (value === "*") {
+    if (!hasCredential) return { ok: false, code: "cors_wildcard_unauthenticated" };
+    return { ok: true, origin: "*", warning: CORS_WILDCARD_WARNING };
+  }
+  return { ok: true, origin: value };
+}
+
 /**
  * The method list a preflight advertises: the caller's documented methods *are* the answer, plus
  * `OPTIONS`, deduped case-insensitively. The global list is deliberately not merged in here — a door

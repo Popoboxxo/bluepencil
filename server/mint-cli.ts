@@ -11,6 +11,7 @@
  * only usable by reading it.
  */
 import { mintToken, parseScope } from "./mint";
+import { TOKEN_KEY_MIN_LENGTH } from "./credentials";
 
 const HELP = `bluepencil token — mint a signed device token for a hub (#36, phase 2).
 
@@ -18,7 +19,9 @@ const HELP = `bluepencil token — mint a signed device token for a hub (#36, ph
 
   The signing key must match the hub's --token-key / BLUEPENCIL_TOKEN_KEY. It is read from the
   environment or from --key, never from a positional argument, so it stays out of the process list
-  and out of shell history as far as the environment allows.
+  and out of shell history as far as the environment allows. It must be at least 32 characters: an
+  HMAC key is the strength ceiling of every token it signs, so a short one weakens all of them at
+  once. The hub refuses the same lengths as token_key_too_short.
 
   Options:
     --device <name>   Required. Recorded in the token so a revocation list can be read by a human.
@@ -71,6 +74,16 @@ export async function runTokenCommand(argv: readonly string[]): Promise<number> 
   }
   if (key.length === 0) {
     err("token: the signing key is empty — an empty key would sign with nothing");
+    return 2;
+  }
+  // The same floor the hub enforces (TOKEN_KEY_MIN_LENGTH, G2/SEC-04). Checking here
+  // too is not redundancy: without it the failure surfaces as a hub that will not start, hours after
+  // the token was minted with a key that was never admissible.
+  if (key.length < TOKEN_KEY_MIN_LENGTH) {
+    err(
+      `token: the signing key must be at least ${TOKEN_KEY_MIN_LENGTH} characters ` +
+        "(token_key_too_short) — a short key weakens every token it signs",
+    );
     return 2;
   }
 

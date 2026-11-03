@@ -41,7 +41,8 @@ function errorOf(result: ServerOptions | string): string {
 }
 
 const CREDENTIAL = "test-fixture-value-1";
-const SIGNING_KEY = "signing-key-fixture-1";
+/* At or above the hub's 32-character floor (G2/SEC-04): `parseServerArgs` refuses shorter keys. */
+const SIGNING_KEY = "signing-key-fixture-1-0123456789abcdef";
 
 interface Running {
   port: number;

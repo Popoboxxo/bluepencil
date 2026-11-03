@@ -120,6 +120,79 @@ function runHub(args: string[], env: NodeJS.ProcessEnv = process.env): Promise<O
   });
 }
 
+/**
+ * Runs the bundled hub until `pattern` appears on stderr, then stops it.
+ *
+ * A start-up warning is only observable on a process that is *running*: it proves nothing to parse
+ * argv and look at a returned array, because the claim is "the operator sees this line". The child
+ * is asked to exit with SIGTERM once the line arrives, and every wait is bounded so a regression that
+ * removes the warning fails as a timeout rather than hanging the suite.
+ */
+function runHubUntil(
+  args: string[],
+  pattern: RegExp,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<Outcome> {
+  if (hub === undefined) throw new Error("hub bundle not built");
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [hub as string, ...args], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env,
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    /* Exactly one SIGTERM. Two signals in one event-loop turn race the `once("SIGTERM")` handler
+     * inside `main()`: the second arrives after the handler was consumed and takes the default
+     * disposition, so the child dies by signal instead of exiting 0. The poll below and the stderr
+     * listener both watch for the pattern, and only one of them may stop the process. */
+    let stopping = false;
+    const stop = (): void => {
+      if (stopping || settled) return;
+      stopping = true;
+      child.kill("SIGTERM");
+    };
+    const finish = (code: number | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearInterval(poll);
+      resolve({ code, stdout, stderr });
+    };
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      clearInterval(poll);
+      child.kill("SIGKILL");
+      reject(
+        new Error(
+          `hub did not report ${String(pattern)} within 10 s: stderr=${stderr.slice(0, 400)}`,
+        ),
+      );
+    }, 10_000);
+    /* The server never exits on its own, so the pattern is the only completion signal. Polling the
+     * accumulated buffer (rather than the last chunk) also covers a warning split across writes. */
+    const poll = setInterval(() => {
+      if (pattern.test(stderr)) stop();
+    }, 25);
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+      if (pattern.test(stderr)) stop();
+    });
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      clearInterval(poll);
+      reject(error);
+    });
+    child.once("close", (code) => finish(code));
+  });
+}
+
 /** A peer whose `/config` is valid JSON but omits the boolean `federates` (a pre-0.10 hub). */
 async function preFederatedPeer(): Promise<string> {
   const server = createServer((_request, response) => {
@@ -345,5 +418,178 @@ describe("startupExitCode", () => {
     expect(startupExitCode(new FederationError("usage", "bad flag"))).toBe(1);
     expect(startupExitCode(new StoreFileError("corrupt store"))).toBe(2);
     expect(startupExitCode(new Error("unexpected"))).toBe(1);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * Start-up safety at the process boundary — what an operator actually sees (G1, G2)
+ * ---------------------------------------------------------------------------------------------- */
+
+/** How often a text contains a pattern; a warning that printed twice is a different bug. */
+function count(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+describe("bind warning reaches the operator (AC-D01, AC-D02)", () => {
+  it("prints the unauthenticated non-loopback warning once, even with --quiet (AC-D01)", async () => {
+    // G1 = B: a non-loopback bind without a credential is allowed — refusing it would break every
+    // existing LAN/lab setup — but it can never be silent. `--quiet` silences progress chatter, and
+    // this line is deliberately not progress chatter.
+    const outcome = await runHubUntil(
+      [
+        "--store",
+        path("warn-store.json"),
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "0",
+        "--journal",
+        "none",
+        "--quiet",
+      ],
+      /unauthenticated_non_loopback/,
+    );
+
+    expect(outcome.code).toBe(0);
+    expect(count(outcome.stderr, "unauthenticated_non_loopback")).toBe(1);
+    expect(outcome.stderr).toContain("not suppressed by --quiet");
+    // The proof that the warning is outside the gated block: the informational line is gone.
+    expect(outcome.stderr).not.toContain("note(s), environment");
+  });
+
+  it("says nothing for a loopback bind without a credential (AC-D02)", async () => {
+    const outcome = await runHubUntil(
+      ["--store", path("quiet-store.json"), "--host", "127.0.0.1", "--port", "0", "--journal", "none"],
+      /note\(s\), environment/,
+    );
+
+    expect(outcome.stderr).toContain("reachable on this machine only");
+    expect(outcome.stderr).not.toContain("unauthenticated_non_loopback");
+  });
+
+  it("says nothing for a network bind that has a credential (AC-D02)", async () => {
+    const outcome = await runHubUntil(
+      [
+        "--store",
+        path("gated-store.json"),
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "0",
+        "--journal",
+        "none",
+        "--auth-secret",
+        "server-start-shared-value-1",
+      ],
+      /note\(s\), environment/,
+    );
+
+    expect(outcome.stderr).toContain("reachable from the network");
+    expect(outcome.stderr).not.toContain("unauthenticated_non_loopback");
+    expect(outcome.stderr).not.toContain("server-start-shared-value-1");
+  });
+});
+
+describe("credential floors and CORS rules at the process boundary (AC-D07…AC-D09)", () => {
+  it("refuses a 15-character --auth-secret with exit 1 (AC-D07)", async () => {
+    const outcome = await runHub([
+      "--store",
+      path("floor-secret-store.json"),
+      "--auth-secret",
+      "s".repeat(15),
+      "--port",
+      "0",
+      "--quiet",
+    ]);
+
+    expect(outcome.code).toBe(1);
+    expect(outcome.stderr).toContain("secret_too_short");
+  });
+
+  it("refuses a 31-character --token-key with exit 1 (AC-D08)", async () => {
+    const outcome = await runHub([
+      "--store",
+      path("floor-key-store.json"),
+      "--token-key",
+      "k".repeat(31),
+      "--port",
+      "0",
+      "--quiet",
+    ]);
+
+    expect(outcome.code).toBe(1);
+    expect(outcome.stderr).toContain("token_key_too_short");
+  });
+
+  it("refuses a bare --cors with exit 1 (AC-D09)", async () => {
+    const outcome = await runHub([
+      "--store",
+      path("cors-missing-store.json"),
+      "--cors",
+      "--port",
+      "0",
+      "--quiet",
+    ]);
+
+    expect(outcome.code).toBe(1);
+    expect(outcome.stderr).toContain("cors_value_missing");
+  });
+
+  it("refuses --cors '*' without a credential with exit 1 (AC-D09)", async () => {
+    const outcome = await runHub([
+      "--store",
+      path("cors-wildcard-store.json"),
+      "--cors",
+      "*",
+      "--port",
+      "0",
+      "--quiet",
+    ]);
+
+    expect(outcome.code).toBe(1);
+    expect(outcome.stderr).toContain("cors_wildcard_unauthenticated");
+  });
+
+  it("starts with an explicit --cors origin and no credential, unchanged (AC-D09)", async () => {
+    const outcome = await runHubUntil(
+      [
+        "--store",
+        path("cors-origin-store.json"),
+        "--cors",
+        "https://app.example",
+        "--port",
+        "0",
+        "--journal",
+        "none",
+      ],
+      /note\(s\), environment/,
+    );
+
+    expect(outcome.stderr).not.toContain("cors_value_missing");
+    expect(outcome.stderr).not.toContain("cors_wildcard_unauthenticated");
+    expect(outcome.stderr).not.toContain("cors_wildcard");
+  });
+
+  it("starts with --cors '*' behind a credential and warns about the wildcard (AC-D09)", async () => {
+    const outcome = await runHubUntil(
+      [
+        "--store",
+        path("cors-gated-store.json"),
+        "--cors",
+        "*",
+        "--auth-secret",
+        "server-start-shared-value-1",
+        "--port",
+        "0",
+        "--journal",
+        "none",
+        "--quiet",
+      ],
+      /cors_wildcard/,
+    );
+
+    expect(outcome.code).toBe(0);
+    expect(count(outcome.stderr, "WARNING (cors_wildcard)")).toBe(1);
+    expect(outcome.stderr).toContain("every origin");
   });
 });

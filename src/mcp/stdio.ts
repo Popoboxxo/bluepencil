@@ -15,7 +15,6 @@
  */
 import type { McpBackend } from "./backend";
 import {
-  PARSE_ERROR,
   handleRpc,
   isNotificationId,
   parseRpcPayload,
@@ -98,8 +97,9 @@ export async function runStdioServer(options: StdioOptions): Promise<void> {
   async function handleLine(line: string): Promise<void> {
     const parsed = parseRpcPayload(line);
     if (!parsed.ok) {
-      // An id cannot be recovered from unparsable input; a parse-error response carries id null.
-      send({ jsonrpc: "2.0", id: null, error: { code: PARSE_ERROR, message: parsed.message } });
+      // An id cannot be recovered from an unparsable or non-object message; the error response
+      // carries id null. The code comes from the parser (-32700 vs -32600), so both doors agree.
+      send({ jsonrpc: "2.0", id: null, error: { code: parsed.code, message: parsed.message } });
       return;
     }
     await handleRpc(parsed.request, context, transport);

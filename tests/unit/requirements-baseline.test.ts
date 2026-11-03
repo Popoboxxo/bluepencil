@@ -332,3 +332,41 @@ describe("requirement baseline — the generated spec", () => {
     }
   });
 });
+
+/**
+ * AC-D11's documentation half (G1, SEC-10).
+ *
+ * The journal is public on purpose; the two fields FR-6.7 calls out (`location`, `author`) are the
+ * accepted risk. This block is deliberately separate from the FR-6.7 wording assertions above so
+ * contract D observes its own sentence without rewriting an F block (plan §2.2).
+ */
+describe("requirement baseline — FR-6.7's documented accepted risk (AC-D11)", () => {
+  it("[FR-6.7] keeps the non-suppressible bind warning and the journal location/author exposure as an accepted risk", () => {
+    const row = rowFor("FR-6.7");
+    const text = row.cells[1] ?? "";
+    const acceptance = row.cells[row.cells.length - 1] ?? "";
+
+    // G1 = B: the non-loopback bind stays allowed — visibility, not a refusal, is the mitigation.
+    expect(text).toContain("bind beyond loopback");
+    expect(text).toContain("`stderr`");
+    expect(text).toContain("cannot be suppressed");
+    expect(text).toContain("`--quiet`");
+    expect(text).toContain("readable by anyone who can reach the port");
+
+    // The journal is the deliberate exception: audit metadata beyond the note body, plus the two
+    // fields an unauthenticated reader learns. That is the risk, and it is named as accepted.
+    expect(text).toContain("deliberate exception");
+    expect(text).toContain("`noteId`");
+    expect(text).toContain("`actor`");
+    expect(text).toContain("`summary`");
+    expect(text).toContain("`location`");
+    expect(text).toContain("`author`");
+    expect(text).toContain("accepted risk");
+
+    // The acceptance criterion pins the observable contract, so an editorial rewrite cannot drop
+    // either field or turn the warning into something `--quiet` may hide.
+    expect(acceptance).toContain("`location`");
+    expect(acceptance).toContain("`author`");
+    expect(acceptance).toContain("including with `--quiet`");
+  });
+});

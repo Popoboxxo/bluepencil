@@ -15,8 +15,10 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import { mintToken, parseScope } from "../../server/mint";
 import { runTokenCommand } from "../../server/mint-cli";
 import { createTokenIssuer } from "../../server/tokens";
+import { TOKEN_KEY_MIN_LENGTH } from "../../server/credentials";
 
-const KEY = "signing-key-fixture-1";
+/** At or above the documented floor (G2/SEC-04); the shorter spellings are the negative cases. */
+const KEY = "signing-key-fixture-1-0123456789abcdef";
 
 afterEach(() => {
   delete process.env.BLUEPENCIL_TOKEN_KEY;
@@ -250,5 +252,66 @@ describe("the command", () => {
 
     expect(code).toBe(0);
     expect(stdout(captured)).toMatch(/--device/);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * The key floor (G2/SEC-04, AC-D08)
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("the signing-key floor", () => {
+  function captureErr(): string[] {
+    const err: string[] = [];
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      err.push(String(chunk));
+      return true;
+    });
+    return err;
+  }
+
+  it("refuses a 31-character key, so a short key never signs anything", async () => {
+    // The hub refuses this key at start (token_key_too_short); minting the token first would move
+    // the failure hours away from its cause. Same floor, both ends.
+    process.env.BLUEPENCIL_TOKEN_KEY = "k".repeat(TOKEN_KEY_MIN_LENGTH - 1);
+    const err = captureErr();
+
+    const code = await runTokenCommand(["--device", "d"]);
+
+    expect(code).toBe(2);
+    expect(err.join("")).toContain("token_key_too_short");
+    expect(err.join("")).toContain(String(TOKEN_KEY_MIN_LENGTH));
+  });
+
+  it("accepts a 32-character key", async () => {
+    process.env.BLUEPENCIL_TOKEN_KEY = "k".repeat(TOKEN_KEY_MIN_LENGTH);
+    captureErr();
+
+    expect(await runTokenCommand(["--device", "d"])).toBe(0);
+  });
+
+  it("applies the floor to --key exactly like the environment", async () => {
+    const err = captureErr();
+
+    const code = await runTokenCommand([
+      "--device",
+      "d",
+      "--key",
+      "k".repeat(TOKEN_KEY_MIN_LENGTH - 1),
+    ]);
+
+    expect(code).toBe(2);
+    expect(err.join("")).toContain("token_key_too_short");
+  });
+
+  it("keeps 'empty' and 'too short' as different diagnoses", async () => {
+    process.env.BLUEPENCIL_TOKEN_KEY = "";
+    const err = captureErr();
+
+    const code = await runTokenCommand(["--device", "d"]);
+
+    expect(code).toBe(2);
+    expect(err.join("")).toContain("empty");
+    expect(err.join("")).not.toContain("token_key_too_short");
   });
 });

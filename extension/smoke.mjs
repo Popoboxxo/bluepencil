@@ -881,10 +881,12 @@ function freePort() {
 /**
  * Start the BUILT reference hub as a child process and wait until its health endpoint answers.
  *
- * `--cors "*"` is not optional: the fixture page lives on a *different loopback port*, so every
- * request from the layer to the hub is cross-origin and the browser refuses to expose a response
- * without the header. `--journal none` keeps the smoke out of the work tree's git history, exactly
- * like the embed smoke. The caller must `stop()` it — the hub holds the store file open.
+ * CORS is not optional: the fixture page lives on a *different loopback port*, so every request
+ * from the layer to the hub is cross-origin and the browser refuses to expose a response without
+ * the header. It names the fixture origin explicitly instead of `"*"`: since ADR-0.12-S1 the
+ * wildcard needs a client credential, and this hub runs without one on purpose (the smoke proves
+ * the credential-free path). `--journal none` keeps the smoke out of the work tree's git history,
+ * exactly like the embed smoke. The caller must `stop()` it — the hub holds the store file open.
  */
 async function startHub(dir) {
   const port = await freePort();
@@ -895,7 +897,7 @@ async function startHub(dir) {
       "--store", join(dir, "notes.json"),
       "--host", "127.0.0.1",
       "--port", String(port),
-      "--cors", "*",
+      "--cors", `http://127.0.0.1:${HOST_PORT}`,
       "--journal", "none",
       "--quiet",
     ],

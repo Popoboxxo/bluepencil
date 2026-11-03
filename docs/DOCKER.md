@@ -186,6 +186,41 @@ Security caveats:
   address. Bind the admin surface to a dedicated origin/loopback, or set a separate trust boundary
   accordingly.
 
+## Binding beyond loopback without a credential (G1)
+
+The image ships a credential on purpose: `docker/entrypoint.sh` generates a shared secret on the
+first start (or uses the one you hand in) and always persists it, because binding `0.0.0.0` inside a
+container is only safe when the port is gated. That is the supported shape.
+
+A hub you start **yourself** with a non-loopback `--host` (`0.0.0.0`, a LAN address) and **no**
+`--auth-secret`/`--token-key` is nevertheless still allowed — existing LAN and lab setups keep
+working — but it is never silent. Every start writes this line to `stderr`:
+
+```text
+bluepencil server: WARNING (unauthenticated_non_loopback): this hub is bound to 0.0.0.0 and accepts
+requests without a credential, so notes, the journal location and the author identity are readable
+by anyone who can reach the port. Set --auth-secret or --token-key. This warning is not suppressed
+by --quiet.
+```
+
+`--quiet` does **not** suppress it: a warning an operator can switch off is not a warning. Accepting
+this bind accepts the exposure — for anyone who can reach the port:
+
+- **Every note is readable and writeable.** Without a credential the notes API has no gate at all;
+  there is no read-only mode unless you also pass `--read-only`.
+- **`GET {base}/journal` is public on purpose.** It names the audited `noteId`, the `actor` and a
+  `summary`, and it reports the journal `location` — and, on the `git` backend, the commit `author`
+  identity. FR-6.7 records that as an **accepted risk**, not an oversight; do not try to "close" it
+  by gating the route, because a history a reader cannot fetch is not a trail.
+- **The image has no TLS.** On any path that is not a trusted local network, terminate TLS in front
+  of the hub (Traefik, Caddy, nginx) and keep the hub itself on loopback behind that proxy: the
+  shared secret and the admin secret both travel in headers on every request, and plain HTTP on a
+  shared segment is a note and credential leak.
+
+The safe default stays what the image does: publish only the port the proxy needs, hand in a stable
+`BLUEPENCIL_AUTH_SECRET` (or let the entrypoint generate one), and keep a credential-free hub on
+`127.0.0.1` where only this machine can reach it.
+
 ## Hub of Hubs
 
 An aggregating hub reads several leaf hubs over one `/mcp` door; the leaves stay independent stores

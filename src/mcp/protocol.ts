@@ -27,6 +27,8 @@ export const PROTOCOL_VERSION = "2024-11-05";
 
 /** Unparsable input: the id cannot be recovered, so its response carries `id: null`. */
 export const PARSE_ERROR = -32700;
+/** Parsed JSON that is not a JSON-RPC request object (`null`, an array, a bare value). */
+export const INVALID_REQUEST = -32600;
 export const METHOD_NOT_FOUND = -32601;
 export const INVALID_PARAMS = -32602;
 
@@ -60,13 +62,27 @@ export function isNotificationId(id: unknown): boolean {
   return id === undefined || id === null;
 }
 
-/** Parses one message; a parse failure is reported as such rather than guessed at. */
-export function parseRpcPayload(text: string): { ok: true; request: RpcRequest } | { ok: false; message: string } {
+/**
+ * Parses one message; a parse failure is reported as such rather than guessed at.
+ *
+ * JSON that parses but is not a request object (`null`, an array, `"x"`, `42`) is *not* a parse
+ * error: the transport read the message, it just is not a JSON-RPC request. It carries
+ * `-32600` and the caller must answer that instead of touching the value — a `null` body used to
+ * reach `needsWrite` as `null.method` and end as a 500 with a raw `TypeError` (SEC-09).
+ */
+export function parseRpcPayload(
+  text: string,
+): { ok: true; request: RpcRequest } | { ok: false; code: number; message: string } {
+  let value: unknown;
   try {
-    return { ok: true, request: JSON.parse(text) as RpcRequest };
+    value = JSON.parse(text);
   } catch {
-    return { ok: false, message: "parse error" };
+    return { ok: false, code: PARSE_ERROR, message: "parse error" };
   }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, code: INVALID_REQUEST, message: "invalid request: the payload must be a JSON object" };
+  }
+  return { ok: true, request: value as RpcRequest };
 }
 
 /**

@@ -9,7 +9,8 @@
  *
  * This module is the *pure* half of the hub: `handleRequest(request, context)` maps one HTTP
  * request onto `{ status, headers, body }` and itself takes no Node API — no `node:http`, no
- * socket, no timer. It does delegate the optional admin surface to `server/admin.ts`, and that
+ * socket, no timer. The one deliberate exception is the stderr line for an unexpected failure
+ * (SEC-09): the detail belongs to the operator's log, never to the response. It does delegate the optional admin surface to `server/admin.ts`, and that
  * module reads the device registry and the revocation file through `node:fs`. The `node:http`
  * glue, the static file serving, the CLI parsing and the file store live in `server/hub.ts`;
  * persistence arrives as `context.persist`, which is called exactly once per accepted mutation
@@ -79,9 +80,11 @@ import { corsHeaders, preflightResponse } from "./cors";
 import { presenceOf, type PresenceTracker } from "./presence";
 import { credentialMode } from "./credentials";
 // The admin surface answers before the credential gate, so it must not import the gate — the
-// dependency runs one way: this router delegates to `handleAdmin`, whose only dependency on this
-// module is its types (erased at runtime, so the cycle never materialises in the bundle).
-import { handleAdmin } from "./admin";
+// dependency runs one way: this router delegates to `adminGate`/`handleAdmin`, whose only
+// dependency on this module is its types (erased at runtime, so the cycle never materialises in the
+// bundle). `adminGate` is the header-only half: it decides whether this request is an admin request
+// and whether it may proceed, before anything reads a body (SEC-08).
+import { adminGate, handleAdmin } from "./admin";
 
 // Re-exported so the existing imports from `./handler` keep working; the implementation lives in
 // `server/cors.ts`, which imports nothing and can therefore be used from `server/admin.ts` too.
@@ -118,6 +121,10 @@ export const ERROR_CODES = [
   "confirm_required",
   "not_found",
   "method_not_allowed",
+  // A request that reached a loopback-bound hub under a name that is not loopback (SEC-02). Its own
+  // code rather than a plain 403: "you asked the wrong host" is neither "this hub refuses writes"
+  // nor "your credential is insufficient", and a client has to be able to tell them apart.
+  "host_not_allowed",
   "read_only",
   // Authentication is refused before routing, so it is answered with a code of its own rather than
   // being folded into a 403 that also means "this hub does not accept writes" (#36).
@@ -133,6 +140,9 @@ export const ERROR_CODES = [
   "insufficient_scope",
   "unsupported_media_type",
   "payload_too_large",
+  // No longer produced by this handler (SEC-09 folds every 500 into `internal_error` so that a
+  // response cannot fingerprint the medium). Kept in the union: it is part of the exported code
+  // vocabulary a host may still answer with, and removing it would be a type-level breaking change.
   "store_write_failed",
   "internal_error",
   // The optional admin surface's own refusals (server/admin.ts): a registry that cannot be read, a
@@ -183,22 +193,56 @@ export interface NoteStoreState {
   notes: Note[];
 }
 
+/** The credential kinds with a budget of their own (SEC-03/SEC-07, contract D §3.4). */
+export type ThrottleKind = "admin" | "secret" | "token";
+
+/** One brute-force budget: how many failed checks a peer may make inside one window. */
+export interface ThrottleBudget {
+  kind: ThrottleKind;
+  /** Failed checks per peer per window before the answer is `429`. */
+  maxFailures: number;
+  /** Length of the window in milliseconds; also the `Retry-After` the 429 names. */
+  windowMs: number;
+}
+
 /**
- * The admin surface's brute-force brake, injected so the handler stays free of Node APIs.
+ * The one budget table for every secret comparison the hub makes (G2): the admin secret on
+ * `/admin/*` **and** on `/notes*`, the client shared secret, and signed tokens. Three kinds, three
+ * separate counters per peer — exhausting one never locks another (SEC-07), because a signed token
+ * and a shared secret are different credentials and an attacker who burned one budget has not
+ * thereby proven anything about the other.
+ *
+ * They are equal today on purpose: five minutes is the window the admin surface has documented
+ * since FR-6.16, and there is no measurement that says the client secret deserves a different one.
+ * The table is the seam that makes per-kind tuning a value change rather than a code change.
+ */
+export const THROTTLE_BUDGETS: Record<ThrottleKind, ThrottleBudget> = {
+  admin: { kind: "admin", maxFailures: 10, windowMs: 5 * 60 * 1000 },
+  secret: { kind: "secret", maxFailures: 10, windowMs: 5 * 60 * 1000 },
+  token: { kind: "token", maxFailures: 10, windowMs: 5 * 60 * 1000 },
+};
+
+/**
+ * The brute-force brake for *every* secret comparison, injected so the handler stays free of Node
+ * APIs (SEC-03, SEC-07).
  *
  * The throttle is injected and the pure handler has no clock of its own; the glue owns the clock
- * and the storage, and the admin routes only ask "may this peer try again?" and report what
- * happened. Keeping it a narrow interface also means a host that runs the handler in its own
- * backend can plug in its own policy (or none) without this module knowing. The registry I/O the
- * admin surface needs lives in `server/admin.ts`, not here.
+ * and the storage, and the gates only ask "may this peer try again?" and report what happened. Each
+ * call names the credential kind; a caller that omits it means the admin surface's own budget
+ * (`server/admin.ts`), which keeps the interface backward compatible with a host that wired one
+ * policy before the budgets existed.
+ *
+ * Keeping it a narrow interface also means a host that runs the handler in its own backend can plug
+ * in its own policy (or none) without this module knowing. The registry I/O the admin surface needs
+ * lives in `server/admin.ts`, not here.
  */
 export interface AdminThrottle {
-  /** True when this peer may attempt a secret check now. */
-  allow(remote: string | undefined): boolean;
-  /** Records a failed secret check for this peer. */
-  failure(remote: string | undefined): void;
-  /** Clears this peer's failures after a successful check. */
-  success(remote: string | undefined): void;
+  /** True when this peer may attempt a check of this credential kind now. */
+  allow(remote: string | undefined, kind?: ThrottleKind): boolean;
+  /** Records a failed check of this credential kind for this peer. */
+  failure(remote: string | undefined, kind?: ThrottleKind): void;
+  /** Clears this peer's failures of this credential kind after a successful check. */
+  success(remote: string | undefined, kind?: ThrottleKind): void;
 }
 
 /** Everything the pure handler needs: the set, the deployment settings and the persist hook. */
@@ -320,12 +364,25 @@ export interface HandlerContext {
    * that a status display can say "this machine only" or "reachable from the network" and be right.
    */
   bind?: { host: string; port: number };
+  /**
+   * Extra names a loopback-bound hub answers to (SEC-02), besides `localhost`, `127.0.0.0/8` and
+   * `[::1]`.
+   *
+   * A hub on this machine is often reached through a name that is not spelled "loopback" — a
+   * hosts-file entry, a lab DNS name, the machine's own name. Those names cannot be guessed from the
+   * bind address, so they are configured here; the Host gate accepts exactly this list and nothing
+   * else. A name may be written with or without a port; the port is ignored on both sides.
+   *
+   * The CLI contract (0.12.0) names no flag for this yet, so a hub started by `server/index.ts`
+   * accepts the loopback spellings only — the field exists for a host that embeds the handler.
+   */
+  hostAliases?: readonly string[];
   /** Injectable clock, so tests are deterministic (NFR-17). */
   now?: () => string;
   /**
    * Persists the current store state — called once per accepted mutation, *after* the state was
-   * changed. A throwing persist rolls the mutation back and answers 500 (`store_write_failed`),
-   * so the in-memory set never claims more than the medium holds.
+   * changed. A throwing persist rolls the mutation back and answers 500 (`internal_error` with a
+   * fixed message; SEC-09), so the in-memory set never claims more than the medium holds.
    *
    * The optional `event` says *what* the mutation was, so a journal (FR-18) can record an audit
    * trail without guessing from a state diff.
@@ -598,6 +655,89 @@ export function isLoopbackAddress(host: string): boolean {
 }
 
 /**
+ * The hostname part of a `Host` header, lower-cased: `localhost:8787` → `localhost`,
+ * `[::1]:8787` → `[::1]`.
+ *
+ * The port never decides whether a name is loopback, so it is dropped. The brackets around an IPv6
+ * literal have to survive: splitting `[::1]` at its first colon would leave `[`, which is not a name
+ * at all.
+ */
+function hostHeaderName(hostHeader: string): string {
+  const value = hostHeader.trim().toLowerCase();
+  if (value.startsWith("[")) {
+    const close = value.indexOf("]");
+    return close === -1 ? value : value.slice(0, close + 1);
+  }
+  const colon = value.indexOf(":");
+  return colon === -1 ? value : value.slice(0, colon);
+}
+
+/**
+ * True when a `Host` header names this machine (SEC-02).
+ *
+ * The accepted vocabulary is deliberately small: `localhost` (with or without the trailing root
+ * dot), any `127.0.0.0/8` literal — including the `::ffff:127.x.y.z` form a v4 socket reports — and
+ * `[::1]`. Everything else has to be a configured alias. That narrowness is the point: a page at
+ * `evil.example` whose DNS answer points at 127.0.0.1 still arrives with `Host: evil.example`, and
+ * this check reads the name, not the address the packet happened to use.
+ *
+ * A missing or empty `Host` is accepted. HTTP/1.0 and a raw local client send none, and a browser —
+ * the only caller that can be rebound — always does; refusing it would break local tooling without
+ * closing anything.
+ */
+export function isLoopbackHostHeader(
+  hostHeader: string | undefined,
+  aliases: readonly string[] = [],
+): boolean {
+  if (hostHeader === undefined) return true;
+  const name = hostHeaderName(hostHeader).replace(/\.$/, "");
+  if (name === "") return true;
+  if (name === "localhost") return true;
+  // The `/^127\./` of `isLoopbackAddress` is too loose here: `127.0.0.1.evil.example` starts with
+  // it and is a name somebody else owns. A literal has exactly four dotted groups.
+  if (/^127(?:\.\d{1,3}){3}$/.test(name)) return true;
+  const bare = name.startsWith("[") && name.endsWith("]") ? name.slice(1, -1) : name;
+  if (bare === "::1") return true;
+  if (/^::ffff:127(?:\.\d{1,3}){3}$/.test(bare)) return true;
+  return aliases.some((alias) => hostHeaderName(alias).replace(/\.$/, "") === name);
+}
+
+/**
+ * The Host gate (SEC-02, contract D §3.4): a hub bound to loopback answers a request that arrived
+ * under a foreign name with `403 host_not_allowed`.
+ *
+ * Only a loopback bind is checked. A hub on `0.0.0.0` is reached by whatever name the network gave
+ * it, so there is no small allowlist that would be correct — G1 accepts that bind and warns instead
+ * of refusing traffic. The binding is read from the socket (`context.bind`, filled after
+ * `listen()`), not from `--host`: `--host localhost` may bind `::1`, and the question is what the
+ * process is actually reachable as. A context without a binding (a host embedding the handler, a
+ * pure unit call) is not gated, because there is nothing to compare against.
+ *
+ * Returns the refusal to answer with, or `null` when the request may proceed. Every door asks this
+ * first — the notes router, the MCP route and the glue's journal/static path — so no route can
+ * forget it, and it runs before the credential check so the refusal cannot be used to learn which
+ * paths or which credential a hub has.
+ */
+export function hostRefusal(
+  request: Pick<ServerRequest, "headers">,
+  context: HandlerContext,
+): ServerResponse | null {
+  const bind = context.bind;
+  if (bind === undefined || !isLoopbackAddress(bind.host)) return null;
+  const host = headerValue(request.headers, "host");
+  if (!isLoopbackHostHeader(host, context.hostAliases ?? [])) {
+    return errorResponse(
+      403,
+      "host_not_allowed",
+      `Host ${JSON.stringify(host)} is not a loopback name — this hub is bound to ${bind.host} and ` +
+        "answers only localhost, 127.0.0.0/8, [::1] and configured aliases",
+      context,
+    );
+  }
+  return null;
+}
+
+/**
  * `GET {base}/config` (FR-6.10): everything a client needs in order to connect *before* it has a
  * credential — the name this hub was given, its app identity and whether it federates, its version
  * and base, **which** credential it asks for (`none` | `secret` | `token`, never the value), and the
@@ -669,22 +809,39 @@ function errorResponse(
 
 /**
  * The documented error body as text: `{ "error": { "code", "message" } }`. Exported so the
- * `node:http` glue can answer with exactly the same shape for its own failures (413, static 404).
+ * `node:http` glue can answer with exactly the same shape for its own failures (a static 404, a
+ * read error).
  */
 export function errorBody(code: ServerErrorCode, message: string): string {
   return JSON.stringify({ error: { code, message: oneLine(message) } });
 }
 
-/** Maps a thrown refusal/validation failure onto the documented answer. */
-function toErrorResponse(error: unknown, context: HandlerContext): ServerResponse {
+/**
+ * Maps any thrown value onto the public error vocabulary (SEC-09).
+ *
+ * A refusal the router raised is safe to answer verbatim — its text is a documented message. An
+ * *unexpected* failure is not: Node fs errors carry absolute store paths, and a stack or a SQL-ish
+ * message can name internals. Those go to stderr for the operator, and the caller receives the
+ * fixed `internal_error` / `internal error` pair. The detail is still there, just not on the wire.
+ */
+export function publicError(error: unknown): { code: ServerErrorCode; message: string } {
   if (error instanceof HttpError) {
-    return errorResponse(error.status, error.code, error.message, context);
+    return { code: error.code, message: error.message };
   }
   if (error instanceof BluepencilValidationError) {
     // The issue list is the payload a caller needs: it is joined into the one-line message.
-    return errorResponse(400, "invalid_payload", error.issues.join("; ") || "invalid payload", context);
+    return { code: "invalid_payload", message: error.issues.join("; ") || "invalid payload" };
   }
-  return errorResponse(500, "internal_error", errorText(error), context);
+  process.stderr.write(`bluepencil server: internal_error: ${oneLine(errorText(error))}\n`);
+  return { code: "internal_error", message: "internal error" };
+}
+
+/** Maps a thrown refusal/validation failure onto the documented answer. */
+function toErrorResponse(error: unknown, context: HandlerContext): ServerResponse {
+  const { code, message } = publicError(error);
+  // An unexpected failure is a 500; the two recognised refusals keep the status they always had.
+  const status = error instanceof HttpError ? error.status : code === "internal_error" ? 500 : 400;
+  return errorResponse(status, code, message, context);
 }
 
 /**
@@ -710,12 +867,10 @@ function applyMutation(
       context.persist(context.store, typeof event === "function" ? event() : event);
     } catch (error) {
       context.store.notes = previous;
-      return errorResponse(
-        500,
-        "store_write_failed",
-        `the note set could not be written: ${errorText(error)}`,
-        context,
-      );
+      // The medium failed. The caller learns only that this was an internal error; the path and the
+      // fs wording go to stderr (SEC-09), because a response body is cached, proxied and logged.
+      const failure = publicError(error);
+      return errorResponse(500, failure.code, failure.message, context);
     }
   }
   return response;
@@ -1219,6 +1374,30 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
 }
 
 /**
+ * The `429` a throttle answers once a peer has burned one credential kind's budget (SEC-03/SEC-07).
+ *
+ * It names no secret, no kind and no attempt count — the only useful fact is "wait". `Retry-After`
+ * is the window the budget names, so a client can act on it instead of guessing.
+ */
+function throttledResponse(kind: ThrottleKind, context: HandlerContext): ServerResponse {
+  const budget = THROTTLE_BUDGETS[kind];
+  const seconds = Math.ceil(budget.windowMs / 1000);
+  return {
+    status: 429,
+    headers: {
+      "content-type": JSON_CONTENT_TYPE,
+      "cache-control": "no-store",
+      "retry-after": String(seconds),
+      ...corsHeaders(context.cors),
+    },
+    body: errorBody(
+      "too_many_attempts",
+      `too many failed credential checks from this address — wait ${seconds}s before trying again`,
+    ),
+  };
+}
+
+/**
  * The authentication gate, as one function so that both doors stand behind the same one (FR-16.9):
  * the notes API and the MCP door differ in framing, never in who is allowed in.
  *
@@ -1231,6 +1410,14 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
  * operator already holds, so note handling stays implemented exactly once. It is deliberately not a
  * client credential on the MCP door (which never opts in) and it does not configure authentication:
  * a hub with no client credential still has no gate, and the admin surface does not turn one on.
+ *
+ * **Every** comparison runs through the injected throttle (SEC-03, SEC-07, G2): the admin secret on
+ * `/notes*` uses the same `admin` budget as `/admin/*`, the shared secret its own `secret` budget,
+ * and a presented token its own `token` budget. The budgets are separate per peer, so exhausting
+ * one never locks another — a valid token still gets in after the secret budget is burned, which
+ * is the point of the split. A comparison is made before its budget is consulted so that a match
+ * of another kind is not blocked by an unrelated exhausted budget; an exhausted budget never
+ * grants. Nothing here logs a presented value.
  *
  * An accepted *client* credential (a verified token, or the shared secret) also stamps presence
  * (`server/presence.ts`): the hub has no client registry, so "when was this credential kind last
@@ -1248,14 +1435,19 @@ export function authorize(
   const method = (request.method ?? "GET").toUpperCase();
   const verifier = context.verifyToken;
   const secret = context.authSecret;
+  const adminSecret = context.adminSecret;
   const presentedToken = bearerToken(request);
+  const secretAttempt = typeof secret === "string" && secret.length > 0;
   // The gate exists only when a credential was configured. An admin secret alone is not one: it
   // guards the admin routes, not the notes a client reads.
-  if (verifier === undefined && !(typeof secret === "string" && secret.length > 0)) return null;
+  if (verifier === undefined && !secretAttempt) return null;
 
   // One tracker per hub context (or the one a test injected). Only successful checks below stamp it,
   // so a refused request cannot make a credential kind look alive.
   const presence = presenceOf(context);
+  const throttle = context.adminThrottle;
+  const allowed = (kind: ThrottleKind): boolean =>
+    throttle === undefined || throttle.allow(request.remote, kind);
 
   const required =
     scope ?? context.requiredScope?.({ method }) ?? (method === "GET" ? "read" : "write");
@@ -1263,8 +1455,13 @@ export function authorize(
   // A signed token is verified first and on its own: an invalid token is refused rather than
   // retried as a secret, so a device cannot downgrade from "my token was revoked" to "try a secret".
   if (presentedToken !== undefined && verifier !== undefined) {
+    if (!allowed("token")) return throttledResponse("token", context);
     const verdict = verifier(presentedToken, required, context.revokedTokens ?? EMPTY_REVOKED);
     if (!verdict.ok) {
+      // Only a credential that failed authentication spends the budget. `insufficient_scope` means
+      // the token *is* valid and merely lacks a permission — counting it would let a legitimate
+      // read-only device throttle itself by calling a write tool twice.
+      if (verdict.reason !== "insufficient-scope") throttle?.failure(request.remote, "token");
       const refusal = tokenRefusal(verdict.reason);
       return errorResponse(
         refusal.status,
@@ -1273,6 +1470,7 @@ export function authorize(
         context,
       );
     }
+    throttle?.success(request.remote, "token");
     // The verified device is the identity the journal records; the header is not.
     if (verdict.device !== undefined) request.authDevice = verdict.device;
     // A verified token is a live client at this moment — the only reader signal this hub has.
@@ -1282,40 +1480,57 @@ export function authorize(
   }
 
   const presented = headerValue(request.headers, AUTH_HEADER);
-  if (
-    options?.allowAdminSecret === true &&
-    context.adminSecret !== undefined &&
-    presented !== undefined &&
-    secretsMatch(context.adminSecret, presented)
-  ) {
-    return null;
+  const adminAttempt =
+    options?.allowAdminSecret === true && typeof adminSecret === "string" && adminSecret.length > 0;
+
+  if (presented === undefined) {
+    // Nothing to compare: a missing header is not a guess and does not spend a budget. The message
+    // names the credential this hub actually asks for.
+    return secretAttempt
+      ? errorResponse(
+          401,
+          "unauthorized",
+          `missing ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`,
+          context,
+        )
+      : errorResponse(
+          401,
+          "unauthorized",
+          `missing ${BEARER_HEADER}: Bearer <token> — this hub requires a signed token (--token-key)`,
+          context,
+        );
   }
 
-  if (typeof secret === "string" && secret.length > 0) {
-    if (presented === undefined || !secretsMatch(secret, presented)) {
-      return errorResponse(
-        401,
-        "unauthorized",
-        presented === undefined
-          ? `missing ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`
-          : `invalid ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`,
-        context,
-      );
-    }
+  // Both candidate comparisons happen first; the budget is consulted only for the kind that
+  // matched, so an exhausted admin budget cannot refuse a correct client secret. `secretsMatch` is
+  // the constant-time comparison; its result is not logged either way.
+  if (adminAttempt && secretsMatch(adminSecret as string, presented)) {
+    if (!allowed("admin")) return throttledResponse("admin", context);
+    throttle?.success(request.remote, "admin");
+    return null;
+  }
+  if (secretAttempt && secretsMatch(secret as string, presented)) {
+    if (!allowed("secret")) return throttledResponse("secret", context);
+    throttle?.success(request.remote, "secret");
     // The shared secret got in. Stamped per kind, never per client: every browser holding this one
     // string is indistinguishable here, and `presence.ts` says so on the page.
     presence.stamp("secret");
     return null;
   }
 
-  // A key is configured and no token arrived — either none was sent at all or one came in a
-  // different scheme (`Authorization: Basic …` is somebody else's credential, and treating its
-  // value as a token would be leniency in the one place leniency is a bypass). Answering 401 is
-  // the whole point of having configured a key.
+  // Nothing matched. An exhausted budget answers 429 instead of another 401, so a peer learns to
+  // stop instead of continuing to spend comparisons; otherwise the attempt is counted per kind.
+  if (secretAttempt && !allowed("secret")) return throttledResponse("secret", context);
+  if (adminAttempt && !allowed("admin")) return throttledResponse("admin", context);
+  if (secretAttempt) throttle?.failure(request.remote, "secret");
+  if (adminAttempt) throttle?.failure(request.remote, "admin");
+
   return errorResponse(
     401,
     "unauthorized",
-    `missing ${BEARER_HEADER}: Bearer <token> — this hub requires a signed token (--token-key)`,
+    secretAttempt
+      ? `invalid ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`
+      : `missing ${BEARER_HEADER}: Bearer <token> — this hub requires a signed token (--token-key)`,
     context,
   );
 }
@@ -1338,27 +1553,75 @@ export function handleRequest(request: ServerRequest, context: HandlerContext): 
   }
 }
 
-/** The router itself; every refusal is a thrown `HttpError`, mapped by `handleRequest`. */
-function routeRequest(request: ServerRequest, context: HandlerContext): ServerResponse {
+/** What the router still needs after the gate let a request through. */
+export interface GateRoute {
+  pathname: string;
+  query: URLSearchParams;
+  method: string;
+  segments: string[];
+  allow: string[];
+  /** True when the admin surface owns this route; the router delegates to `handleAdmin`. */
+  admin: boolean;
+}
+
+/** The gate's answer: a response to write now, or the route the body-dependent router should take. */
+export type GateResult =
+  | { kind: "response"; response: ServerResponse }
+  | { kind: "route"; route: GateRoute };
+
+/**
+ * The header-only half of the router (SEC-08, AC-D04): every decision that needs no request body
+ * and no store load.
+ *
+ * This exists because the `node:http` glue used to read up to 8 MiB and re-parse the whole store
+ * file before the credential check ran, so every unauthenticated request — including ones answered
+ * 401 or 404 — cost a full store read on the event loop. The glue now asks this function first and
+ * reads a body only when it returns `{ kind: "route" }`. The router calls it too, so the order is
+ * one implementation rather than a second copy that can drift:
+ *
+ *   Host check (SEC-02, always first) → admin gate (header-only) → unknown path 404 → CORS
+ *   preflight → `/config` and `/health` → credential check → route.
+ *
+ * Everything returned as a response is body-independent by construction. The credential check is
+ * called here and *only* here for the notes API, which is what makes "auth before body/store" a
+ * property of the code rather than of the glue's ordering.
+ */
+export function gateRequest(request: ServerRequest, context: HandlerContext): GateResult {
+  // SEC-02: the Host gate comes first — before the admin surface, before the CORS preflight, before
+  // the two public probes and before any credential check. A request that did not arrive under a
+  // loopback name is refused identically whatever route it names, so the answer cannot be used to
+  // learn which paths or which credential this hub has. The MCP door and the glue's journal/static
+  // path ask the same helper for the same reason.
+  const refusedHost = hostRefusal(request, context);
+  if (refusedHost !== null) {
+    return { kind: "response", response: refusedHost };
+  }
   const base = normalizeBase(context.base);
   const { pathname, query } = parseRequestUrl(request.url);
   const method = (request.method ?? "GET").toUpperCase();
   const rest = pathWithin(pathname, base);
-  // The admin surface decides its own existence — `handleAdmin` answers null unless `--admin-secret`
-  // is configured — so it is asked before this router's own table: a route that can be switched off
-  // must not be listed in a table that cannot, or it would announce itself on a hub that has no
-  // admin surface at all.
+  // The admin surface decides its own existence — `adminGate` reports `none` unless
+  // `--admin-secret` is configured — so it is asked before this router's own table: a route that
+  // can be switched off must not be listed in a table that cannot, or it would announce itself on a
+  // hub that has no admin surface at all. Its gate is header-only; the body-dependent dispatch
+  // (`handleAdmin`) runs after the glue has read the body.
   if (rest !== null) {
-    const adminResponse = handleAdmin(request, context);
-    if (adminResponse !== null) {
-      return adminResponse;
+    const admin = adminGate(request, context);
+    if (admin.kind === "response") {
+      return { kind: "response", response: admin.response };
+    }
+    if (admin.kind === "route") {
+      return { kind: "route", route: { pathname, query, method, segments: [], allow: [], admin: true } };
     }
   }
   const segments = rest === null ? [] : splitSegments(rest);
   const allow = rest === null ? null : allowedMethods(segments);
 
   if (allow === null) {
-    return errorResponse(404, "not_found", `unknown endpoint ${pathname} — the API lives under ${base || "/"}`, context);
+    return {
+      kind: "response",
+      response: errorResponse(404, "not_found", `unknown endpoint ${pathname} — the API lives under ${base || "/"}`, context),
+    };
   }
   // The CORS preflight (#98, #99, #102) is answered before every credential check and before the
   // method table below — and only for a path the table already knows, so an arbitrary path keeps
@@ -1368,7 +1631,7 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   // route keeps its ordinary 405/401 answer.
   const preflight = preflightResponse(method, context, allow);
   if (preflight !== null) {
-    return preflight;
+    return { kind: "response", response: preflight };
   }
   // FR-6.10: the hub describes itself to a caller that has no credential yet — a client has to be
   // able to ask *which* credential to bring, and a status display has to be able to ask what this
@@ -1384,9 +1647,9 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
         context,
       );
       response.headers.allow = "GET";
-      return response;
+      return { kind: "response", response };
     }
-    return configResponse(context);
+    return { kind: "response", response: configResponse(context) };
   }
   // The liveness probe is public for the same reason (#109), and for the container runtime's: a
   // healthcheck that has to carry a credential turns "is this hub alive" into a 401 on every
@@ -1402,9 +1665,9 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
         context,
       );
       response.headers.allow = "GET, HEAD";
-      return response;
+      return { kind: "response", response };
     }
-    return health(context);
+    return { kind: "response", response: health(context) };
   }
   // Authentication comes before the method check and before any route, and that placement is the
   // security property rather than a style choice: an unauthenticated caller must not be able to
@@ -1437,7 +1700,26 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
     allowAdminSecret: segments[0] === "notes",
   });
   if (refusal !== null) {
-    return refusal;
+    return { kind: "response", response: refusal };
+  }
+  return { kind: "route", route: { pathname, query, method, segments, allow, admin: false } };
+}
+
+/** The router itself; every refusal is a thrown `HttpError`, mapped by `handleRequest`. */
+function routeRequest(request: ServerRequest, context: HandlerContext): ServerResponse {
+  const gate = gateRequest(request, context);
+  if (gate.kind === "response") {
+    return gate.response;
+  }
+  const { pathname, query, method, segments, allow, admin } = gate.route;
+  if (admin) {
+    // The header-only admin gate already ran inside `gateRequest`; this is the body-dependent half.
+    // `null` here would mean the surface vanished between the two calls — answer like the router.
+    const adminResponse = handleAdmin(request, context);
+    if (adminResponse !== null) {
+      return adminResponse;
+    }
+    return errorResponse(404, "not_found", `unknown endpoint ${pathname}`, context);
   }
   if (!allow.includes(method)) {
     const response = errorResponse(
