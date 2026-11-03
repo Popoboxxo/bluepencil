@@ -35,7 +35,7 @@ No polling. Data is fetched on demand (open/refresh/write)
 
 *Acceptance criteria:* Idle page produces no repeated requests over 10 minutes
 
-## NFR-3 Core bundle small enough to embed casually (target ≤ 33 kB min+gzip, excluding adapters)
+## NFR-3 Core bundle small enough to embed casually — the budgets are a snapshot, not a target: C…
 
 ```attr
 prio: P1
@@ -47,9 +47,9 @@ version: 1
 requires-trace-from: []
 ```
 
-Core bundle small enough to embed casually (target ≤ 33 kB min+gzip, excluding adapters)
+Core bundle small enough to embed casually — the budgets are a snapshot, not a target: Core = measured + 10 %, IIFE = measured + 1.5 kB, Element = measured + 1.5 kB; the attach loader is reported separately. Measured at the 0.12.0 release cut on 2026-11-03 (after the voice removal), minified+gzip: Core 40.7 kB → budget 44.7 kB, IIFE 44.4 kB → 45.9 kB, Element 47.6 kB → 49.1 kB, attach 4.1 kB within its own 8 kB gate. Numbers are never raised preventively, and no historical budget figure is carried forward.
 
-*Acceptance criteria:* Build report shows size; CI fails on regression beyond budget. Raised from 30 kB to 31 kB for the host-facing capability set (FR-1.11/1.12, FR-12.9/12.10/12.13), measured at 30.5 kB. Raised again to 33 kB for the transient container reveal feature (issue #20) and app/build-ref/exportedBy (issue #21), measured at 31.9 kB — a decision, recorded here so it cannot look like drift. Raised to 100 kB core / 45 kB custom element for the presentation mode (FR-20), measured at 35.2 kB core and 40.9 kB element gzip (IIFE 38.5 kB of 40 kB); the presenter surface could not fit under the old ceilings, so the numbers moved openly. Raised the IIFE budget to 45 kB for voice dictation (FR-21), measured at 37.7 kB core / 41.3 kB IIFE / 44.0 kB element gzip — the pre-change IIFE sat at 39.9 kB of 40 kB (0.1 kB headroom), so any feature overflowed it. Raised the custom-element budget from 45 kB to 48 kB for the capture presets (FR-1.13/1.14), feature priority (FR-3.7), mode visibility (FR-4.10) and the version line (FR-4.9), measured at 46.9 kB gzip (IIFE 44.1 kB of 45 kB, core 40.5 kB of 100 kB) — the new surface carried the element past the old ceiling, so the number moved openly as a recorded decision.
+*Acceptance criteria:* `npm run size` reports Core, IIFE, Element and the attach loader; CI fails on a regression beyond the budget; at the release cut the headline names the measured value and the measurement date and `scripts/size-guard.mjs` carries the same measurement; a temporary overshoot fails the guard
 
 ## NFR-4 No runtime dependencies (peer deps only for framework wrappers)
 

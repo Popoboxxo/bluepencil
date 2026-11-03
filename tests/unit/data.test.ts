@@ -2,6 +2,9 @@
  * Unit tests for the headless data layer (FR-15.1/15.3): schema validation, canonical
  * serialisation, hashing, bundle I/O, inspection and migrations.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   BUNDLE_KIND,
@@ -15,6 +18,7 @@ import type {
   Note,
   NoteDraft,
   NoteIntent,
+  NoteOrigin,
   NoteSeverity,
   NoteStatus,
   NoteType,
@@ -25,6 +29,7 @@ import {
   bundleToJson,
   canonicalBundle,
   canonicalNote,
+  compareForReview,
   createBundle,
   hashBundle,
   inspectBundle,
@@ -35,9 +40,20 @@ import {
   validateBundle,
   validateNote,
 } from "../../src/data/index";
+import { deriveSessions } from "../../src/data/sessions";
 
 const T = "2026-09-14T18:20:00.000Z";
 const LATER = "2026-09-14T19:00:00.000Z";
+
+/**
+ * A real 0.11 bundle: no note carries `origin`, because the field did not exist then.
+ * `bundle-0.11.hash` pins the FNV-1a 64 digest of `serializeCanonical(migrateBundle(...))`
+ * after the 0.12 upgrade. Regenerate by temporarily printing `hashBundle(migrated)` here
+ * (or in any script that imports `src/data`) and pasting the 16 hex digits into the file.
+ */
+const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures");
+const FIXTURE_011 = join(FIXTURES, "bundle-0.11.json");
+const HASH_011 = join(FIXTURES, "bundle-0.11.hash");
 
 /** Fixture accessor that keeps `noUncheckedIndexedAccess` happy without casts. */
 function at<T>(list: readonly T[], index: number): T {
@@ -61,6 +77,7 @@ interface NoteInput {
   environment?: Environment;
   sessionRef?: string;
   messages?: Message[];
+  origin?: NoteOrigin;
   now?: string;
 }
 
@@ -77,6 +94,7 @@ function makeNote(input: NoteInput): Note {
     environment: input.environment,
     sessionRef: input.sessionRef,
     messages: input.messages,
+    ...(input.origin !== undefined ? { origin: input.origin } : {}),
   };
   return createNote(draft);
 }
@@ -208,6 +226,45 @@ describe("validateNote", () => {
     expect(caught).toBeInstanceOf(BluepencilValidationError);
     expect((caught as BluepencilValidationError).issues).toEqual(issues);
     expect(assertNote(validNote)).toBe(validNote);
+  });
+});
+
+describe("note origin (FR-2.2, AC-A03, AC-A06)", () => {
+  const canonical = "https://a.example";
+
+  it("createNote writes origin and defaults it to null", () => {
+    const draft: NoteDraft = { type: "text", body: "body", anchor: { hook: "h" }, now: T };
+    const plain = createNote(draft);
+    expect(plain.origin).toBeNull();
+    // AC-A03: the canonical JSON always carries the field, `null` included.
+    expect(serializeCanonical(plain)).toContain('"origin": null');
+    expect(createNote({ ...draft, origin: canonical }).origin).toBe(canonical);
+    // FR-2.2: createNote normalises — an uppercase host/default port becomes canonical.
+    expect(createNote({ ...draft, origin: "https://A.example:443" }).origin).toBe(canonical);
+    // An unusable origin degrades to unassigned instead of failing the create.
+    expect(createNote({ ...draft, origin: "file:///x" }).origin).toBeNull();
+  });
+
+  it("accepts an absent, undefined, null or canonical origin", () => {
+    expect(validateNote(validNote)).toEqual([]);
+    expect(validateNote(without(validNote, "origin"))).toEqual([]);
+    expect(validateNote({ ...validNote, origin: undefined })).toEqual([]);
+    expect(validateNote({ ...validNote, origin: null })).toEqual([]);
+    expect(validateNote({ ...validNote, origin: canonical })).toEqual([]);
+  });
+
+  it("rejects a non-canonical origin string and leaves schemaVersion alone", () => {
+    const broken = { ...validNote, origin: "https://Example.com" };
+    expect(validateNote(broken)).toEqual(["note.origin must be a canonical origin or null"]);
+    expect(broken.schemaVersion).toBe(1);
+  });
+
+  it("rejects opaque, non-canonical and wrong-typed origins", () => {
+    for (const origin of ["file:///x", "data:text/html,x", "https://a.example:443", "", 42, true, {}]) {
+      expect(validateNote({ ...validNote, origin }), String(origin)).toContain(
+        "note.origin must be a canonical origin or null",
+      );
+    }
   });
 });
 
@@ -345,10 +402,128 @@ describe("canonical form (NFR-17)", () => {
     expect(hash).toMatch(/^[0-9a-f]{16}$/);
     // Golden value: FNV-1a 64 over the canonical text, cross-checked against the published
     // test vectors ('' -> cbf29ce484222325, 'a' -> af63dc4c8601ec8c, 'foobar' -> 85944171f73967e8).
-    expect(hash).toBe("db9656224d8679d9");
+    // 0.12.0: the canonical form now always carries `origin` (RVW-02), so the value moved.
+    expect(hash).toBe("a8cb0e1d20d917f8");
     expect(hashBundle(bundle)).toBe(hash);
     expect(hashBundle(canonicalBundle(bundle))).toBe(hash);
     expect(hashBundle(createBundle([makeNote({ id: "n-1", route: "/a", body: "changed" })], BUNDLE_OPTIONS))).not.toBe(hash);
+  });
+});
+
+/* FR-2.2 / NFR-17 (AC-A04, AC-A05, AC-A15, AC-A17): `origin` is part of the canonical key
+   order and the bundle sorts origin-first. The 0.11 fixture is the regression anchor: a bundle
+   that never knew the field must still load, gain `origin: null` and hash to a pinned value. */
+
+describe("canonical origin position and order (AC-A04, AC-A05, AC-A17)", () => {
+  const ORIGIN_A = "https://a.example";
+  const ORIGIN_B = "https://b.example";
+
+  it("places origin after updatedAt and before sessionRef (AC-A04)", () => {
+    const withSession = Object.keys(canonicalNote(makeNote({ id: "n-1", sessionRef: "s-1" })));
+    expect(withSession.indexOf("origin")).toBe(withSession.indexOf("updatedAt") + 1);
+    expect(withSession.indexOf("sessionRef")).toBe(withSession.indexOf("origin") + 1);
+
+    const withoutSession = Object.keys(canonicalNote(makeNote({ id: "n-2" })));
+    expect(withoutSession.indexOf("origin")).toBe(withoutSession.indexOf("updatedAt") + 1);
+    expect(withoutSession.indexOf("type")).toBe(withoutSession.indexOf("origin") + 1);
+  });
+
+  it("sorts origin ascending with unassigned first, then route and the review composition (AC-A05)", () => {
+    const bundle = createBundle(
+      [
+        makeNote({ id: "n-b", route: "/x", origin: ORIGIN_B }),
+        makeNote({ id: "n-unassigned", route: "/x", origin: null }),
+        makeNote({ id: "n-a", route: "/x", origin: ORIGIN_A }),
+      ],
+      BUNDLE_OPTIONS,
+    );
+    expect(bundle.notes.map((note) => note.id)).toEqual(["n-unassigned", "n-a", "n-b"]);
+
+    // Same set, different input order: the canonical bytes must not move (NFR-17).
+    const reordered = createBundle([...bundle.notes].reverse(), BUNDLE_OPTIONS);
+    expect(serializeCanonical(reordered)).toBe(serializeCanonical(bundle));
+    expect(hashBundle(reordered)).toBe(hashBundle(bundle));
+  });
+
+  it("applies route before priority inside the same origin (AC-A05)", () => {
+    const bundle = createBundle(
+      [
+        makeNote({ id: "n-b-route", route: "/b", status: "needs_decision", origin: ORIGIN_A }),
+        makeNote({ id: "n-a-done", route: "/a", status: "done", origin: ORIGIN_A }),
+      ],
+      BUNDLE_OPTIONS,
+    );
+    expect(bundle.notes.map((note) => note.id)).toEqual(["n-a-done", "n-b-route"]);
+  });
+
+  it("matches the shared review priority composition for one origin and route (AC-A17)", () => {
+    const bundle = canonicalBundle(
+      createBundle(
+        [
+          makeNote({ id: "n-done", route: "/a", status: "done" }),
+          makeNote({ id: "n-open", route: "/a", status: "open" }),
+          makeNote({ id: "n-feedback", route: "/a", intent: "feedback" }),
+          makeNote({ id: "n-decide", route: "/a", status: "needs_decision" }),
+        ],
+        BUNDLE_OPTIONS,
+      ),
+    );
+    const canonicalIds = bundle.notes.map((note) => note.id);
+    expect(canonicalIds).toEqual(["n-decide", "n-feedback", "n-open", "n-done"]);
+    expect(canonicalIds).toEqual([...bundle.notes].sort(compareForReview).map((note) => note.id));
+
+    const tie = canonicalBundle(
+      createBundle(
+        [makeNote({ id: "b", route: "/a" }), makeNote({ id: "a", route: "/a" })],
+        BUNDLE_OPTIONS,
+      ),
+    );
+    expect(tie.notes.map((note) => note.id)).toEqual(["a", "b"]);
+  });
+
+  it("loads the 0.11 fixture, emits origin null and keeps the pinned hash (AC-A05)", () => {
+    const source = readFileSync(FIXTURE_011, "utf8");
+    const migrated = migrateBundle(JSON.parse(source) as unknown);
+    const pinned = readFileSync(HASH_011, "utf8").trim();
+
+    expect(migrated.notes).toHaveLength(4);
+    // The source predates the field; the upgrade fills it in.
+    expect(source).not.toContain('"origin"');
+    expect(serializeCanonical(migrated)).toContain('"origin": null');
+
+    expect(hashBundle(migrated)).toBe(pinned);
+    // Idempotent: a second migration and a JSON round trip stay on the same bytes.
+    expect(hashBundle(migrateBundle(migrated))).toBe(pinned);
+    expect(hashBundle(parseBundle(bundleToJson(migrated)))).toBe(pinned);
+    // The upgraded canonical text is not the 0.11 text — `origin: null` is the reason.
+    expect(serializeCanonical(migrated)).not.toBe(source);
+  });
+});
+
+describe("bundle summary origins (AC-A15)", () => {
+  const ORIGIN_A = "https://a.example";
+  const ORIGIN_B = "https://b.example";
+
+  it("reports distinct sorted origins, unassigned count and the note total", () => {
+    const bundle = createBundle(
+      [
+        makeNote({ id: "n-a1", origin: ORIGIN_A }),
+        makeNote({ id: "n-b1", origin: ORIGIN_B }),
+        makeNote({ id: "n-u1", origin: null }),
+        makeNote({ id: "n-a2", origin: ORIGIN_A }),
+      ],
+      BUNDLE_OPTIONS,
+    );
+    const summary = inspectBundle(bundle);
+    expect(summary.origins).toEqual([ORIGIN_A, ORIGIN_B]);
+    expect(summary.unassigned).toBe(1);
+    expect(summary.notes).toBe(4);
+  });
+
+  it("reports empty origins and every note unassigned for a 0.11-shaped bundle", () => {
+    const summary = inspectBundle(createBundle([makeNote({ id: "n-1" })], BUNDLE_OPTIONS));
+    expect(summary.origins).toEqual([]);
+    expect(summary.unassigned).toBe(1);
   });
 });
 
@@ -419,6 +594,8 @@ describe("bundle I/O (FR-14.2/14.5/14.9)", () => {
     expect(summary.byIntent).toEqual({ implement: 2, feedback: 1 });
     expect(summary.byType).toEqual({ text: 2, design: 1, bug: 0, feature: 0 });
     expect(summary.routes).toEqual(["/a", "/b"]);
+    expect(summary.origins).toEqual([]);
+    expect(summary.unassigned).toBe(3);
     expect(summary.environments).toEqual(["dev"]);
     expect(summary.sessions).toEqual([{ ref: "s-1", label: "s-1", createdAt: T }]);
     expect(summary.app).toEqual({ name: "demo", buildRef: "abc1234" });
@@ -457,6 +634,29 @@ describe("migrations (FR-3.5)", () => {
     expect(note.updatedAt).toBe(note.createdAt);
     expect(validateNote(note)).toEqual([]);
     expect(legacy).toEqual(snapshot);
+  });
+
+  it("migrates a 0.11 note without origin to origin null, additively and idempotently (AC-A07)", () => {
+    const legacy = without(validNote, "origin");
+    const note = migrateNote(legacy);
+
+    expect(note.origin).toBeNull();
+    // additive: no schema bump, the document stays at the current version
+    expect(note.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(validateNote(note)).toEqual([]);
+    // idempotent: a second pass over the migrated document changes nothing
+    expect(migrateNote(JSON.parse(JSON.stringify(note)) as unknown)).toEqual(note);
+  });
+
+  it("degrades an unusable origin in a migrated bundle to null without throwing (AC-A07)", () => {
+    const bundle = migrateBundle({
+      environment: "dev",
+      notes: [{ ...without(validNote, "origin"), id: "n-42", origin: 42 }],
+    });
+
+    expect(at(bundle.notes, 0).origin).toBeNull();
+    expect(bundle.schemaVersion).toBe(SCHEMA_VERSION);
+    expect(validateBundle(bundle)).toEqual([]);
   });
 
   it("repairs legacy vocabulary and normalises timestamps", () => {
@@ -753,5 +953,66 @@ describe("bug severity (FR-3.6, issue #71)", () => {
     const degraded = without(bug, "severity");
     expect("severity" in degraded).toBe(false);
     expect(validateNote(degraded)).toEqual([]);
+  });
+});
+
+/**
+ * CQ-01 (AC-H01): session derivation exists exactly once. `src/data/bundle.ts`,
+ * `src/data/migrate.ts` and the CLI each carried an identical private copy; a rule change could
+ * therefore reach one reader and miss the other two. `src/data/sessions.ts` is now the single
+ * definition, and the cross-surface case below pins that the three call sites cannot drift.
+ */
+describe("session derivation — one implementation (AC-H01)", () => {
+  const SOURCE = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const read = (relative: string): string => readFileSync(join(SOURCE, relative), "utf8");
+  const SURFACES = ["src/data/bundle.ts", "src/data/migrate.ts", "src/cli/bin.ts"];
+
+  it("declares deriveSessions only in src/data/sessions.ts — never as a private copy", () => {
+    const definitions = SURFACES.filter((file) => /function\s+deriveSessions\b/.test(read(file)));
+    expect(definitions).toEqual([]);
+
+    const module = read("src/data/sessions.ts");
+    expect(module).toMatch(/export function deriveSessions\(notes: readonly Note\[\]\): Session\[\]/);
+    // Exactly one implementation in the whole tree, the new module included.
+    const all = [...SURFACES, "src/data/sessions.ts"].filter((file) =>
+      /function\s+deriveSessions\b/.test(read(file)),
+    );
+    expect(all).toEqual(["src/data/sessions.ts"]);
+  });
+
+  it("is imported by bundle.ts, migrate.ts and the CLI", () => {
+    expect(read("src/data/bundle.ts")).toContain('import { deriveSessions } from "./sessions"');
+    expect(read("src/data/migrate.ts")).toContain('import { deriveSessions } from "./sessions"');
+    expect(read("src/cli/bin.ts")).toContain('import { deriveSessions } from "../data/sessions"');
+  });
+
+  it("derives the earliest createdAt per ref and labels it with the ref", () => {
+    const notes = [
+      makeNote({ id: "n-late", sessionRef: "s-1", now: LATER }),
+      makeNote({ id: "n-early", sessionRef: "s-1", now: T }),
+      makeNote({ id: "n-other", sessionRef: "s-2", now: T }),
+      makeNote({ id: "n-noref" }),
+    ];
+    expect(deriveSessions(notes)).toEqual([
+      { ref: "s-1", label: "s-1", createdAt: T },
+      { ref: "s-2", label: "s-2", createdAt: T },
+    ]);
+    // An empty ref is not a session; the bundle readers are lenient here on purpose.
+    expect(deriveSessions([{ ...makeNote({ id: "n-empty" }), sessionRef: "" }])).toEqual([]);
+    expect(deriveSessions([])).toEqual([]);
+  });
+
+  it("yields one identical header from bundle creation, migration and inspection", () => {
+    const notes = [
+      makeNote({ id: "n-late", sessionRef: "s-1", now: LATER }),
+      makeNote({ id: "n-early", sessionRef: "s-1", now: T }),
+      makeNote({ id: "n-other", sessionRef: "s-2", now: T }),
+    ];
+    const derived = deriveSessions(notes);
+    const bundle = createBundle(notes, BUNDLE_OPTIONS);
+
+    expect(bundle.sessions).toEqual(derived);
+    expect(migrateBundle(JSON.parse(JSON.stringify(notes)) as unknown).sessions).toEqual(derived);
+    expect(inspectBundle(bundle).sessions).toEqual(derived);
   });
 });

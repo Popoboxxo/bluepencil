@@ -27,6 +27,7 @@ import {
 } from "./attributes";
 import {
   absoluteUrl,
+  fetchBytes,
   parseManifestText,
   resolveElementUrl,
   shouldReload,
@@ -50,6 +51,12 @@ export interface AttachDeps {
 export interface AttachOptions extends LoaderOptions {
   /** Absolute URL of the loader script; needed to resolve relative defaults. */
   scriptUrl: string;
+  /**
+   * `data-sha256` on the loader tag — the digest the host itself pins. It wins over
+   * `manifest.sha256`, which only proves that a download matched a pointer from the same mutable
+   * location. Only used when `integrity` is on.
+   */
+  sha256?: string;
   /** Explicit mount target (wins over the `mount` attribute). */
   mountTarget?: Element;
   deps?: Partial<AttachDeps>;
@@ -250,23 +257,69 @@ function reportError(doc: Document, error: unknown): void {
   dispatch(doc, ATTACH_ERROR, error);
 }
 
-/** The digest check is part of *every* load, not just the first one (F-embed: swaps must verify). */
+/** URL origin, or `undefined` for a value the platform cannot parse (a relative default). */
+function originOf(url: string): string | undefined {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Cross-origin builds are allowed (a CDN is the documented deployment). Without a host pin the
+ * expected digest comes from the manifest, so the check is only as trustworthy as that pointer —
+ * the loader says so once per load instead of blocking a legitimate CDN setup.
+ */
+function warnIfUnpinnedCrossOrigin(options: AttachOptions, target: ResolvedTarget): void {
+  if (options.sha256 !== undefined) {
+    return;
+  }
+  const elementOrigin = originOf(target.elementUrl);
+  const loaderOrigin = originOf(absoluteUrl(options.scriptUrl, options.scriptUrl));
+  if (elementOrigin === undefined || loaderOrigin === undefined || elementOrigin === loaderOrigin) {
+    return;
+  }
+  (globalThis as { console?: Console }).console?.warn?.(
+    `bluepencil attach: ${target.elementUrl} is cross-origin and no data-sha256 host pin is set — ` +
+      "the manifest digest is only a download check, not a trust anchor",
+  );
+}
+
+/**
+ * The digest check is part of *every* load, not just the first one (F-embed: swaps must verify),
+ * and it fails closed: opting in without a digest is an error, never a silent pass (G7, AC-C06).
+ * The host pin wins over the manifest digest; without either the build is not executed.
+ */
 async function assertIntegrity(
   options: AttachOptions,
   target: ResolvedTarget,
   deps: AttachDeps,
 ): Promise<void> {
-  if (!options.integrity || target.sha256 === undefined) {
+  if (!options.integrity) {
     return;
   }
-  const verified = await verifyIntegrity({
+  warnIfUnpinnedCrossOrigin(options, target);
+  const manifestSha256 = target.sha256;
+  if (options.sha256 === undefined && manifestSha256 === undefined) {
+    throw new Error(
+      `integrity_missing: data-integrity="true" needs a digest for ${target.elementUrl} — ` +
+        "set data-sha256 (host pin) or publish sha256 in the manifest",
+    );
+  }
+  const fetched = await fetchBytes(target.elementUrl, deps.fetchImpl);
+  if (fetched.bytes === undefined) {
+    throw new Error(`integrity_mismatch: ${fetched.issue ?? `could not read ${target.elementUrl}`}`);
+  }
+  const outcome = await verifyIntegrity({
+    bytes: fetched.bytes,
     url: target.elementUrl,
-    sha256: target.sha256,
-    fetchImpl: deps.fetchImpl,
+    ...(options.sha256 === undefined ? {} : { expected: options.sha256 }),
+    ...(manifestSha256 === undefined ? {} : { manifestSha256 }),
     ...(deps.cryptoImpl === undefined ? {} : { cryptoImpl: deps.cryptoImpl }),
   });
-  if (!verified.ok) {
-    throw new Error(verified.issue ?? "integrity check failed");
+  if (!outcome.ok) {
+    throw new Error(`${outcome.code}: ${outcome.issue}`);
   }
 }
 
@@ -501,10 +554,17 @@ export async function attachFromDocument(
       seen.add(script);
       const source = (script as HTMLScriptElement).src ?? "";
       try {
+        const attributeSource = script as unknown as {
+          attributes?: ArrayLike<{ name: string; value: string }>;
+          getAttribute(name: string): string | null;
+        };
+        const data = collectDataAttributes(attributeSource);
+        const hostPin = data.sha256 === undefined || data.sha256 === "" ? undefined : data.sha256;
         await api.attach({
-          ...parseLoaderOptions(
-            collectDataAttributes(script as unknown as { getAttribute(name: string): string | null }),
-          ),
+          ...parseLoaderOptions(data),
+          // `data-sha256` has no element counterpart; it is read here so the pin travels with the
+          // handle into every swap (a merely downloaded digest must never replace it).
+          ...(hostPin === undefined ? {} : { sha256: hostPin }),
           scriptUrl: source === "" ? target.baseURI : source,
         });
         added += 1;

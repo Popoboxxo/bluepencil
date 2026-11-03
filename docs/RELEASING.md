@@ -84,6 +84,23 @@ disagreement stops the release before anything is published.
 Re-running the workflow (`workflow_dispatch` with an existing tag) **updates** the release instead of
 failing, so a half-written release is recoverable.
 
+## Release checklist RC-1…RC-3
+
+The extension's real permission grant cannot be produced headlessly: `chrome.permissions.request`
+only answers inside a live user gesture, and a headless Chrome has no gesture. Every release
+therefore carries three manual steps that the protected GitHub `release` environment gates. The
+release job declares `environment: release`, and that environment is approved **only after** RC-1…RC-3
+have been confirmed on a real Chrome profile with the release build loaded unpacked. The approval
+**confirms** the steps; it cannot **prove** them. This grant path is not checked automatically.
+
+- **RC-1 — hub origin in the options save.** Switch the notes store to *on a hub*, enter an
+  `https://` endpoint, press Save, and confirm the browser asks for that origin and the save is
+  accepted. A refusal names `permission_denied` and writes nothing.
+- **RC-2 — toolbar mount on a real profile page.** On an ordinary web page, click the toolbar
+  button and confirm the overlay mounts and a note can be taken.
+- **RC-3 — Alt+Shift+B.** On the same page, press Alt+Shift+B and confirm the overlay toggles
+  without a second injection prompt.
+
 ## The Chrome Web Store
 
 The release job dispatches `.github/workflows/chrome-webstore.yml` once the release is published, and
@@ -100,11 +117,57 @@ Before it uploads, that workflow checks the digest against the release's `SHA256
 `verify` smoke-tested. Prereleases are not dispatched: an `-alpha` tag is a release object too, and the
 public store is not where those belong.
 
+The upload and the publish are `scripts/chrome-webstore.mjs` in this repository, not a marketplace
+action. The action it replaced received the refresh token as an input and used it inside its own code
+— a second supply chain sitting exactly on the credential. The script takes the token from the
+environment, exchanges it for an access token, uploads the zip, and only with `--publish` sends a
+single publish request. Exit codes are stable (`1` configuration, `2` token exchange, `3` upload,
+`4` publish, `5` status check), so a red run names the failing stage without reading the log.
+`npm run webstore:publish -- --zip <file> --dry-run` prints the plan and makes no request; that is how
+to check the wiring locally before a release needs it.
+
 It needs five repository secrets: `EXTENSION_ID`, `PUBLISHER_ID`, and the OAuth trio `CLIENT_ID`,
-`CLIENT_SECRET`, `REFRESH_TOKEN`. To test them without touching the store, dispatch the workflow with
-`action: check-credentials`; `action: upload` stages a version without publishing it, which is how to
-find out whether the store accepts an artefact at all; `action: publish` — what a release does — puts
-it in front of review.
+`CLIENT_SECRET`, `REFRESH_TOKEN`. The dispatch mode maps one-to-one onto the script:
+
+| `action:` | script | effect |
+|---|---|---|
+| `check-credentials` | `--check-credentials` | reads the item status; writes nothing |
+| `upload` | `--zip <zip>` | stages the version; publishes nothing |
+| `publish` | `--zip <zip> --publish` | stages it, then one publish request |
+
+**RC-4 — the first run on this path is upload-only.** The first run after the script replaced the
+action is dispatched with `action: upload`; the version is then released by hand in the dashboard,
+once the listing has been checked there. `action: publish` — what a release does afterwards — is used
+only after that. Like RC-1…RC-3, this point is confirmed by the approval of the protected `release`
+environment; no test proves it, because it is a decision about when to publish, not a property of the
+code.
+
+## The 0.12.0 threat model at the release cut
+
+Re-answered against the final state on **2026-11-03** (spec §4.5, §6(3)/(4)); the substance is in
+spec §4.2 (properties) and §4.3 (residual risks).
+
+1. **What is built?** A review layer injected into foreign web apps (browser + Node) with a headless
+   data layer, CLI, MCP server, reference hub, federator and an MV3 Chromium extension. Notes live in
+   `chrome.storage.local` per origin, optionally on a self-hosted hub, and in exportable bundles. The
+   hub accepts a shared secret and/or per-device signed tokens; the page never sees a credential.
+2. **What can go wrong?** A cross-site read through the page relay, a credential leak into the page
+   context, mounting without a gesture, a hub gate bypass (Host header, unthrottled guessing, body
+   before auth), SSRF/oversized federation answers, a downgrade that reopens the shared bucket, and
+   supply-chain/container drift.
+3. **What do we do about it?** Each risk has a property with a test: worker-only credential and
+   sender-bound relays, optional host permissions and on-demand injection, the Host check plus one
+   shared throttle and auth-before-body, bounded federation responses, path-only routes, and pinned
+   actions with hardened container defaults. The remaining risks are named in spec §4.3.
+4. **What are the consequences?** A residual leak would expose review notes (reputation and trust,
+   no financial or health data). A hub without a credential on a non-loopback bind stays readable —
+   deliberate and warned. A broken `origin` contract would be data loss, so imports are copy-only with
+   a visible regression instead of a silent migration.
+
+**Checklist status.** RC-1, RC-2, RC-3 and RC-4 are mandatory steps of the protected `release`
+environment and are **not confirmed by this document**; the approver confirms them on a real Chrome
+profile with the release build (the approval confirms, it does not prove). This cut records them as
+required, not as performed.
 
 ## Deliberately not automated
 

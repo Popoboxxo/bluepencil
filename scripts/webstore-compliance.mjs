@@ -183,20 +183,34 @@ async function checkManifest() {
     `permissions=${JSON.stringify(permissions)}`,
   );
 
+  // The boundary shape (B.3b, AC-B18): host access is *optional* — granted per hub origin by the
+  // options page — never an install-time permission. The inverted check is the point: a re-added
+  // `host_permissions` line would ask the user for every site again.
   const hosts = manifest.host_permissions ?? [];
   check(
-    "declares at least one host permission for the registered content script",
-    hosts.length > 0,
+    "declares no install-time host permission",
+    hosts.length === 0,
     `host_permissions=${JSON.stringify(hosts)}`,
+  );
+
+  const optionalHosts = manifest.optional_host_permissions ?? [];
+  check(
+    "declares exactly the optional http/https host patterns",
+    JSON.stringify(optionalHosts) === JSON.stringify(["http://*/*", "https://*/*"]),
+    `optional_host_permissions=${JSON.stringify(optionalHosts)}`,
   );
   // "<all_urls>" is not a violation by itself, but it is the broadest possible scope and the first
   // thing a reviewer looks at. The narrowest thing that works here is http + https.
-  check("does not request <all_urls>", !hosts.includes("<all_urls>"), JSON.stringify(hosts));
   check(
-    "host scope is http/https only (no file://, ftp://, chrome://)",
-    hosts.length > 0 &&
-      hosts.every((h) => /^https?:\/\/\*\/\*$/.test(h)),
-    JSON.stringify(hosts),
+    "does not request <all_urls>",
+    ![...hosts, ...optionalHosts].includes("<all_urls>"),
+    JSON.stringify([...hosts, ...optionalHosts]),
+  );
+  check(
+    "optional host scope is http/https only (no file://, ftp://, chrome://)",
+    optionalHosts.length > 0 &&
+      optionalHosts.every((h) => /^https?:\/\/\*\/\*$/.test(h)),
+    JSON.stringify(optionalHosts),
   );
 
   // "Additional Requirements for Manifest V3" §1: the extension's logic must be in the package. A
@@ -235,7 +249,9 @@ async function checkManifest() {
     JSON.stringify(manifest.externally_connectable),
   );
 
-  return { manifest, permissions, hosts };
+  // `hosts` is the optional list from here on: it is what the dashboard has to justify, and the
+  // advice below reasons about the same set.
+  return { manifest, permissions, hosts: optionalHosts };
 }
 
 /**
@@ -367,6 +383,62 @@ async function checkShippedCode() {
 }
 
 /* -------------------------------------------------------------------------- */
+/* the build artefact — the same boundary invariant, on the shipped files      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * AC-B56(b): the ordering assertion on the **build**, not on the sources.
+ *
+ * Missing files are a **named FAIL** (exit 1) and there is no fallback to `extension/src`: a
+ * compliance scan that quietly reads the sources would pass on a checkout where `build:ext` never
+ * ran, which is exactly the state in which a shipping mistake is invisible.
+ */
+async function checkBoundaryArtefact() {
+  const manifestText = await readIfPresent(join(distDir, "manifest.json"));
+  const worker = await readIfPresent(join(distDir, "sw.js"));
+  const hasManifest = check(
+    "build artefact: extension/dist/manifest.json exists",
+    manifestText !== undefined,
+    "missing — run `npm run build:ext`",
+  );
+  const hasWorker = check(
+    "build artefact: extension/dist/sw.js exists",
+    worker !== undefined,
+    "missing — run `npm run build:ext`",
+  );
+  if (!hasManifest || !hasWorker) return;
+
+  let built;
+  try {
+    built = JSON.parse(manifestText);
+  } catch (error) {
+    check("build artefact: manifest is valid JSON", false, error.message);
+    return;
+  }
+
+  const hostPermissions = built.host_permissions ?? [];
+  const optionalHosts = built.optional_host_permissions ?? [];
+  const registers = /registerContentScripts|ensureBootstrapRegistered/.test(worker);
+
+  check(
+    "build artefact: no install-time host permission",
+    hostPermissions.length === 0,
+    `host_permissions=${JSON.stringify(hostPermissions)}`,
+  );
+  check(
+    "build artefact: optional host patterns are exactly the documented pair",
+    JSON.stringify(optionalHosts) === JSON.stringify(["http://*/*", "https://*/*"]),
+    `optional_host_permissions=${JSON.stringify(optionalHosts)}`,
+  );
+  // The invariant itself: registration and host permission exist together or not at all.
+  check(
+    "build artefact: the worker registers a content script exactly when a host permission exists",
+    registers === (hostPermissions.length > 0),
+    `registration=${registers} host_permissions=${hostPermissions.length}`,
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* the dashboard copy — present, and still in step with the manifest           */
 /* -------------------------------------------------------------------------- */
 
@@ -455,19 +527,16 @@ function adviseOnOpenQuestions(permissions, hosts) {
   // The broadest thing in the manifest, and the reason a review will be slower.
   if (hosts.some((h) => /^https?:\/\/\*\/\*$/.test(h))) {
     advise(
-      "`http://*/*` + `https://*/*` is broad host access",
-      "it is a deliberate, conservative pre-grant: broader than the on-demand injection needs, kept so " +
-        "access is in place the moment the user asks for the layer (docs/WEBSTORE.md D1). Injection " +
-        "itself is on demand under activeTab, and the overlay is not kept alive across a navigation. " +
-        "The narrower activeTab-only shape would drop the host permission entirely — the shape the " +
-        "manifest deliberately does not take.",
+      "`http://*/*` + `https://*/*` is broad optional host access",
+      "it is declared as optional_host_permissions and granted per hub origin by the options page, " +
+        "never at install time. Injection itself is on demand under activeTab, and the overlay is not " +
+        "kept alive across a navigation. The dashboard copy has to justify the optional grant.",
     );
     advise(
       "the host permission must not be justified by testability",
-      "extension/smoke.mjs and docs/EXTENSION.md currently say the up-front grant is what makes the " +
-        "headless round trip testable. That is true, and it is not a justification the store accepts; " +
-        "the dashboard copy in docs/WEBSTORE.md deliberately justifies it as a conservative pre-grant " +
-        "instead.",
+      "extension/smoke.mjs mounts with a test-only build (`dist-test`) that adds a host grant, so " +
+        "testability never justifies the shipped permission; the dashboard copy in docs/WEBSTORE.md " +
+        "justifies the optional grant by the hub feature instead.",
     );
   }
 
@@ -498,6 +567,7 @@ function adviseOnOpenQuestions(permissions, hosts) {
 console.log("webstore-compliance — Chrome Web Store program policies\n");
 const { permissions, hosts } = await checkManifest();
 await checkShippedCode();
+await checkBoundaryArtefact();
 await checkDashboardCopy(permissions, hosts);
 adviseOnOpenQuestions(permissions, hosts);
 

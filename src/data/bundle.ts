@@ -19,8 +19,11 @@ import {
   systemClock,
 } from "../core/model";
 import type { Bundle, Environment, Note, Session } from "../core/model";
+import { originOf } from "../core/origin";
 import { canonicalBundle, serializeCanonical } from "./canonical";
+import { compareCodeUnits } from "./order";
 import { assertBundle, assertNote } from "./schema";
+import { deriveSessions } from "./sessions";
 
 export interface BundleOptions {
   exportedBy?: string;
@@ -40,17 +43,15 @@ export interface BundleSummary {
   byIntent: Record<string, number>;
   byType: Record<string, number>;
   routes: string[];
+  /** Distinct canonical origins in this bundle, sorted (FR-2.2, AC-A15). */
+  origins: string[];
+  /** Notes without an origin (`null`/absent) — "unassigned" in every surface (FR-2.2). */
+  unassigned: number;
   app?: { name: string; buildRef?: string };
 }
 
-function compareStrings(a: string, b: string): number {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
-}
-
 function uniqueEnvironments(values: readonly Environment[]): Environment[] {
-  return [...new Set(values)].sort(compareStrings);
+  return [...new Set(values)].sort(compareCodeUnits);
 }
 
 function zeroCounts(keys: readonly string[]): Record<string, number> {
@@ -83,18 +84,6 @@ function resolveEnvironment(found: Environment[], requested: Environment | undef
   throw new BluepencilValidationError([
     `notes span multiple environments (${found.join(", ")}); export one environment at a time or pass options.environment explicitly`,
   ]);
-}
-
-/** Sessions that are only referenced by notes, without a caller-supplied label. */
-function deriveSessions(notes: readonly Note[]): Session[] {
-  const earliest = new Map<string, string>();
-  for (const note of notes) {
-    const ref = note.sessionRef;
-    if (ref === undefined || ref === "") continue;
-    const current = earliest.get(ref);
-    if (current === undefined || note.createdAt < current) earliest.set(ref, note.createdAt);
-  }
-  return [...earliest.entries()].map(([ref, createdAt]) => ({ ref, label: ref, createdAt }));
 }
 
 /**
@@ -156,6 +145,8 @@ export function inspectBundle(bundle: Bundle): BundleSummary {
   const byIntent = zeroCounts(NOTE_INTENTS);
   const byType = zeroCounts(NOTE_TYPES);
   const routes = new Set<string>();
+  const origins = new Set<string>();
+  let unassigned = 0;
 
   for (const note of value.notes) {
     increment(byStatus, note.status);
@@ -163,16 +154,26 @@ export function inspectBundle(bundle: Bundle): BundleSummary {
     increment(byType, note.type);
     const route = note.anchor.route;
     if (route !== undefined && route !== "") routes.add(route);
+    const origin = originOf(note);
+    if (origin === null) unassigned += 1;
+    else origins.add(origin);
   }
 
   return {
     notes: value.notes.length,
-    sessions: value.sessions.map((session) => ({ ...session })).sort((a, b) => compareStrings(a.ref, b.ref) || compareStrings(a.createdAt, b.createdAt)),
+    sessions: value.sessions
+      .map((session) => ({ ...session }))
+      .sort(
+        (a, b) =>
+          compareCodeUnits(a.ref, b.ref) || compareCodeUnits(a.createdAt, b.createdAt),
+      ),
     environments: uniqueEnvironments(value.notes.map((note) => note.environment)),
     byStatus,
     byIntent,
     byType,
-    routes: [...routes].sort(compareStrings),
+    routes: [...routes].sort(compareCodeUnits),
+    origins: [...origins].sort(compareCodeUnits),
+    unassigned,
     app: {
       name: value.app.name,
       ...(value.app.buildRef !== undefined ? { buildRef: value.app.buildRef } : {}),

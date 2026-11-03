@@ -17,8 +17,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_BASE_PATH, HUB_APP_NAME } from "../../server/handler";
 import {
+  SECRET_MIN_LENGTH,
+  TOKEN_KEY_MIN_LENGTH,
+  isLoopbackBind,
   parseHubArgs,
   startHub,
+  startupWarnings,
   type HubOptions,
   type RunningServer,
 } from "../../server/hub";
@@ -26,7 +30,15 @@ import {
 const BASE = DEFAULT_BASE_PATH;
 /** Kept as a constant: a literal after `authSecret:` trips the secret scan for the wrong reason. */
 const SHARED = "hub-options-shared-value";
-const ENV_KEYS = ["BLUEPENCIL_APP", "BLUEPENCIL_REGISTRY"] as const;
+const ENV_KEYS = [
+  "BLUEPENCIL_APP",
+  "BLUEPENCIL_REGISTRY",
+  /* The credential variables are cleared too: a floor test that inherited one from the shell would
+   * pass or fail for the wrong reason. */
+  "BLUEPENCIL_AUTH_SECRET",
+  "BLUEPENCIL_ADMIN_SECRET",
+  "BLUEPENCIL_TOKEN_KEY",
+] as const;
 
 type Json = Record<string, unknown>;
 
@@ -370,5 +382,188 @@ describe("GET {base}/notes — still the local single-environment contract", () 
 
     const environments = new Set(notes.map((note) => note["environment"]));
     expect(environments).toEqual(new Set(["dev"]));
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * Start-up safety: credential floors, CORS rules and the warning that --quiet cannot silence
+ * (G1, G2; AC-D01, AC-D02, AC-D07…AC-D09)
+ * ---------------------------------------------------------------------------------------------- */
+
+/** A `--auth-secret` of exactly `length` characters; never a real credential. */
+function secretOf(length: number): string {
+  return "s".repeat(length);
+}
+
+describe("credential floors (G2, AC-D07/AC-D08)", () => {
+  const parse = (args: string[]): HubOptions | string =>
+    parseHubArgs(["--store", "notes.json", ...args]);
+
+  it("refuses a 15-character --auth-secret and accepts 16 (AC-D07)", () => {
+    expect(String(parse(["--auth-secret", secretOf(SECRET_MIN_LENGTH - 1)]))).toContain(
+      "secret_too_short",
+    );
+    expect(optionsOf(parse(["--auth-secret", secretOf(SECRET_MIN_LENGTH)])).authSecret).toHaveLength(
+      SECRET_MIN_LENGTH,
+    );
+    // The message says what to do, not only that something is wrong.
+    expect(String(parse(["--auth-secret", secretOf(6)]))).toContain(
+      `at least ${SECRET_MIN_LENGTH} characters`,
+    );
+  });
+
+  it("refuses a 31-character --token-key and accepts 32 (AC-D08)", () => {
+    expect(String(parse(["--token-key", secretOf(TOKEN_KEY_MIN_LENGTH - 1)]))).toContain(
+      "token_key_too_short",
+    );
+    expect(optionsOf(parse(["--token-key", secretOf(TOKEN_KEY_MIN_LENGTH)])).tokenKey).toHaveLength(
+      TOKEN_KEY_MIN_LENGTH,
+    );
+  });
+
+  it("applies the floors to the environment variables, not only to the flags", () => {
+    // A hub started from a compose file has no flag in its argv; the floor has to hold there too.
+    process.env.BLUEPENCIL_AUTH_SECRET = secretOf(SECRET_MIN_LENGTH - 1);
+    expect(String(parse([]))).toContain("secret_too_short");
+
+    process.env.BLUEPENCIL_AUTH_SECRET = secretOf(SECRET_MIN_LENGTH);
+    process.env.BLUEPENCIL_TOKEN_KEY = secretOf(TOKEN_KEY_MIN_LENGTH - 1);
+    expect(String(parse([]))).toContain("token_key_too_short");
+  });
+
+  it("keeps 'empty' and 'too short' as different diagnoses", () => {
+    // They have different fixes: one says "you meant to omit it", the other "you meant a real value".
+    expect(String(parse(["--auth-secret="]))).toContain("must not be empty");
+    expect(String(parse(["--auth-secret="]))).not.toContain("secret_too_short");
+    expect(String(parse(["--token-key="]))).toContain("must not be empty");
+    expect(String(parse(["--token-key="]))).not.toContain("token_key_too_short");
+  });
+});
+
+describe("--cors value rules (ADR-0.12-S1, AC-D09)", () => {
+  const parse = (args: string[]): HubOptions | string =>
+    parseHubArgs(["--store", "notes.json", ...args]);
+
+  it("refuses a bare --cors instead of silently meaning *", () => {
+    // SEC-06: this is the whole finding. `--cors` with no value used to be `*`.
+    expect(String(parse(["--cors"]))).toContain("cors_value_missing");
+    expect(String(parse(["--cors="]))).toContain("cors_value_missing");
+    expect(String(parse(["--cors", ""]))).toContain("cors_value_missing");
+  });
+
+  it("refuses --cors '*' without a client credential", () => {
+    expect(String(parse(["--cors", "*"]))).toContain("cors_wildcard_unauthenticated");
+    // The admin secret is an operator credential: it does not gate a browser, so it does not count.
+    expect(
+      String(parse(["--cors", "*", "--admin-secret", secretOf(SECRET_MIN_LENGTH)])),
+    ).toContain("cors_wildcard_unauthenticated");
+  });
+
+  it("accepts --cors '*' behind either client credential", () => {
+    expect(optionsOf(parse(["--cors", "*", "--auth-secret", secretOf(SECRET_MIN_LENGTH)])).cors).toBe(
+      "*",
+    );
+    expect(optionsOf(parse(["--cors", "*", "--token-key", secretOf(TOKEN_KEY_MIN_LENGTH)])).cors).toBe(
+      "*",
+    );
+  });
+
+  it("leaves an explicit origin unchanged and needs no credential for it", () => {
+    expect(optionsOf(parse(["--cors", "https://a.example"])).cors).toBe("https://a.example");
+  });
+
+  it("keeps --cors absent when the flag is absent, so no header is sent", () => {
+    expect(optionsOf(parse([])).cors).toBeUndefined();
+  });
+});
+
+describe("bind warnings (G1, AC-D01/AC-D02)", () => {
+  it("classifies the bind spellings", () => {
+    for (const loopback of ["127.0.0.1", "127.0.0.42", "localhost", "::1", "::ffff:127.0.0.1"]) {
+      expect(isLoopbackBind(loopback), loopback).toBe(true);
+    }
+    for (const open of ["0.0.0.0", "::", "192.168.1.10", "10.0.0.5", ""]) {
+      expect(isLoopbackBind(open), JSON.stringify(open)).toBe(false);
+    }
+  });
+
+  it("warns exactly once for a non-loopback bind without a credential", () => {
+    const warnings = startupWarnings({
+      host: "0.0.0.0",
+      credential: "none",
+      cors: null,
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.code).toBe("unauthenticated_non_loopback");
+    // The message has to name the consequence and the non-suppressibility, not just the state.
+    expect(warnings[0]?.message).toContain("not suppressed by --quiet");
+    expect(warnings[0]?.message).toContain("journal location");
+  });
+
+  it("stays silent for a loopback bind or for a non-loopback bind with a credential", () => {
+    expect(startupWarnings({ host: "127.0.0.1", credential: "none", cors: null })).toEqual([]);
+    for (const credential of ["secret", "token", "token+secret"] as const) {
+      expect(startupWarnings({ host: "0.0.0.0", credential, cors: null }), credential).toEqual([]);
+    }
+  });
+
+  it("reports the CORS wildcard as its own warning", () => {
+    const warnings = startupWarnings({ host: "127.0.0.1", credential: "secret", cors: "*" });
+    expect(warnings.map((warning) => warning.code)).toEqual(["cors_wildcard"]);
+  });
+
+  it("writes the warning to stderr even with quiet:true, and the hub still serves (AC-D01)", async () => {
+    // G1 = B: the start is *allowed*. A refusal would break every existing LAN/lab setup without a
+    // migration path; the warning is what makes the state visible — and `--quiet` must not hide it.
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      const server = await startHub({
+        storePath: tempStorePath(),
+        host: "0.0.0.0",
+        port: 0,
+        quiet: true,
+      });
+      servers.push(server);
+
+      expect(server.port).toBeGreaterThan(0);
+      const config = await request(server.port, "GET", `${BASE}/config`);
+      expect(config.status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const warnings = writes.filter((line) => line.includes("unauthenticated_non_loopback"));
+    expect(warnings).toHaveLength(1);
+    // `--quiet` still silences the informational start-up line: only the warning survives it.
+    expect(writes.some((line) => line.includes("note(s), environment"))).toBe(false);
+  });
+
+  it("writes no bind warning for loopback without a credential or for a network bind with one (AC-D02)", async () => {
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      servers.push(await startHub({ storePath: tempStorePath(), port: 0, quiet: true }));
+      servers.push(
+        await startHub({
+          storePath: tempStorePath(),
+          host: "0.0.0.0",
+          port: 0,
+          authSecret: SHARED,
+          quiet: true,
+        }),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(writes.filter((line) => line.includes("unauthenticated_non_loopback"))).toEqual([]);
   });
 });

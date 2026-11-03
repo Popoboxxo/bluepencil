@@ -1,18 +1,26 @@
 /**
- * `chrome.storage` adapter — the property that justifies its existence (#34).
+ * `chrome.storage` adapter — how the store is partitioned across sites (G5, SEC-13).
  *
- * The 10 contract tests in `chrome-storage.test.ts` prove the adapter behaves like a JSON store. They
- * cannot prove the one thing that matters: that a note written on one site is still there on
- * another. That is not a property of this file — it is a property of *how the storage is
- * partitioned*, and the only way to test it is to write through one origin and read back through
- * another.
+ * Until 0.12.0 this suite proved the opposite of what it proves now: one shared blob meant a note
+ * written on one site was visible on every other. That property is exactly the finding SEC-13
+ * names — an intranet note leaked into the wiki — so the adapter now derives its key from the page
+ * origin. The interesting behaviour is therefore *not* "a note travels between origins" but "two
+ * origins never touch the same blob, and neither uses the legacy shared key" (AC-B06).
  *
- * So the central test here builds two independent origins with two different `localStorage`s and a
- * single shared `chrome.storage`, and lists the note from the second origin. A `localStorage`-backed
- * store cannot pass it, by construction — that is the point.
+ * The setup is unchanged, which is the point: two genuinely different origins with separate
+ * globals and separate `localStorage`s, one shared `chrome.storage.local`. Only the expectation is
+ * inverted. A `localStorage`-backed store could not satisfy either version, because its key is per
+ * host and its storage is per origin; `chrome.storage` is per extension, which is why the adapter
+ * has to do the partitioning itself.
  */
 import { describe, expect, it, afterEach, vi } from "vitest";
 import { createChromeStorageAdapter } from "../../src/adapters/chrome-storage.js";
+import { LEGACY_STORAGE_KEY } from "../../src/data/origin.js";
+import {
+  relayPageStorage,
+  type PageStorageArea,
+  type PageStorageEnvelope,
+} from "../../extension/src/storage-relay";
 import type { NoteDraft } from "../../src/core/model";
 
 const DRAFT: NoteDraft = {
@@ -50,10 +58,32 @@ function fakeChromeStorage(): FakeStorage {
 }
 
 /**
- * An origin with its own `window` and its own `localStorage`, and optionally its own `chrome`.
+ * The page-side area the adapter sees in the extension: every call goes through the relay.
+ *
+ * In the real page the bridge performs that call in the isolated world and posts the answer back;
+ * the relay is the enforcement point either way. A refusal is surfaced as a rejection, exactly as
+ * the bridge does, so the adapter's degrade path is the same one production takes.
+ */
+function bridgedArea(area: PageStorageArea, location: { origin?: unknown }) {
+  const call = async (envelope: PageStorageEnvelope): Promise<Record<string, unknown>> => {
+    const reply = await relayPageStorage(area, envelope, location);
+    if (!reply.ok) throw new Error(`${reply.code}: ${reply.error}`);
+    return reply.value ?? {};
+  };
+  return {
+    get: (keys: string | string[]) => call({ op: "get", keys }),
+    set: (items: Record<string, unknown>) => call({ op: "set", items }).then(() => undefined),
+    remove: (keys: string | string[]) => call({ op: "remove", keys }).then(() => undefined),
+  };
+}
+
+/**
+ * An origin with its own `window`, its own `localStorage` and its own `location`, and optionally
+ * its own `chrome`.
  *
  * Two of these are two different websites as far as the adapter is concerned: separate globals,
- * separate storage, no shared references.
+ * separate location, no shared references. The location is what the productive adapter derives its
+ * key from, so it is the central input of this suite (B.1).
  */
 
 function makeOrigin(opts: { host: string; chrome?: unknown }): {
@@ -63,7 +93,12 @@ function makeOrigin(opts: { host: string; chrome?: unknown }): {
 } {
   const store = new Map<string, string>();
   const g = globalThis as Record<string, unknown>;
-  const previous = { window: g.window, localStorage: g.localStorage, chrome: g.chrome };
+  const previous = {
+    window: g.window,
+    localStorage: g.localStorage,
+    chrome: g.chrome,
+    location: Object.getOwnPropertyDescriptor(globalThis, "location"),
+  };
 
   const localStorageShim = {
     getItem: (k: string) => store.get(k) ?? null,
@@ -76,6 +111,7 @@ function makeOrigin(opts: { host: string; chrome?: unknown }): {
   };
   g.window = { localStorage: localStorageShim };
   setGlobal("localStorage", localStorageShim);
+  setGlobal("location", { origin: `https://${opts.host}` });
   if (opts.chrome === undefined) delete g.chrome;
   else g.chrome = opts.chrome;
 
@@ -86,6 +122,11 @@ function makeOrigin(opts: { host: string; chrome?: unknown }): {
       g.window = previous.window;
       setGlobal("localStorage", previous.localStorage);
       g.chrome = previous.chrome;
+      if (previous.location) {
+        Object.defineProperty(globalThis, "location", previous.location);
+      } else {
+        delete g.location;
+      }
     },
   };
 }
@@ -100,7 +141,7 @@ function useOrigin(chrome: unknown | undefined): { localStorage: Map<string, str
 /**
  * Installs a global that jsdom exposes as a getter.
  *
- * jsdom defines `localStorage` (and `customElements`) as accessor properties without a setter, so
+ * jsdom defines `localStorage` (and, on the jsdom window, `location`) as accessor properties, so
  * `globalThis.localStorage = shim` throws "Cannot set property localStorage of [object Window]
  * which has only a getter". A descriptor is what makes a second "origin" testable at all, which is
  * the whole point of this suite.
@@ -113,6 +154,9 @@ const restorers: (() => void)[] = [];
 afterEach(() => {
   while (restorers.length) restorers.pop()!();
 });
+
+/** The derived key for the helper origin `t.test`. */
+const T_KEY = "bluepencil:v2:https://t.test";
 
 /**
  * Silences the adapter's degrade message for the duration of a test.
@@ -135,34 +179,86 @@ async function withMutedConsole<T>(run: () => Promise<T>): Promise<{ result: T; 
   }
 }
 
-describe("chromeStorage — cross-origin sharing (the reason this adapter exists)", () => {
-  it("carries a note from one site's origin to a different site's origin", async () => {
-    const { area } = fakeChromeStorage();
-    // Two genuinely different websites: two globals, two localStorages, one chrome.storage.
-    const intranet = makeOrigin({ host: "intranet.example.test", chrome: { local: area } });
-    const wiki = makeOrigin({ host: "wiki.example.test", chrome: { local: area } });
-    restorers.push(intranet.restore, wiki.restore);
+describe("chromeStorage — one bucket per origin, never the legacy blob (AC-B06)", () => {
+  it("keeps a note on the origin it was written on, with separate keys", async () => {
+    const fake = fakeChromeStorage();
+    const { area } = fake;
 
-    const created = await createChromeStorageAdapter().create(DRAFT);
-    // Read from the *second* origin — the same one the note was never written from.
-    const notes = await createChromeStorageAdapter().list();
+    // Origin A: construct the adapter while A's location is active — the key is resolved there.
+    const a = makeOrigin({ host: "a.example", chrome: { local: area } });
+    const first = createChromeStorageAdapter();
+    const created = await first.create(DRAFT);
+    // A fresh instance on A is the "reload": new adapter, same origin, same area.
+    const reloaded = createChromeStorageAdapter();
 
-    expect(notes).toHaveLength(1);
-    expect(notes[0]).toMatchObject({ id: created.id, body: DRAFT.body });
-    // And it demonstrably is not localStorage — that store is empty on the second origin.
-    expect(wiki.localStorage.size).toBe(0);
-    expect(intranet.localStorage.size).toBe(0);
+    // Origin B: a different site with its own location, sharing the extension's storage area.
+    const b = makeOrigin({ host: "b.example", chrome: { local: area } });
+    // LIFO: restore B first (back to A), then A (back to jsdom's own location).
+    restorers.push(a.restore, b.restore);
+
+    const onB = createChromeStorageAdapter();
+    expect(await onB.list()).toEqual([]);
+
+    const aKey = "bluepencil:v2:https://a.example";
+    expect(fake.data.has(aKey)).toBe(true);
+    expect(fake.data.has("bluepencil:v2:https://b.example")).toBe(false);
+    // The legacy shared blob is not part of the productive path: no read, no write.
+    expect(fake.data.has(LEGACY_STORAGE_KEY)).toBe(false);
+    // …and A is complete after the reload, because that adapter kept A's key.
+    expect(await reloaded.list()).toHaveLength(1);
+    expect((await reloaded.list())[0]?.id).toBe(created.id);
   });
 
   it("does not touch the page's localStorage at all", async () => {
     // Partitioning by extension, not by page. A note must never leak into the host page's own
     // storage: the extension shares one store with the user, but not with the site.
-    const { area } = fakeChromeStorage();
-    const site = useOrigin({ local: area });
+    const fake = fakeChromeStorage();
+    const site = useOrigin({ local: fake.area });
 
     await createChromeStorageAdapter().create(DRAFT);
 
     expect(site.localStorage.size).toBe(0);
+    expect(fake.data.has(T_KEY)).toBe(true);
+    expect(fake.data.has(LEGACY_STORAGE_KEY)).toBe(false);
+  });
+});
+
+describe("chromeStorage — with the page relay (AC-B42)", () => {
+  it("refuses a foreign-key write and keeps its own blob complete after a reload", async () => {
+    const fake = fakeChromeStorage();
+    const site = makeOrigin({ host: "a.example", chrome: { local: fake.area } });
+    restorers.push(site.restore);
+    const location = { origin: "https://a.example" };
+    const area = fake.area as unknown as PageStorageArea;
+
+    // What any page script can attempt: select B's bucket through the bridge channel.
+    const before = fake.data.size;
+    const refused = await relayPageStorage(
+      area,
+      { op: "set", items: { "bluepencil:v2:https://b.example": "{}" } },
+      location,
+    );
+    expect(refused).toMatchObject({ ok: false, code: "foreign_key" });
+    // Refused before the storage call: B is unchanged and nothing else was touched either.
+    expect(fake.data.size).toBe(before);
+    expect(fake.data.has("bluepencil:v2:https://b.example")).toBe(false);
+
+    // The productive adapter, no explicit key, on A, over the relay.
+    const adapter = createChromeStorageAdapter({
+      area: bridgedArea(area, location),
+      onFallback: vi.fn(),
+    });
+    const created = await adapter.create(DRAFT);
+    expect(fake.data.has("bluepencil:v2:https://a.example")).toBe(true);
+
+    // Reload on A: a fresh adapter over a fresh relay view reads the same blob back in full.
+    const reloaded = createChromeStorageAdapter({
+      area: bridgedArea(area, location),
+      onFallback: vi.fn(),
+    });
+    expect(await reloaded.list()).toHaveLength(1);
+    expect((await reloaded.list())[0]?.id).toBe(created.id);
+    expect(fake.data.has("bluepencil:v2:https://b.example")).toBe(false);
   });
 });
 
@@ -222,7 +318,9 @@ describe("chromeStorage — the extension API is not always there", () => {
 describe("chromeStorage — a hostile or corrupt stored blob", () => {
   function useStored(value: unknown): FakeStorage {
     const fake = fakeChromeStorage();
-    fake.data.set("bluepencil:default:v1", value);
+    // The productive path reads the per-origin key; a corrupt *legacy* blob is a different store
+    // and must not influence it (AC-B41, "never the legacy key").
+    fake.data.set(T_KEY, value);
     useOrigin({ local: fake.area });
     return fake;
   }
@@ -291,7 +389,7 @@ describe("chromeStorage — a hostile or corrupt stored blob", () => {
       return {
         created,
         listed: await adapter.list(),
-        onDisk: fake.data.get("bluepencil:default:v1"),
+        onDisk: fake.data.get(T_KEY),
         fresh: await createChromeStorageAdapter().list(),
       };
     });
@@ -303,5 +401,7 @@ describe("chromeStorage — a hostile or corrupt stored blob", () => {
     // A fresh adapter — the next tab, the next session — reads the note back.
     expect(result.fresh).toHaveLength(1);
     expect(result.fresh[0]?.id).toBe(result.created.id);
+    // The recovery wrote the per-origin key, never the legacy blob.
+    expect(fake.data.has(LEGACY_STORAGE_KEY)).toBe(false);
   });
 });

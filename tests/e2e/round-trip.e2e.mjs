@@ -13,7 +13,7 @@
  *                       so the layer writes to and reads from the hub on its own origin;
  *   strand "extension"  a plain page with no embed, served on a SEPARATE static origin; the built
  *                       MV3 extension mounts the layer, whose `http` adapter talks to the hub
- *                       cross-origin (hence the hub runs with `--cors "*"`).
+ *                       cross-origin (hence the hub runs with `--cors <this page's origin>`).
  *
  * Requirements pinned (docs/REQUIREMENTS.md):
  *   FR-16.8  the same MCP is reachable over HTTP    — the hub answers `POST {base}/mcp`, the same
@@ -45,13 +45,15 @@ import { createServer as createNetServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Browser, findChrome } from "../../scripts/lib/browser.mjs";
+import { buildTestGrant } from "../../extension/test-manifest.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const EMBED_PAGE = join(root, "examples/round-trip/embed.html");
 const EXT_PAGE = join(root, "examples/round-trip/extension.html");
 const ELEMENT = join(root, "dist/bluepencil.element.min.js");
 const ATTACH = join(root, "dist/attach.js");
-const EXT_DIST = join(root, "extension/dist");
+/** The test grant `buildTestGrant()` produces — the only build this suite loads (AC-B55). */
+const EXT_DIST = join(root, "extension/dist-test");
 const SERVER_ENTRY = join(root, "dist/server.js");
 const WORKSPACE = join(root, ".tmp/round-trip");
 const PROFILE_EMBED = join(WORKSPACE, "chrome-embed");
@@ -92,11 +94,12 @@ async function freePort() {
 
 /**
  * Start `dist/server.js` with `--root <repo root>` so the SAME origin serves the EMBED fixture and
- * `/dist/**`. `--cors "*"` is required for the extension strand (its page is a different origin).
+ * `/dist/**`. `--cors <origin>` names the extension strand's page origin, the only cross-origin
+ * browser context in this run (an explicit origin, never the credential-requiring `*`).
  * `--journal none` keeps the smoke out of the work tree's git history. The hub is writable —
  * only `--read-only` would refuse the MCP reply/status writes this test needs.
  */
-async function startHub(storePath) {
+async function startHub(storePath, corsOrigin) {
   const port = await freePort();
   const child = spawn(
     process.execPath,
@@ -107,7 +110,7 @@ async function startHub(storePath) {
       "--port", String(port),
       "--root", root,
       "--environment", "dev",
-      "--cors", "*",
+      "--cors", corsOrigin,
       "--journal", "none",
       "--quiet",
     ],
@@ -515,8 +518,13 @@ async function main() {
       process.exit(1);
     }
   }
-  if (!existsSync(join(EXT_DIST, "manifest.json"))) {
-    console.error(`[round-trip] missing extension build ${EXT_DIST} — run "npm run build:ext" first`);
+  // The test grant is built immediately before loading (contract B.7.4). This suite assumes
+  // `npm run build:ext` has run — it does not rebuild the extension itself — and reports a missing
+  // production build as a named failure instead of an opaque ENOENT.
+  try {
+    buildTestGrant();
+  } catch (error) {
+    console.error(`[round-trip] ${error.name ?? "Error"}: ${error.message ?? error}`);
     process.exit(1);
   }
 
@@ -547,7 +555,7 @@ async function main() {
   const state = { embedNote: null, extNote: null };
 
   try {
-    hub = await startHub(join(WORKSPACE, "hub-store.json"));
+    hub = await startHub(join(WORKSPACE, "hub-store.json"), `http://127.0.0.1:${extStaticPort}`);
     const embedUrl = `${hub.origin}/examples/round-trip/embed.html`;
     console.log(`[round-trip] hub on ${hub.origin} (base ${hub.base}); embed ${embedUrl}; extension ${extUrl}`);
 

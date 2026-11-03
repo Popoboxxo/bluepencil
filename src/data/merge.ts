@@ -71,6 +71,10 @@ function divergingFields(existing: Note, incoming: Note): string[] {
   if (serializeCanonical(left.messages) !== serializeCanonical(right.messages)) fields.push("messages");
   if (left.source !== right.source) fields.push("source");
   if (left.environment !== right.environment) fields.push("environment");
+  // FR-14.3: only a clash of two assigned origins is a divergence — filling a gap is not.
+  const leftOrigin = left.origin ?? null;
+  const rightOrigin = right.origin ?? null;
+  if (leftOrigin !== null && rightOrigin !== null && leftOrigin !== rightOrigin) fields.push("origin");
   if ((left.sessionRef ?? null) !== (right.sessionRef ?? null)) fields.push("sessionRef");
   if ((left.ticketRef ?? null) !== (right.ticketRef ?? null)) fields.push("ticketRef");
   if ((left.severity ?? null) !== (right.severity ?? null)) fields.push("severity");
@@ -103,6 +107,9 @@ function mergeNoteInto(existing: Note, incoming: Note): Note {
     schemaVersion: incoming.schemaVersion,
     createdAt: existing.createdAt,
     updatedAt: laterTimestamp(existing.updatedAt, incoming.updatedAt),
+    // FR-14.3: the assigned origin is identity, not content — incoming only fills an empty slot.
+    // `?? null` keeps the canonical invariant that a merged note always names its origin.
+    origin: existing.origin ?? incoming.origin ?? null,
     ...(sessionRef !== undefined ? { sessionRef } : {}),
     type: incoming.type,
     // FR-3.6: incoming content wins, like every other field of an upsert.

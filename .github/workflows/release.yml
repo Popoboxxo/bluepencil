@@ -43,22 +43,28 @@ jobs:
   release:
     name: publish the release assets
     runs-on: ubuntu-latest
+    # The protected `release` environment carries the required reviewers (AC-B59). Approving the
+    # deployment is where RC-1…RC-3 are confirmed; see docs/RELEASING.md.
+    environment: release
     permissions:
       contents: write # create or update the release
       actions: write # dispatch the store leg (see below)
       id-token: write # signed provenance for the assets
       attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - uses: actions/setup-node@v7
+      # No `cache: npm` in this job (SEC-27). A cache is restored into the job that publishes, and a
+      # poisoned entry would be installed with `npm ci` before any check runs — the one job where a
+      # faster install is not worth a second trust boundary. The CI jobs keep their cache; they
+      # publish nothing.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
-          cache: npm
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -96,10 +102,12 @@ jobs:
 
       - name: Spec is in sync with docs/REQUIREMENTS.md and valid
         run: |
-          # Prebuilt single binary, checksum verified against the release manifest.
+          # Same pin as `ci.yml`: the expected SHA-256 is written here, and the downloaded binary is
+          # checked against it. The checksum manifest published alongside the binary is NOT the trust
+          # source — a checksum fetched next to the artefact cannot vouch for that artefact (SEC-28).
+          reqmd_sha256="7f9eb531b42505a4e4aa2b7e42f9978d1b3341f6a953dd0a3b6525e214f09f52"
           curl -sSL -o reqmd https://github.com/dVoo/reqmd/releases/download/v0.2-alpha/reqmd-linux-amd64
-          curl -sSL -o SHA256SUMS.txt https://github.com/dVoo/reqmd/releases/download/v0.2-alpha/SHA256SUMS.txt
-          grep 'reqmd-linux-amd64$' SHA256SUMS.txt | sed 's/reqmd-linux-amd64/reqmd/' | sha256sum -c -
+          echo "${reqmd_sha256}  reqmd" | sha256sum -c -
           chmod +x reqmd
           sudo mv reqmd /usr/local/bin/reqmd
           python3 scripts/build-reqmd-spec.py
@@ -152,7 +160,7 @@ jobs:
         # failure here is reported and does not cost the release.
         if: ${{ !inputs.dry_run }}
         continue-on-error: true
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: release-assets/*
 
@@ -203,11 +211,11 @@ jobs:
       id-token: write # provenance for the image
       attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Resolve image name and tags
         id: image
@@ -243,7 +251,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         if: ${{ !inputs.dry_run }}
         with:
           registry: ghcr.io
@@ -252,7 +260,7 @@ jobs:
 
       - name: Build and push the hub image
         id: push
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: ${{ !inputs.dry_run }}
@@ -268,7 +276,7 @@ jobs:
       - name: Attest the image
         if: ${{ !inputs.dry_run }}
         continue-on-error: true
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.push.outputs.digest }}

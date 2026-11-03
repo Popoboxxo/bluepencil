@@ -13,11 +13,13 @@ import {
   METADATA_HOSTNAMES,
   UrlPolicyError,
   checkBaseUrl,
+  classifyAddress,
   classifyIp,
   createDnsResolver,
   embeddedIpv4,
   isIpLiteral,
   normalizeBaseUrl,
+  unwrap6to4,
   type BaseUrlPolicyOptions,
   type UrlPolicyReason,
 } from "../../src/federation/net-policy";
@@ -417,6 +419,9 @@ describe("N-01 IPv4-embedded IPv6 forms", () => {
       ["::ffff:0:100.100.100.200", "100.100.100.200"],
       ["::100.100.100.200", "100.100.100.200"],
       ["64:ff9b::100.100.100.200", "100.100.100.200"],
+      ["2002:a9fe:a9fe::", "169.254.169.254"],
+      ["[2002:0808:0808::]", "8.8.8.8"],
+      ["2002::1", "0.0.0.0"],
       ["[::ffff:127.0.0.1]", "127.0.0.1"],
       ["::ffff:169.254.169.254", "169.254.169.254"],
       ["::ffff:10.0.0.5", "10.0.0.5"],
@@ -439,6 +444,103 @@ describe("N-01 IPv4-embedded IPv6 forms", () => {
   });
 });
 
+describe("SEC-11 6to4 classification (AC-E04)", () => {
+  it("unwraps the embedded IPv4 from 2002::/16", () => {
+    const cases: readonly (readonly [string, string | null])[] = [
+      ["2002:a9fe:a9fe::", "169.254.169.254"],
+      ["2002:0808:0808::", "8.8.8.8"],
+      ["2002::1", "0.0.0.0"],
+      ["[2002:c000:0204::]", "192.0.2.4"],
+      ["2001:4860:4860::8888", null],
+      ["::ffff:8.8.8.8", null],
+      ["8.8.8.8", null],
+      ["not-an-ip", null],
+    ];
+    for (const [address, expected] of cases) {
+      expect(unwrap6to4(address), address).toBe(expected);
+    }
+  });
+
+  it("classifies a 6to4 wrapper by its embedded IPv4", () => {
+    // 169.254.169.254 (metadata), 8.8.8.8 (public), 0.0.0.0 (unspecified).
+    expect(classifyAddress("2002:a9fe:a9fe::")).toBe("metadata");
+    expect(classifyAddress("2002:0808:0808::")).toBe("public");
+    expect(classifyAddress("2002::1")).toBe("reserved");
+
+    expect(classifyIp("2002:a9fe:a9fe::")).toBe("link_local");
+    expect(classifyIp("2002:0808:0808::")).toBe("public");
+    expect(classifyIp("2002::1")).toBe("unspecified");
+  });
+
+  it("applies the same metadata and allowInsecure rules to a 6to4 URL", async () => {
+    for (const raw of ["https://[2002:a9fe:a9fe::]", "https://[2002:a9fe:a9fe::]:8787"]) {
+      expect(await reasonOf(raw), raw).toBe("metadata");
+      expect(await reasonOf(raw, { allowInsecure: true }), raw).toBe("metadata");
+    }
+
+    // 2002:0a00:0001:: carries 10.0.0.1, so the lab flag is required exactly as for a literal.
+    expect(await reasonOf("https://[2002:0a00:0001::]")).toBe(
+      "private_without_allow_insecure",
+    );
+    await expect(
+      checkBaseUrl("https://[2002:0a00:0001::]", { allowInsecure: true }),
+    ).resolves.toMatchObject({ url: expect.any(URL) });
+
+    await expect(checkBaseUrl("https://[2002:0808:0808::]")).resolves.toMatchObject({
+      url: expect.any(URL),
+    });
+  });
+});
+
+describe("SEC-11 reserved IPv4 ranges (AC-E05)", () => {
+  it("never reports a reserved range as public", () => {
+    for (const address of [
+      "198.18.0.1",
+      "198.19.255.255",
+      "240.0.0.1",
+      "255.255.255.255",
+    ]) {
+      expect(classifyAddress(address), address).toBe("reserved");
+      expect(classifyIp(address), address).toBe("reserved");
+    }
+  });
+
+  it("keeps the 198.18.0.0/15 boundary exact", () => {
+    // Outside the benchmarking block stays public.
+    expect(classifyAddress("198.17.255.255")).toBe("public");
+    expect(classifyAddress("198.20.0.0")).toBe("public");
+    // 240.0.0.0/4 starts right after the multicast block, which keeps its own class.
+    expect(classifyAddress("239.255.255.255")).toBe("reserved");
+    expect(classifyIp("239.255.255.255")).toBe("multicast");
+    expect(classifyAddress("240.0.0.0")).toBe("reserved");
+  });
+
+  it("blocks reserved literals in a base URL in every mode", async () => {
+    for (const raw of [
+      "https://198.18.0.1",
+      "https://198.19.255.255",
+      "https://240.0.0.1",
+      "https://255.255.255.255",
+      "http://198.18.0.1",
+      "http://255.255.255.255",
+    ]) {
+      expect(await reasonOf(raw), raw).toBe("reserved");
+      expect(await reasonOf(raw, { allowInsecure: true }), raw).toBe("reserved");
+    }
+  });
+
+  it("blocks a resolver answer in a reserved range", async () => {
+    const resolver = fakeResolver({
+      "bench.example": ["198.18.0.1"],
+      "class-e.example": ["240.0.0.1"],
+    });
+    expect(await reasonOf("https://bench.example", { resolver })).toBe("reserved");
+    expect(
+      await reasonOf("https://class-e.example", { allowInsecure: true, resolver }),
+    ).toBe("reserved");
+  });
+});
+
 describe("classifyIp — pure IPv4/IPv6 parsing", () => {
   const matrix: readonly (readonly [string, ReturnType<typeof classifyIp>])[] = [
     ["127.0.0.1", "loopback"],
@@ -451,6 +553,10 @@ describe("classifyIp — pure IPv4/IPv6 parsing", () => {
     ["100.64.0.1", "private"],
     ["100.100.100.200", "private"],
     ["100.127.255.255", "private"],
+    ["198.18.0.1", "reserved"],
+    ["198.19.255.255", "reserved"],
+    ["240.0.0.1", "reserved"],
+    ["255.255.255.255", "reserved"],
     ["fc00::1", "private"],
     ["fd00::1", "private"],
     ["fd00:ec2::254", "private"],
@@ -469,6 +575,10 @@ describe("classifyIp — pure IPv4/IPv6 parsing", () => {
     ["::ffff:0:100.100.100.200", "private"],
     ["::100.100.100.200", "private"],
     ["64:ff9b::100.100.100.200", "private"],
+    // 6to4 wraps the same embedded IPv4 rules (SEC-11).
+    ["2002:a9fe:a9fe::", "link_local"],
+    ["2002:0808:0808::", "public"],
+    ["2002::1", "unspecified"],
     ["0.0.0.0", "unspecified"],
     ["0.0.0.1", "unspecified"],
     ["0.255.255.255", "unspecified"],

@@ -6,9 +6,11 @@
  * `createdAt` and finally `id` break ties. Strings are compared with plain code-unit `<`/`>`
  * rather than `localeCompare`, so two machines and two runs always agree.
  *
- * This is deliberately NOT the canonical bundle order. `data/canonical.ts` sorts route-first
- * before it applies the same priority, because a canonical export is grouped by page for a
- * readable diff (NFR-17). That is a different, equally deliberate order — do not merge the two.
+ * This is deliberately NOT the canonical bundle order. `data/canonical.ts` sorts origin-first,
+ * then route-first, before it applies the same priority, because a canonical export is grouped
+ * by page for a readable diff (NFR-17). That is a different, equally deliberate order — do not
+ * merge the two. The comparator (`compareCodeUnits`) and the priority class (`reviewPriority`)
+ * are shared, so the two orders can never disagree about what "smaller" means (BP-07).
  * Review reads (protocol, CLI, MCP, federation) use this module.
  */
 
@@ -28,8 +30,15 @@ export function reviewPriority(note: Note): number {
   return note.status === "open" ? 2 : 3;
 }
 
-/** Code-unit string comparison: deterministic everywhere, unlike `localeCompare`. */
-function compareText(a: string, b: string): number {
+/**
+ * Code-unit string comparison: deterministic everywhere, unlike `localeCompare`.
+ *
+ * This is the one comparator the data layer shares (BP-07): `canonical.ts` imports it for the
+ * canonical bundle order, and `bundle.ts`, `markdown.ts` and `aggregate.ts` import it from here
+ * too — none of them keeps a local copy. A reviewer and an agent therefore never disagree about
+ * which note comes first.
+ */
+export function compareCodeUnits(a: string, b: string): number {
   if (a < b) {
     return -1;
   }
@@ -45,9 +54,9 @@ export function compareForReview(a: Note, b: Note): number {
   if (byPriority !== 0) {
     return byPriority;
   }
-  const byCreated = compareText(a.createdAt, b.createdAt);
+  const byCreated = compareCodeUnits(a.createdAt, b.createdAt);
   if (byCreated !== 0) {
     return byCreated;
   }
-  return compareText(a.id, b.id);
+  return compareCodeUnits(a.id, b.id);
 }

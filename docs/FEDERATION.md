@@ -502,14 +502,27 @@ host allowlist, classifies literal and resolved addresses, and blocks link-local
 unspecified and multicast targets in every mode. Every request re-runs the check, and redirects are
 refused. The target's own `/config` and `/health` are probed before `federates` is trusted.
 
-**Residual risk: DNS check-to-connect TOCTOU.** The pre-flight resolver and `fetch` perform two
-separate DNS resolutions. A hostname with a short TTL and an attacker-controlled DNS server can
-answer with a public address for the check and a link-local or metadata address for the connection.
-v1 does **not** pin the resolved IP; this is a documented residual risk, not a silent mitigation.
+**Bounded responses (SEC-05).** Every peer response is bounded twice, per instance: by the request
+deadline (`timeoutMs`, default `3000`) and by a byte cap (`maxBodyBytes`, default `8 MiB` — the hub's
+own inbound ceiling; `/config` is a discovery probe and is clamped to `64 KiB`). The deadline is
+armed before the pre-flight check and stays armed while the body is consumed, so a peer that sends
+headers and then trickles the body is refused at the deadline just like one that never answers.
+Bodies are read through `response.body` and checked chunk by chunk; crossing the cap cancels the
+stream and reports `invalid_response` (`… exceeded N bytes`) instead of buffering past the limit, and
+a deadline that fires mid-body is `invalid_response` too (`… not complete within N ms`) — the peer
+did answer, it just never finished the answer. Both bounds are per peer, so `--concurrency` (up to
+`16`) multiplies the number of peers, never one peer's allowance; the aggregate records one error
+entry per failed peer and still returns the notes of the healthy ones (`partial: true`).
+
+**Residual risk: DNS check-to-connect TOCTOU.** The address check is a **pre-check, not pinning**.
+The pre-flight resolver and `fetch` perform two separate DNS resolutions, so there is a
+re-resolution window: a hostname with a short TTL and an attacker-controlled DNS server can answer
+with a public address for the check and a link-local or metadata address for the connection. v1 does
+**not** pin the resolved IP; this is an accepted residual risk, not a silent mitigation.
 Boundaries that remain in place: the check runs before every request, redirects are refused, the
 optional host allowlist narrows the set, and link-local/metadata targets are blocked both literally
 and after resolution. A future release can close the gap with a pinned dispatcher/agent or a proxy
-that performs its own resolution.
+that performs its own resolution; connection pinning is explicitly **not** a 0.12.0 goal.
 
 **Credential blast radius.** The registry holds references, never values; a literal credential key
 makes the document invalid before any request. One token per peer with minimal scope limits what a

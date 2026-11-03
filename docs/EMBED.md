@@ -17,6 +17,11 @@
 Pick the row that matches your host. The rest of this document covers the
 details.
 
+**Pages on `file://` are memory-only.** A `file:///…` document has an opaque origin, so there is no
+persistent bucket and the store degrades to memory: notes survive while the tab is open and are gone
+after a reload. Use the `localStorage` adapter (or a hub) when notes taken on a local file must
+survive.
+
 ## 2. The one-line attachment
 
 ### Script-tag form (auto mode)
@@ -77,10 +82,9 @@ equivalent (`data-*`). The loader mirrors every element attribute
 | `endpoint` | – | Base URL of the notes API, absolute or root-relative (e.g. `"/api/v1/bluepencil"`). Presence implies `adapter="http"`. |
 | `headers` | – | JSON object with extra request headers, e.g. `{"X-Workspace":"7"}`. |
 | `headers-from` | – | Global path to a function returning headers, evaluated on every request (refreshed tokens), e.g. `"window.__bpHeaders"`. Wins over `headers`. |
-| `token` | – | Convenience: written into the header named by `token-header` (default `Authorization`). Verbatim unless `token-scheme` is set. |
-| `token-header` | `"Authorization"` | Header name for `token`. |
-| `token-scheme` | – | Prefixed scheme for `token` (e.g. `"Bearer"` → `Authorization: Bearer ***`). Default: none (verbatim). |
-| `route` | – | `"url"` → store `location.pathname + location.search` as the anchor route (SPA hosts). |
+| `route` | `"url"` (path-only) | `"url"` stores `location.pathname` only, so a deep-link token in the query never reaches a note. `"url-with-query"` is the explicit opt-in; combine it with `query-allow`/`query-deny`. |
+| `query-allow` | – | Comma-separated query parameters to keep under `route="url-with-query"` (e.g. `"utm_*"`). A name in `allow` overrides the default deny list. |
+| `query-deny` | – | Comma-separated query parameters to drop under `route="url-with-query"`. Deny wins over allow. Without either list, `url-with-query` stores `pathname + search` verbatim. |
 | `route-from` | – | Global path to a function returning the route (router-aware hosts). It is called as `fn(element)` with the annotated element, so the route belongs to *that* note; a zero-parameter host keeps working. Wins over `route`. |
 | `anchor-hooks` | `"data-bluepencil,data-testid"` | Comma-separated attribute names used as the primary anchor, in priority order. For hosts with *other* stable hooks or a different priority, e.g. `"id,data-testid"` — `data-testid` is already a default, so a host with test hooks needs no configuration. |
 | `gate` | – | Global path to a function (or boolean) that decides whether the layer may exist; ANDed with `enabled != "false"`. Re-evaluated on every `enable()`. |
@@ -89,13 +93,18 @@ equivalent (`data-*`). The loader mirrors every element attribute
 | `dock` | `"top"` | The edge the strip and its handle dock to (FR-12.13): `"top"` or `"bottom"`. The mode hint moves to the opposite edge, so a docked layer cannot collide with itself. |
 | `keymap` | – | Remap the layer's shortcuts: `"bar=g, panel=p"` (FR-12.11). A conflict, an unknown id or a key that cannot be remapped (the `1…9` range, the composer-scoped save) is reported through `element.issues` — never resolved silently. The help legend shows the effective keys. |
 | `modes` | absent → all four | The host's capture-mode ceiling (FR-4.10): `text`, `design`, `bug`, `feature`, in any comma-separated order, e.g. `modes="text,design,bug"`. `modes="none"` mounts a read-only layer (list, filters, legend and settings still work). Unknown values are reported through `element.issues`; if no valid mode remains the layer fails closed to read-only rather than widening the ceiling. Loader form `data-modes="…"`. |
-| `voice` | – | Opt-in for composer dictation (FR-21.1). Presence-based, like a boolean HTML attribute: `voice="true"` (or a bare `voice`) shows the mic button, `voice="false"` keeps it off, and an absent attribute means there is **no** dictation UI, no recognition listener and no permission prompt. Loader form `data-voice="true"`. **Privacy (FR-21.5):** only the final transcript text is ever kept — no audio is stored and the core makes no network request; Chromium's Web Speech API may itself send audio to a browser service, which is outside the library's control. |
-| `voice-engine` | – | Global path to a factory returning a recogniser engine (FR-21.6), e.g. `"myApp.whisperEngine"`. When set it wins over the browser Web Speech API, so an offline host needs no browser service. It must resolve to a function; anything else is reported through `element.issues`. Loader form `data-voice-engine="…"`. |
 
-The loader mirrors the element attributes 1:1 and only forwards **non-empty** values, so `data-voice`
-without a value is *not* forwarded — use `data-voice="true"` (or `data-voice="false"` to stay
-explicitly off). An explicitly requested `voice` on a platform without a recogniser produces an entry
-in `element.issues` (FR-21.2), never a silent no-op.
+The `token`, `token-header` and `token-scheme` attributes are **removed** in 0.12: the credential is
+worker-only, so the page has no attribute that accepts one. A host that still sets them gets an
+`issues` entry that names the removal and points at the extension instead of silently sending an
+unauthenticated request.
+
+`headers-from`, `route-from` and `gate` resolve a dotted path into the host's global scope and
+**execute host code** (a function on every request, every note, or every enable). They are a
+host-owned extension point, not data: they must never come from untrusted markup or from a value a
+page can inject, because whatever they resolve to runs with the page's privileges. A path that does
+not resolve is reported through `element.issues`; an unresolvable path is never evaluated and never
+silently ignored. This behaviour is unchanged in 0.12.
 
 A note's route comes from the element that was annotated, not from the scroll position: with
 `route-from` the host is asked as `fn(element)`. That is not a cosmetic detail — on a scroll-animated
@@ -113,7 +122,8 @@ recognises these additional keys:
 | `data-src` | `<dir of attach.js>/bluepencil.element.min.js` | Where the element build is loaded from. May contain `{version}`, which is replaced by `data-version`. |
 | `data-version` | – | Version label the loader reports (and the value substituted into `{version}` in `data-src`). With `data-manifest` the version comes from the manifest and this key is only informational. |
 | `data-manifest` | – | URL of a JSON manifest for runtime updates: `{"version":"…","element":"…","sha256":"…"}`. |
-| `data-integrity` | `"false"` | `"true"` to verify the `sha256` from the manifest with WebCrypto before executing. |
+| `data-integrity` | `"false"` | `"true"` turns on the loader's **download check**: the element bytes are hashed with WebCrypto before the module is imported. Without a digest (`data-sha256` or `manifest.sha256`) this is an error (`integrity_missing`), never a silent pass. |
+| `data-sha256` | – | Optional **host pin**: the 64-character hex SHA-256 the host itself vouches for. It wins over `manifest.sha256`, and a mismatch refuses the build. Only a pin is a trust anchor a compromised manifest or CDN cannot rewrite. Used when `data-integrity="true"` is set. |
 | `data-watch` | `"0"` | Seconds between manifest polls; `0` = off. On a version change the old layer is torn down and the new version mounted. |
 | `data-tag` | `"bluepencil-notes"` | Element tag name to create. |
 | `data-auto` | `"true"` | `"false"` = only define the custom element; the host mounts the element itself. |
@@ -122,7 +132,10 @@ recognises these additional keys:
 
 1. `headers` (static object) → merged
 2. `headers-from()` result → merged on top
-3. `token` → written last into the header named by `token-header` (wins)
+
+There is no third step: a credential is never built in the page. The extension's service worker is
+the only place that adds an auth header, and a plain embed authenticates through `headers` /
+`headers-from` supplied by the host.
 
 ### CSP: `script-src` and `connect-src`
 
@@ -136,7 +149,7 @@ both. `script-src` alone is not enough for a page that talks to a hub.
 | the manifest, and the file the digest is checked against | `latest.json`; with `data-integrity="true"` the element file again | `connect-src` |
 | the hub API | `{base}/health`, `{base}/notes…`, `{base}/sessions` | `connect-src` |
 
-The loader's manifest read (`data-manifest`, `data-watch`, `reload()`) and the SRI check are
+The loader's manifest read (`data-manifest`, `data-watch`, `reload()`) and the digest check are
 `fetch()` calls in the page, so `connect-src` governs them; the element build is a script load, so
 `script-src` governs it (both the dynamic `import()` and the script-tag fallback). The mounted layer
 then talks to the hub through its HTTP adapter, whose requests are `connect-src` as well. The hub
@@ -198,8 +211,8 @@ The manifest is a JSON file with three required keys:
 | Field | Type | Meaning |
 |---|---|---|
 | `version` | string | Version label; any difference from the running version triggers the swap (it is compared for equality, never ordered). |
-| `element` | string | URL of the `bluepencil.element.min.js` build for this version, resolved against the manifest URL. |
-| `sha256` | string | Hex-encoded SHA-256 hash of the element file; verified whenever `data-integrity="true"` is set. |
+| `element` | string | URL of the `bluepencil.element.min.js` build for this version, resolved against the manifest URL. It may point at another origin (a CDN); with `data-integrity="true"` and no host pin the loader warns, but does not block. |
+| `sha256` | string | Hex-encoded SHA-256 hash of the element file; used for the download check when `data-integrity="true"` is set **and** no `data-sha256` pin is given. |
 
 ### Loader attributes for runtime updates
 
@@ -208,7 +221,8 @@ The manifest is a JSON file with three required keys:
 | `data-manifest` | URL of the manifest (enables polling). |
 | `data-version` | Set to `"latest"` (the default when `data-manifest` is present) to always follow the manifest. |
 | `data-watch` | Polling interval in seconds; `0` = off. |
-| `data-integrity` | `"true"` to verify the manifest `sha256` against the fetched file with WebCrypto before executing it. |
+| `data-integrity` | `"true"` turns on the download check: the fetched element bytes are hashed with WebCrypto before the module is imported. Opting in without a digest is an error. |
+| `data-sha256` | Host pin (64 hex characters). Wins over the manifest digest; a mismatch refuses the build and the module is not imported. |
 
 ### `window.bluepencilAttach` API
 
@@ -304,11 +318,16 @@ only in unit tests. See [examples/attach/README.md](../examples/attach/README.md
   `script-src` CSP needs an explicit allowlist entry for the URL of `attach.js` (and for the element
   build); a page that talks to a hub also needs the hub origin in `connect-src` — `script-src`
   alone does not cover `fetch()`. See [CSP: `script-src` and `connect-src`](#csp-script-src-and-connect-src).
-* **Subresource Integrity (SRI):** when `data-integrity="true"`, the
-  manifest's `sha256` is verified with WebCrypto. The element file must
-  be served from the **same origin** or with appropriate
-  `Access-Control-Allow-Origin` headers (CORS) for the hash to be
-  fetchable.
+* **Download check, not an execution-time integrity check.** With `data-integrity="true"` the
+  loader hashes the fetched element bytes with WebCrypto before it imports the module. That is a
+  download check: the browser does not enforce a digest at execution time, and the module is imported
+  normally afterwards. The expected digest comes from `data-sha256` (the **host pin**) or, if that is
+  absent, from `manifest.sha256`. Real assurance needs the host pin — a manifest served from the same
+  mutable location can be rewritten by whoever compromises it, together with its digest. Pin the
+  build with `data-sha256` when you need assurance. `manifest.element` may point at another origin (a
+  CDN); that is allowed, and with `data-integrity="true"` and no host pin the loader logs a warning
+  instead of blocking. A cross-origin build must be fetchable (CORS) so the digest check can read the
+  bytes.
 
 ## 4. The store contract
 
@@ -483,7 +502,6 @@ and they must be enforced independently.
 <script src="../../dist/attach.js"
         data-gate="myApp.reviewNotesAllowed"
         data-endpoint="/api/v1/bluepencil"
-        data-token="..."
         data-environment="dev"></script>
 ```
 
@@ -550,7 +568,7 @@ Full host-side checklist: [INTEGRATION.md §6](INTEGRATION.md#6-admin-debug-mode
 | `endpoint` returned HTML instead of JSON | Wrong origin, or the SPA does not proxy the API path. | Verify the endpoint URL returns `Content-Type: application/json`. Use `curl` to test. |
 | Layer mounts, but nothing reaches the hub | The page's `connect-src` does not allow the hub origin — a `default-src 'self'` with no `connect-src` does not. The console says `Refused to connect … violates the following Content Security Policy directive: "connect-src …"` (or `"default-src …"` when `connect-src` is absent). | Confirm in DevTools: the console violation names the URL and the directive, and Network shows the request as blocked. Allow the hub origin in `connect-src`, or run the layer through the extension — its hub traffic leaves through the service worker. See [CSP: `script-src` and `connect-src`](#csp-script-src-and-connect-src). |
 | Loader never updates / `bp-attach-error` on a manifest page | `connect-src` blocks `latest.json` (or the `data-integrity` fetch); `script-src` alone does not cover it. | Allow the loader origin in `connect-src`, then confirm the blocked request in DevTools → Network (the console error names both the URL and the directive). |
-| `401` / `403` from the API | Token is missing, expired, or misconfigured. | Check `data-token`, `data-token-header`, `data-token-scheme` on the script tag. |
+| `401` / `403` from the API | The credential is missing or expired. | Configure it in the extension options page (worker-only); a plain embed supplies `headers`/`headers-from` itself. `data-token*` was removed in 0.12 and is reported through `element.issues`. |
 | Notes lose their element (marker drift) | Anchor resolved to an unstable path. | Add a stable `data-testid` or `data-bluepencil` hook to the target element. |
 | Version not updating (manifest cache) | Browser cached `latest.json`. | Ensure `latest.json` is served with `Cache-Control: no-store`. |
 | Element unknown / not defined | The element script loaded **after** the host tried to use `<bluepencil-notes>`. | Ensure `attach.js` or `bluepencil.element.min.js` loads before the element is placed in the DOM. |

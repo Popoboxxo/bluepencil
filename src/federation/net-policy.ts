@@ -35,6 +35,7 @@ export type UrlPolicyReason =
   | "metadata"
   | "unspecified"
   | "multicast"
+  | "reserved"
   | "unresolvable_host";
 
 /** Error thrown by `normalizeBaseUrl`/`checkBaseUrl`. Carries a machine-readable reason. */
@@ -83,7 +84,14 @@ export type IpClass =
   | "link_local"
   | "unspecified"
   | "multicast"
+  | "reserved"
   | "public";
+
+/**
+ * A parsed IPv6 address: exactly eight 16-bit groups. Encoding the length in the type is what
+ * lets the group arithmetic below stay assertion-free; `parseIpv6` is the only producer.
+ */
+type Ipv6Groups = readonly [number, number, number, number, number, number, number, number];
 
 /** Cloud metadata host names, always blocked regardless of `allowInsecure`. */
 export const METADATA_HOSTNAMES: readonly string[] = [
@@ -125,7 +133,18 @@ function parseIpv4(value: string): readonly [number, number, number, number] | n
     octets.push(octet);
   }
 
-  return [octets[0]!, octets[1]!, octets[2]!, octets[3]!];
+  return toIpv4Quad(octets);
+}
+
+/**
+ * Widens a length-checked octet list to a four-octet tuple, or `null` when the arity is wrong.
+ * The explicit checks are what keep the parser assertion-free under `noUncheckedIndexedAccess`.
+ */
+function toIpv4Quad(octets: readonly number[]): readonly [number, number, number, number] | null {
+  if (octets.length !== 4) return null;
+  const [a, b, c, d] = octets;
+  if (a === undefined || b === undefined || c === undefined || d === undefined) return null;
+  return [a, b, c, d];
 }
 
 /**
@@ -147,7 +166,7 @@ function expandEmbeddedIpv4(value: string): string | null {
 }
 
 /** Parses an IPv6 address into eight 16-bit groups. Returns `null` for malformed input. */
-function parseIpv6(value: string): readonly number[] | null {
+function parseIpv6(value: string): Ipv6Groups | null {
   // Zone identifiers are not part of a URL host and not supported here.
   if (value.includes("%")) return null;
   if (!value.includes(":")) return null;
@@ -169,21 +188,42 @@ function parseIpv6(value: string): readonly number[] | null {
     return groups;
   };
 
-  let groups: number[];
+  let groups: readonly number[];
   if (halves.length === 2) {
-    const head = toGroups(splitGroups(halves[0]!));
-    const tail = toGroups(splitGroups(halves[1]!));
+    const [headText, tailText] = halves;
+    if (headText === undefined || tailText === undefined) return null;
+    const head = toGroups(splitGroups(headText));
+    const tail = toGroups(splitGroups(tailText));
     if (head === null || tail === null) return null;
     const missing = 8 - head.length - tail.length;
     if (missing < 1) return null;
     groups = [...head, ...new Array<number>(missing).fill(0), ...tail];
   } else {
     const parsed = toGroups(splitGroups(expanded));
-    if (parsed === null || parsed.length !== 8) return null;
+    if (parsed === null) return null;
     groups = parsed;
   }
 
-  return groups;
+  return toIpv6Groups(groups);
+}
+
+/** Widens a length-checked group list to the eight-group tuple, or `null` on any other arity. */
+function toIpv6Groups(groups: readonly number[]): Ipv6Groups | null {
+  if (groups.length !== 8) return null;
+  const [g0, g1, g2, g3, g4, g5, g6, g7] = groups;
+  if (
+    g0 === undefined ||
+    g1 === undefined ||
+    g2 === undefined ||
+    g3 === undefined ||
+    g4 === undefined ||
+    g5 === undefined ||
+    g6 === undefined ||
+    g7 === undefined
+  ) {
+    return null;
+  }
+  return [g0, g1, g2, g3, g4, g5, g6, g7];
 }
 
 function stripBrackets(host: string): string {
@@ -207,14 +247,15 @@ function ipv4FromTail(high: number, low: number): string {
  * - IPv4-translated  `::ffff:0:a.b.c.d`   (`::ffff:0:0:0/96`)
  * - IPv4-compatible  `::a.b.c.d`          (`::/96`, but never `::` or `::1`)
  * - NAT64 well-known `64:ff9b::a.b.c.d`   (`64:ff9b::/96`)
+ * - 6to4             `2002:a.b.c.d::/48`  (embedded bits 16–47, SEC-11)
  *
  * The NAT64 local-use prefix `64:ff9b:1::/48` is deliberately not unwrapped: RFC 6052 places
  * the IPv4 bits at a prefix-length-dependent offset, so a fixed 32-bit tail is not well-defined.
  */
-function embeddedIpv4FromGroups(groups: readonly number[]): string | undefined {
+function embeddedIpv4FromGroups(groups: Ipv6Groups): string | undefined {
   // IPv4-mapped `::ffff:a.b.c.d`.
   if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
-    return ipv4FromTail(groups[6]!, groups[7]!);
+    return ipv4FromTail(groups[6], groups[7]);
   }
 
   // IPv4-translated `::ffff:0:a.b.c.d` — a distinct prefix from the mapped form above.
@@ -223,14 +264,14 @@ function embeddedIpv4FromGroups(groups: readonly number[]): string | undefined {
     groups[4] === 0xffff &&
     groups[5] === 0
   ) {
-    return ipv4FromTail(groups[6]!, groups[7]!);
+    return ipv4FromTail(groups[6], groups[7]);
   }
 
   // IPv4-compatible `::a.b.c.d`; `::` and `::1` keep their unspecified/loopback meaning.
   if (groups.slice(0, 6).every((group) => group === 0)) {
     const unspecified = groups[6] === 0 && groups[7] === 0;
     const loopback = groups[6] === 0 && groups[7] === 1;
-    if (!unspecified && !loopback) return ipv4FromTail(groups[6]!, groups[7]!);
+    if (!unspecified && !loopback) return ipv4FromTail(groups[6], groups[7]);
   }
 
   // NAT64 well-known prefix `64:ff9b::/96`.
@@ -239,7 +280,12 @@ function embeddedIpv4FromGroups(groups: readonly number[]): string | undefined {
     groups[1] === 0xff9b &&
     groups.slice(2, 6).every((group) => group === 0)
   ) {
-    return ipv4FromTail(groups[6]!, groups[7]!);
+    return ipv4FromTail(groups[6], groups[7]);
+  }
+
+  // 6to4 `2002::/16` carries the IPv4 address in bits 16–47 (groups 1 and 2).
+  if (groups[0] === 0x2002) {
+    return ipv4FromTail(groups[1], groups[2]);
   }
 
   return undefined;
@@ -259,6 +305,20 @@ export function embeddedIpv4(address: string): string | undefined {
   const groups = parseIpv6(bare);
   if (groups === null) return undefined;
   return embeddedIpv4FromGroups(groups);
+}
+
+/**
+ * Returns the IPv4 address carried by a 6to4 literal (`2002::/16`, bits 16–47), or `null`
+ * for every other input. Kept separate from {@link embeddedIpv4} because it answers the
+ * narrower question the classification contract names explicitly (SEC-11).
+ */
+export function unwrap6to4(address: string): string | null {
+  const bare = stripBrackets(address.trim());
+  if (!bare.includes(":")) return null;
+
+  const groups = parseIpv6(bare);
+  if (groups === null || groups[0] !== 0x2002) return null;
+  return ipv4FromTail(groups[1], groups[2]);
 }
 
 /** Canonical host form used for comparisons: lower-case, no IPv6 brackets, no trailing dot. */
@@ -281,11 +341,15 @@ function classifyIpv4(octets: readonly [number, number, number, number]): IpClas
   if (a === 192 && b === 168) return "private";
   // Carrier-grade NAT: not internet-routable, treated like a private range.
   if (a === 100 && b >= 64 && b <= 127) return "private";
+  // Benchmarking `198.18.0.0/15` and the former class E / broadcast block `240.0.0.0/4`
+  // (`255.255.255.255` included) are never a public peer (SEC-11).
+  if (a === 198 && (b === 18 || b === 19)) return "reserved";
+  if (a >= 240) return "reserved";
   return "public";
 }
 
-function classifyIpv6(groups: readonly number[]): IpClass {
-  const first = groups[0]!;
+function classifyIpv6(groups: Ipv6Groups): IpClass {
+  const first = groups[0];
   const allZero = groups.every((group) => group === 0);
 
   if (allZero) return "unspecified";
@@ -331,6 +395,54 @@ export function classifyIp(address: string): IpClass {
   const ipv4 = parseIpv4(bare);
   if (ipv4 === null) throw new Error(`Not an IP address: ${JSON.stringify(address)}`);
   return classifyIpv4(ipv4);
+}
+
+/**
+ * Coarse, total address classification for the federation pre-check (SEC-11).
+ *
+ * Unlike {@link classifyIp} this never throws: malformed input is `"invalid"`. Valid literals
+ * that have no dedicated bucket in the public contract — `unspecified` (`0.0.0.0/8`, `::`) and
+ * `multicast` — report `"reserved"`, because neither can be a routable peer. Metadata is
+ * checked first, so an IPv4-embedded or 6to4-wrapped `169.254.169.254` reports `"metadata"`,
+ * not `"link-local"` (N-01). The function is pure: no DNS, no network.
+ */
+export type AddressClass =
+  | "public"
+  | "private"
+  | "loopback"
+  | "link-local"
+  | "reserved"
+  | "metadata"
+  | "invalid";
+
+export function classifyAddress(address: string): AddressClass {
+  const bare = stripBrackets(address.trim());
+  if (!isIpLiteral(bare)) return "invalid";
+
+  if (isMetadataAddress(bare)) return "metadata";
+
+  let kind: IpClass;
+  try {
+    kind = classifyIp(bare);
+  } catch {
+    return "invalid";
+  }
+
+  switch (kind) {
+    case "public":
+      return "public";
+    case "private":
+      return "private";
+    case "loopback":
+      return "loopback";
+    case "link_local":
+      return "link-local";
+    case "reserved":
+      return "reserved";
+    case "unspecified":
+    case "multicast":
+      return "reserved";
+  }
 }
 
 /** True when `host` is a valid IPv4 or IPv6 literal (brackets allowed). */
@@ -476,6 +588,12 @@ function assertAddressAllowed(
   }
   if (kind === "multicast") {
     throw new UrlPolicyError("multicast", "Base URL points at a multicast address", {
+      host,
+      address,
+    });
+  }
+  if (kind === "reserved") {
+    throw new UrlPolicyError("reserved", "Base URL points at a reserved address", {
       host,
       address,
     });

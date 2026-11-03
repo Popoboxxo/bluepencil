@@ -39,8 +39,11 @@ errors, **2** parse error.
 | `14-live-systems/` | FR-14.x | environment tag, bundle export/import, promotion, modes |
 | `15-headless/` | FR-15.x | `bluepencil/data`, `bluepencil/cli`, single source of truth |
 | `16-mcp/` | FR-16.x | MCP tools, read-only default, environment binding, resources, prompts |
-| `21-voice/` | FR-21.x | dictation opt-in, feature detection, mic button, teardown, privacy, engine injection, i18n, a11y |
-| `99-non-functional/` | NFR-1…21 | footprint, size budget, determinism, CSP, environment isolation |
+| `17-attach-loader/` | FR-17.x | one script tag, attribute vocabulary, runtime manifest updates, integrity check |
+| `18-store-journal/` | FR-18.x | mutation history, file hash chain, git backend, failure isolation |
+| `19-version-reporting/` | FR-19.x | one version source, every artifact, loader version |
+| `20-presentation-mode/` | FR-20.x | presenter panel, cue plan, audience view, keyboard profile |
+| `99-non-functional/` | NFR-1…22 | footprint, size budget, determinism, CSP, environment isolation |
 
 Each directory holds a `schema.yaml` (the contract for that document) and
 `requirements.md` (the requirements themselves).
@@ -90,6 +93,6 @@ is the one worth engineering against.
 
 ## Coverage today
 
-162 requirements (140 functional, 22 non-functional), all `status: approved`. Priority split:
-103 P0, 49 P1, 10 P2. Nine have no `verify` method yet; `npm run spec` names them on every run so
+171 requirements (149 functional, 22 non-functional), all `status: approved`. Priority split:
+101 P0, 58 P1, 12 P2. Nine have no `verify` method yet; `npm run spec` names them on every run so
 the gap stays visible instead of being silently dropped.

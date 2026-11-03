@@ -17,6 +17,24 @@
  * `docs/DOCKER.md` say so explicitly.
  */
 
+/**
+ * The shortest `--auth-secret` that still counts as a credential (G2, SEC-07).
+ *
+ * A shared secret is the *only* gate on a hub that hands it to every browser, so a six-character one
+ * turns the notes API into a brute-force target that answers 401 in microseconds. The admin secret
+ * uses the same floor: both are operator-supplied strings, and two minimum lengths would only
+ * produce "why does this one work and that one not". Lives here rather than in `server/hub.ts` so
+ * `server/mint-cli.ts` can enforce the sibling floor without importing the whole hub.
+ */
+export const SECRET_MIN_LENGTH = 16;
+
+/**
+ * The shortest `--token-key` (G2, SEC-04). Higher than the secret's floor because the key is an HMAC
+ * signing key: its length is the strength ceiling of every token ever issued against it, and a
+ * token cannot be stronger than the key that signed it. `bluepencil token` enforces the same floor.
+ */
+export const TOKEN_KEY_MIN_LENGTH = 32;
+
 /** What a client must present: a signed token, the shared secret, both, or nothing. */
 export type CredentialMode = "token+secret" | "token" | "secret" | "none";
 
@@ -32,12 +50,12 @@ export interface CredentialContext {
 }
 
 /** True when the hub accepts the shared secret. An empty string is "not configured", not a secret. */
-export function hasSecretCredential(context: CredentialContext): boolean {
+function hasSecretCredential(context: CredentialContext): boolean {
   return typeof context.authSecret === "string" && context.authSecret.length > 0;
 }
 
 /** True when the hub accepts signed tokens. */
-export function hasTokenCredential(context: CredentialContext): boolean {
+function hasTokenCredential(context: CredentialContext): boolean {
   return context.verifyToken !== undefined;
 }
 

@@ -50,27 +50,43 @@ import {
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { migrateBundle } from "../src/data/migrate";
 import { assertBundle } from "../src/data/schema";
+import { errorText, oneLine } from "./text";
 import {
   DEFAULT_BASE_PATH,
   JSON_CONTENT_TYPE,
   SERVER_VERSION,
   HUB_APP_NAME,
   HUB_EXPORTED_BY,
+  THROTTLE_BUDGETS,
+  authorize,
   corsHeaders,
   errorBody,
+  gateRequest,
   handleRequest,
+  hostRefusal,
   isApiPath,
   isLoopbackAddress,
   normalizeBase,
   preflightResponse,
+  publicError,
   requestPath,
   type AdminThrottle,
   type HandlerContext,
   type NoteStoreState,
   type ServerErrorCode,
+  type ServerRequest,
+  type ServerResponse,
+  type ThrottleKind,
   type MutationEvent,
 } from "./handler";
+import { CORS_WILDCARD_WARNING, corsOriginPolicy } from "./cors";
 import { writeAtomic } from "./atomic-write";
+import {
+  credentialMode,
+  SECRET_MIN_LENGTH,
+  TOKEN_KEY_MIN_LENGTH,
+  type CredentialMode,
+} from "./credentials";
 import { asHandlerVerifier, createTokenIssuer } from "./tokens";
 // The admin surface's device registry lives next to the store; the page itself is only a route.
 import { devicesPathFor } from "./admin";
@@ -94,8 +110,68 @@ import {
 export const DEFAULT_PORT = 8787;
 export const DEFAULT_HOST = "127.0.0.1";
 
-/** Request bodies above this are refused with 413 instead of being buffered without bound. */
+/** Request bodies above this are aborted (socket destroyed), never buffered or drained (SEC-08). */
 export const MAX_BODY_BYTES = 8 * 1024 * 1024;
+
+/* The credential floors live in `server/credentials.ts` next to the rest of the credential policy,
+ * and are re-exported here because this is where the CLI contract documents them (contract §3.4 D).
+ * One definition, two import paths — `server/mint-cli.ts` must not pull the hub in for a number. */
+export { SECRET_MIN_LENGTH, TOKEN_KEY_MIN_LENGTH } from "./credentials";
+
+/** A start-up safety warning. `code` is stable; `message` is what an operator reads on stderr. */
+export interface StartupWarning {
+  code: "unauthenticated_non_loopback" | "cors_wildcard";
+  message: string;
+}
+
+/**
+ * True when `--host` names an address only this machine can reach (G1).
+ *
+ * This is deliberately the *bind* question, not a request question: `--host localhost` binds `::1`,
+ * `--host 0.0.0.0` binds every interface, and the two mean opposite things for a hub without a
+ * credential. `""` is not a loopback spelling — `listen(port, "")` binds the unspecified address.
+ */
+export function isLoopbackBind(host: string): boolean {
+  return isLoopbackAddress(host.trim());
+}
+
+/**
+ * The warnings a hub start owes its operator (G1, SEC-01/SEC-10, ADR-0.12-S1).
+ *
+ * Pure on purpose: the decision is testable without a socket, and the process only has to print the
+ * list. A non-loopback bind without a client credential is **allowed** (refusing it would break
+ * every existing LAN/lab setup with no migration path) but never silent — see
+ * {@link startHub}, which writes these before any `--quiet` check, because a warning an operator can
+ * switch off is not a warning. The CORS wildcard is reported the same way; a hub that has no
+ * credential cannot reach this point through the CLI (`--cors '*'` is refused at parse time), so a
+ * `cors_wildcard` here always means "spelled out and gated".
+ */
+export function startupWarnings(input: {
+  readonly host: string;
+  readonly credential: CredentialMode;
+  readonly cors: string | null;
+}): StartupWarning[] {
+  const warnings: StartupWarning[] = [];
+  if (!isLoopbackBind(input.host) && input.credential === "none") {
+    warnings.push({
+      code: "unauthenticated_non_loopback",
+      message:
+        `WARNING (unauthenticated_non_loopback): this hub is bound to ${input.host || "every interface"} ` +
+        "and accepts requests without a credential, so notes, the journal location and the author " +
+        "identity are readable by anyone who can reach the port. Set --auth-secret or --token-key. " +
+        "This warning is not suppressed by --quiet.",
+    });
+  }
+  if (input.cors === "*") {
+    // The same constant `corsOriginPolicy` returns, so the line an operator reads cannot drift from
+    // the warning the policy carries.
+    warnings.push({
+      code: CORS_WILDCARD_WARNING.code,
+      message: CORS_WILDCARD_WARNING.message,
+    });
+  }
+  return warnings;
+}
 
 /** Raised when the store file exists but is not a valid note set — never treated as "no notes". */
 export class StoreFileError extends Error {
@@ -455,15 +531,7 @@ function write(response: NodeResponse, result: GlueResponse): void {
   response.end(result.body);
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function oneLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-/** The documented error shape, for the answers the glue itself produces (413, static 404/405). */
+/** The documented error shape, for the answers the glue itself produces (static 404/405, read errors). */
 function glueError(
   status: number,
   code: ServerErrorCode,
@@ -479,32 +547,44 @@ function glueError(
 
 class BodyTooLargeError extends Error {}
 
-/** Reads the request body with a hard limit, so a huge payload cannot exhaust the process. */
+/**
+ * Reads the request body with a hard limit, so a huge payload cannot exhaust the process.
+ *
+ * SEC-08: once the body is known to exceed the limit — from `content-length` or from the streamed
+ * size — the request is **destroyed**, not drained to its end. Draining means the hub keeps
+ * reading bytes it has already refused, which on a slow client is exactly the cheap flood the
+ * limit exists to stop. There is no 413 for this case: a destroyed socket cannot carry a response,
+ * and the documented behaviour of this hub is that an over-limit request is cut off.
+ */
 function readBody(request: IncomingMessage, limit: number): Promise<string> {
   return new Promise<string>((resolvePromise, rejectPromise) => {
     const declared = Number(request.headers["content-length"] ?? NaN);
     if (Number.isFinite(declared) && declared > limit) {
-      request.resume();
       rejectPromise(new BodyTooLargeError(`the request body exceeds ${limit} bytes`));
+      request.destroy();
       return;
     }
     const chunks: Buffer[] = [];
     let size = 0;
     let tooLarge = false;
     request.on("data", (chunk: Buffer) => {
+      if (tooLarge) return;
       size += chunk.length;
       if (size > limit) {
         tooLarge = true;
         chunks.length = 0;
+        rejectPromise(new BodyTooLargeError(`the request body exceeds ${limit} bytes`));
+        request.destroy();
         return;
       }
       chunks.push(chunk);
     });
     request.on("end", () => {
-      if (tooLarge) rejectPromise(new BodyTooLargeError(`the request body exceeds ${limit} bytes`));
-      else resolvePromise(Buffer.concat(chunks).toString("utf8"));
+      if (!tooLarge) resolvePromise(Buffer.concat(chunks).toString("utf8"));
     });
-    request.on("error", (error: unknown) => rejectPromise(error));
+    request.on("error", (error: unknown) => {
+      if (!tooLarge) rejectPromise(error);
+    });
   });
 }
 
@@ -548,7 +628,11 @@ function serveStatic(url: string, method: string, options: ResolvedOptions, resp
   try {
     body = readFileSync(file);
   } catch (error) {
-    write(response, glueError(500, "internal_error", `cannot read ${file}: ${errorText(error)}`, options));
+    /* SEC-09 (AC-D10): the answer is the fixed pair, never the fs text — a Node fs error names the
+     * absolute path, and this used to be echoed into the body. The detail is for the operator only,
+     * on stderr, with the same `internal_error:` prefix `publicError` uses for unexpected failures. */
+    process.stderr.write(`bluepencil server: internal_error: ${oneLine(errorText(error))}\n`);
+    write(response, glueError(500, "internal_error", "internal error", options));
     return;
   }
   write(response, {
@@ -635,6 +719,47 @@ function journalResponse(
   };
 }
 
+/**
+ * True when `url` targets this hub's MCP door (`{base}/mcp`), the one API route the synchronous
+ * router does not own. The body-dependent half lives in `handleMcpRoute`; the glue only needs the
+ * path here to run the identity check before reading a body (SEC-08).
+ */
+function isMcpRequest(url: string, base: string): boolean {
+  const path = requestPath(url);
+  const prefix = normalizeBase(base);
+  const relative =
+    prefix === "" ? path : path === prefix ? "/" : path.startsWith(`${prefix}/`) ? path.slice(prefix.length) : null;
+  return relative === "/mcp" || relative === "/mcp/";
+}
+
+/**
+ * SEC-08: everything that can be refused without touching the request body or the store file.
+ *
+ * The glue asks this before `readBody`/`loadNotes`, so an unauthenticated or unknown request costs
+ * a header check and nothing else. The decisions themselves are the router's own —
+ * `gateRequest` for the notes API and the admin surface, `authorize` for the MCP door — so this is
+ * an ordering, not a second policy. `null` means "read the body and let the normal path answer".
+ */
+function earlyRefusal(request: IncomingMessage, context: HandlerContext): ServerResponse | null {
+  const method = (request.method ?? "GET").toUpperCase();
+  const url = request.url ?? "/";
+  const remote = request.socket.remoteAddress;
+  const minimal: ServerRequest = {
+    method,
+    url,
+    headers: request.headers,
+    ...(remote === undefined ? {} : { remote }),
+  };
+  // The MCP door is asynchronous and lives outside the router. A read-scoped token may post a read
+  // message, so the pre-check demands identity only; the write scope follows from the message and
+  // is enforced after the body is read, inside the door. Non-POST verbs keep their own 405 answer.
+  if (isMcpRequest(url, context.base)) {
+    return method === "POST" ? authorize(minimal, context, "read") : null;
+  }
+  const gate = gateRequest(minimal, context);
+  return gate.kind === "response" ? gate.response : null;
+}
+
 async function respond(
   request: IncomingMessage,
   response: NodeResponse,
@@ -646,6 +771,15 @@ async function respond(
 ): Promise<void> {
   const url = request.url ?? "/";
   const method = (request.method ?? "GET").toUpperCase();
+
+  // SEC-02: the journal and the static site bypass the pure router, so the Host gate is asked here
+  // as well — one implementation (`hostRefusal`), three call sites, no path that forgets it. It runs
+  // before anything is read off the socket, so a foreign name costs no body and no store load.
+  const refusedHost = hostRefusal(request, context);
+  if (refusedHost !== null) {
+    write(response, refusedHost);
+    return;
+  }
 
   // The journal answers before the static/API split: it belongs to neither.
   if (requestPath(url) === journalPathOf(options.base)) {
@@ -659,16 +793,29 @@ async function respond(
     return;
   }
 
+  // SEC-08: host check → credential gate → then a body. Everything refused here (401/403/404/429,
+  // the two public probes and the preflight) costs no body read and no store load; only an allowed
+  // request reaches `readBody` below. The store is re-read after that, so a refused flood cannot
+  // turn into CPU and disk work proportional to the note set.
+  const early = earlyRefusal(request, context);
+  if (early !== null) {
+    write(response, early);
+    return;
+  }
+
   let body = "";
   try {
     body = await readBody(request, MAX_BODY_BYTES);
   } catch (error) {
-    const tooLarge = error instanceof BodyTooLargeError;
+    // Over-limit bodies destroy the socket inside `readBody` (SEC-08); there is no stream left to
+    // carry an answer, so nothing is written. Any other read error is still a documented 400.
+    if (error instanceof BodyTooLargeError) {
+      if (!response.writableEnded && !response.destroyed) response.end();
+      return;
+    }
     write(
       response,
-      tooLarge
-        ? glueError(413, "payload_too_large", oneLine(errorText(error)), options)
-        : glueError(400, "invalid_json", `the request body could not be read: ${errorText(error)}`, options),
+      glueError(400, "invalid_json", `the request body could not be read: ${errorText(error)}`, options),
     );
     return;
   }
@@ -1000,20 +1147,17 @@ function closeServer(server: Server): Promise<void> {
 }
 
 /* ------------------------------------------------------------------------------------------------
- * Admin throttle
+ * Credential throttle
  * ---------------------------------------------------------------------------------------------- */
 
-/** Failed admin-secret checks a peer may make inside one window before it is answered 429. */
-const ADMIN_THROTTLE_LIMIT = 10;
-/** Length of that window: five minutes, the value the answer names in `Retry-After`. */
-const ADMIN_THROTTLE_WINDOW_MS = 5 * 60 * 1000;
 /**
- * Upper bound on tracked peers. The map is keyed by a client-supplied-ish value (the peer address),
- * so without a cap a flood from many addresses would grow it without limit. Past the cap the oldest
- * entry is evicted — an attacker can then reset their own count by rotating addresses, but every
- * address they rotate to still costs them one connection, which is the same budget as no throttle.
+ * Upper bound on tracked (peer, kind) pairs. The map is keyed by a client-supplied-ish value (the
+ * peer address) multiplied by three credential kinds, so without a cap a flood from many addresses
+ * would grow it without limit. Past the cap the oldest entry is evicted — an attacker can then
+ * reset their own count by rotating addresses, but every address they rotate to still costs them
+ * one connection, which is the same budget as no throttle.
  */
-const ADMIN_THROTTLE_MAX_ENTRIES = 4096;
+const THROTTLE_MAX_ENTRIES = 4096;
 
 interface ThrottleEntry {
   count: number;
@@ -1022,53 +1166,61 @@ interface ThrottleEntry {
 }
 
 /**
- * The in-memory brute-force brake for `--admin-secret`: 10 failed checks per peer per 5 minutes.
+ * The one in-memory brute-force brake for every secret comparison (SEC-03, SEC-07, G2): the admin
+ * secret on `/admin/*` and on `/notes*`, the client shared secret, and signed tokens.
  *
  * It lives in the glue, not in the pure handler, because it needs a clock and mutable process
- * state. A success clears the peer's entry — an operator who mistypes once and then gets it right
- * should not carry the failure into the rest of the window.
+ * state. Each credential kind has its own counter per peer ({@link THROTTLE_BUDGETS}), so burning
+ * one budget never locks another. A success clears only that kind's entry — an operator who
+ * mistypes once and then gets it right should not carry the failure into the rest of the window.
+ *
+ * State stays bounded: at most {@link THROTTLE_MAX_ENTRIES} pairs, one small counter object each,
+ * and expired windows are pruned on every failure. No credential value is ever stored here — the
+ * key is the peer address and the kind, which is all a brute-force brake needs.
  */
 function createAdminThrottle(now: () => number = Date.now): AdminThrottle {
   const entries = new Map<string, ThrottleEntry>();
-  const keyOf = (remote: string | undefined): string => remote ?? "unknown";
-  const expired = (entry: ThrottleEntry, at: number): boolean =>
-    at - entry.firstAt >= ADMIN_THROTTLE_WINDOW_MS;
+  const keyOf = (remote: string | undefined, kind: ThrottleKind): string =>
+    `${kind}\u0000${remote ?? "unknown"}`;
+  const expired = (entry: ThrottleEntry, at: number, windowMs: number): boolean =>
+    at - entry.firstAt >= windowMs;
   const prune = (at: number): void => {
     for (const [key, entry] of entries) {
-      if (expired(entry, at)) entries.delete(key);
+      const kind = key.slice(0, key.indexOf("\u0000")) as ThrottleKind;
+      if (expired(entry, at, THROTTLE_BUDGETS[kind].windowMs)) entries.delete(key);
     }
   };
 
   return {
-    allow: (remote) => {
+    allow: (remote, kind = "admin") => {
       const at = now();
-      const key = keyOf(remote);
+      const key = keyOf(remote, kind);
       const entry = entries.get(key);
       if (entry === undefined) return true;
-      if (expired(entry, at)) {
+      if (expired(entry, at, THROTTLE_BUDGETS[kind].windowMs)) {
         entries.delete(key);
         return true;
       }
-      return entry.count < ADMIN_THROTTLE_LIMIT;
+      return entry.count < THROTTLE_BUDGETS[kind].maxFailures;
     },
-    failure: (remote) => {
+    failure: (remote, kind = "admin") => {
       const at = now();
       prune(at);
-      const key = keyOf(remote);
+      const key = keyOf(remote, kind);
       const entry = entries.get(key);
       if (entry !== undefined) {
         entry.count += 1;
         return;
       }
-      if (entries.size >= ADMIN_THROTTLE_MAX_ENTRIES) {
+      if (entries.size >= THROTTLE_MAX_ENTRIES) {
         // Map iteration is insertion order, so the first key is the oldest entry.
         const oldest = entries.keys().next().value;
         if (oldest !== undefined) entries.delete(oldest);
       }
       entries.set(key, { count: 1, firstAt: at });
     },
-    success: (remote) => {
-      entries.delete(keyOf(remote));
+    success: (remote, kind = "admin") => {
+      entries.delete(keyOf(remote, kind));
     },
   };
 }
@@ -1214,7 +1366,12 @@ export async function startHub(options: HubOptions): Promise<RunningServer> {
         response.end();
         return;
       }
-      write(response, glueError(500, "internal_error", errorText(error), resolved));
+      /* SEC-09: the glue's last-resort answer is the same fixed pair the router uses. `publicError`
+       * writes the detail — which may name an absolute path or a stack — to stderr and returns
+       * `internal_error` / `internal error`, so this path cannot leak what `handler.ts` already
+       * hides. */
+      const failure = publicError(error);
+      write(response, glueError(500, failure.code, failure.message, resolved));
     });
   });
 
@@ -1237,6 +1394,22 @@ export async function startHub(options: HubOptions): Promise<RunningServer> {
   // that repeated the flag would call a network-reachable hub "this machine only".
   const boundHost = address !== null && typeof address === "object" ? address.address : resolved.host;
   context.bind = { host: boundHost, port };
+
+  /* G1/SEC-01: the binding is only known now, so the safety warnings are decided here and written
+   * before the `--quiet` check below — deliberately. `--quiet` silences progress chatter, not the
+   * one line that says this hub hands every note to anyone who can reach the port; a warning that a
+   * flag can switch off is not a warning. The decision itself is `startupWarnings()`, pure and
+   * testable without a socket. */
+  for (const warning of startupWarnings({
+    host: boundHost,
+    credential: credentialMode({
+      ...(resolved.authSecret !== undefined ? { authSecret: resolved.authSecret } : {}),
+      ...(tokenIssuer !== undefined ? { verifyToken: tokenIssuer } : {}),
+    }),
+    cors: resolved.cors ?? null,
+  })) {
+    process.stderr.write(`bluepencil server: ${warning.message}\n`);
+  }
 
   /* Plan §6 step 5: the actual bind is only known now, so the self-reference check runs again for
    * `--port 0`. A registry entry that addresses this very hub must not turn into a loop (it would
@@ -1432,15 +1605,21 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
     }
     journalCoalesceMs = parsed;
   }
-  const cors = argv.some((arg) => arg === "--cors" || arg.startsWith("--cors="))
-    ? (get("--cors") ?? "*")
-    : undefined;
   // The flag or the environment, and an empty value is a configuration error rather than "no
   // authentication": `--auth-secret=` reads as a typo, and silently accepting it would leave a
   // deployment unprotected while looking configured (#36).
   const authSecretRaw = get("--auth-secret") ?? process.env.BLUEPENCIL_AUTH_SECRET;
   if (authSecretRaw !== undefined && authSecretRaw.length === 0) {
     return "--auth-secret must not be empty — omit it entirely to run without authentication";
+  }
+  // G2/SEC-07: the shared secret is the only gate on the note routes for every browser that holds
+  // it, so it gets the same floor as the operator secret. A short existing value breaks the start
+  // (CHANGELOG) — that is the point: the hub says so instead of quietly being guessable.
+  if (authSecretRaw !== undefined && authSecretRaw.length < SECRET_MIN_LENGTH) {
+    return (
+      `--auth-secret must be at least ${SECRET_MIN_LENGTH} characters (secret_too_short) — ` +
+      "a short shared secret is guessable"
+    );
   }
   const authSecret = authSecretRaw;
 
@@ -1454,9 +1633,9 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
   }
   // The admin secret mints and revokes every other credential, so it is the one secret that must
   // not be guessable: a short one turns the surface into a brute-force target that answers 401
-  // quickly. 16 characters is the floor, not a recommendation.
-  if (adminSecretRaw !== undefined && adminSecretRaw.length < 16) {
-    return "--admin-secret must be at least 16 characters — a short operator secret is guessable";
+  // quickly. The same floor as the client secret, from the same constant — two numbers would drift.
+  if (adminSecretRaw !== undefined && adminSecretRaw.length < SECRET_MIN_LENGTH) {
+    return `--admin-secret must be at least ${SECRET_MIN_LENGTH} characters — a short operator secret is guessable`;
   }
   const adminSecret = adminSecretRaw;
 
@@ -1468,7 +1647,34 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
   if (tokenKeyRaw !== undefined && tokenKeyRaw.length === 0) {
     return "--token-key must not be empty — omit it entirely to run without token authentication";
   }
+  // G2/SEC-04: an HMAC key is the strength ceiling of every token it signs, so it gets a higher
+  // floor than the shared secret. `bluepencil token` refuses the same lengths (server/mint-cli.ts).
+  if (tokenKeyRaw !== undefined && tokenKeyRaw.length < TOKEN_KEY_MIN_LENGTH) {
+    return (
+      `--token-key must be at least ${TOKEN_KEY_MIN_LENGTH} characters (token_key_too_short) — ` +
+      "a short key weakens every token it signs"
+    );
+  }
   const tokenKey = tokenKeyRaw;
+
+  // CORS (SEC-06, ADR-0.12-S1). A bare `--cors` used to become `*` silently, which turned "I turned
+  // CORS on" into "every site may read every note"; the value is required now, and the wildcard
+  // needs a real client gate behind it. `present()` distinguishes "flag absent" from "flag without a
+  // value", which `get()` alone cannot. The *client* credential decides — the admin secret guards an
+  // operator surface, it does not authenticate a browser.
+  const hasClientCredential = authSecret !== undefined || tokenKey !== undefined;
+  const corsPolicy = corsOriginPolicy(
+    present("--cors") ? (get("--cors") ?? "") : undefined,
+    hasClientCredential,
+  );
+  if (!corsPolicy.ok) {
+    return corsPolicy.code === "cors_value_missing"
+      ? "--cors requires an explicit origin (cors_value_missing) — pass --cors <origin> " +
+          "or spell out --cors '*'"
+      : "--cors '*' needs a client credential (cors_wildcard_unauthenticated) — set a " +
+          "client credential or name one origin";
+  }
+  const cors = corsPolicy.origin ?? undefined;
   let tokenTtlSeconds: number | undefined;
   const tokenTtlRaw = get("--token-ttl");
   if (tokenTtlRaw !== undefined) {
@@ -1572,7 +1778,12 @@ Authentication:
   and the CORS OPTIONS preflight. Without the flag there is no authentication at all — which is the
   right default for a hub bound to loopback, and the wrong one as soon as it is not. Prefer the
   environment variable: a secret on a command line is visible in the process list to every other
-  user on the machine. An empty value is rejected rather than treated as "off".
+  user on the machine. An empty value is rejected rather than treated as "off", and fewer than 16
+  characters is refused as secret_too_short — a short secret on a hub that hands it to every browser
+  is a brute-force target, not a credential. Every secret comparison (this header, the admin secret
+  on its two doors, and signed tokens) is throttled per peer with a separate budget per credential
+  kind: after 10 failures within 5 minutes the answer is 429 with Retry-After: 300, and burning one
+  budget does not lock another.
 
   With --admin-secret (or BLUEPENCIL_ADMIN_SECRET, at least 16 characters) the hub serves an admin
   page at {base}/admin and the routes behind it. The page itself is not gated (it carries no notes);
@@ -1580,7 +1791,8 @@ Authentication:
   from the one in every browser, because this one mints and revokes the other kind. Without the flag
   the surface does not exist at all (404, not a locked page). The admin secret is a second
   credential on the notes routes only (never on /mcp), so the page edits notes with the one value it
-  holds. Minting tokens additionally needs --token-key; a revocation is live at once and written to
+  holds. Minting tokens additionally needs --token-key (at least 32 characters, token_key_too_short
+  below that; bluepencil token enforces the same floor); a revocation is live at once and written to
   --revoked-tokens so it survives a restart (without that file it is live only until restart).
   Failed secret checks are throttled: after 10 wrong attempts from one address within 5 minutes the
   answer is 429 with Retry-After: 300. Minting and revoking are credential management rather than
@@ -1618,7 +1830,18 @@ available because they manage credentials, not notes. The hub is bound to ONE
 environment: a write that names another one is refused (400) unless --allow-env-mismatch promotes
 it (FR-14.8). The store file is canonical bundle JSON, written atomically; a corrupt store file
 refuses the start (exit 2) instead of being served as an empty set. --root serves a static
-directory with an index.html fallback on the same origin. --cors is off by default.
+directory with an index.html fallback on the same origin.
+
+CORS (SEC-06): off by default. --cors needs an explicit value — a bare --cors is a usage error
+(cors_value_missing), because it used to mean "every origin" without anyone saying so. --cors '*'
+is only accepted together with a client credential (cors_wildcard_unauthenticated otherwise) and
+still prints a start-up warning: the wildcard lets any page a browser visits read and write every
+note it can reach. --cors https://app.example names one origin and is the recommended form.
+
+Binding (G1): a bind other than loopback without --auth-secret/--token-key is allowed — existing
+LAN and lab setups keep working — but it prints a warning on stderr that --quiet does not suppress,
+because the notes, the journal location and the author identity are readable by anyone who can
+reach the port.
 
 Journal (FR-18): the hub keeps a history of every accepted mutation. --journal auto (default)
 commits through the surrounding git work tree when there is one (staged paths, empty diffs skipped,

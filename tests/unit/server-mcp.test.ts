@@ -14,7 +14,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { request as nodeRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_BASE_PATH, type HandlerContext, type TokenVerifier } from "../../server/handler";
+import { DEFAULT_BASE_PATH, handleRequest, type HandlerContext, type TokenVerifier } from "../../server/handler";
 import { handleMcpRoute } from "../../server/mcp";
 import { startServer } from "../../server/index";
 import type { StoreFileIo } from "../../src/mcp/tools";
@@ -152,6 +152,17 @@ describe("the MCP door: what it accepts", () => {
     const answered = await mcp("{not json");
     expect(answered.status).toBe(400);
     expect((answered.body["error"] as Json)["code"]).toBe(-32700);
+  });
+
+  it("rejects a non-object payload as an invalid request, never as a 500 (AC-D10)", async () => {
+    // The audit's reproduction: body `null`. `needsWrite` used to dereference `null.method` outside
+    // any try block and the glue answered 500 with the raw TypeError text (SEC-09).
+    for (const body of ["null", "[]", '"ping"', "42"]) {
+      const answered = await mcp(body);
+      expect(answered.status).toBe(400);
+      expect((answered.body["error"] as Json)["code"]).toBe(-32600);
+      expect(String((answered.body["error"] as Json)["message"])).toContain("JSON object");
+    }
   });
 
   it("names an unknown method and an unknown tool the way the protocol does", async () => {
@@ -315,6 +326,81 @@ describe("the MCP door: who gets in", () => {
     const result = answered.body["result"] as Json;
     expect(result["isError"]).toBe(true);
     expect(JSON.stringify(result)).toMatch(/read-only/i);
+  });
+});
+
+describe("the MCP door: Host gate and credential split (AC-D12)", () => {
+  /** What `listen()` reports for the default `--host 127.0.0.1`. */
+  const LOOPBACK = { host: "127.0.0.1", port: 8787 } as const;
+  const ADMIN = "hub-mcp-admin-value";
+
+  it("refuses a foreign Host with 403 host_not_allowed", async () => {
+    // The door is reachable by an agent without a child process, which makes it as interesting to a
+    // rebound page as the notes API — so it asks the same Host gate, with no MCP-specific bypass.
+    const refused = await mcp(
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      { headers: { host: "evil.example" }, overrides: { bind: LOOPBACK } },
+    );
+    expect(refused.status).toBe(403);
+    expect((refused.body["error"] as Json)["code"]).toBe("host_not_allowed");
+  });
+
+  it("answers the same request under a loopback Host", async () => {
+    const allowed = await mcp(
+      { jsonrpc: "2.0", id: 1, method: "tools/list" },
+      { headers: { host: "localhost:8787" }, overrides: { bind: LOOPBACK } },
+    );
+    expect(allowed.status).toBe(200);
+    expect(allowed.body["result"]).toBeDefined();
+  });
+
+  it("needs a credential for a read tool and for a write tool", async () => {
+    const overrides: Partial<HandlerContext> = { authSecret: SHARED };
+
+    const reading = await mcp(
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_notes", arguments: {} } },
+      { overrides },
+    );
+    expect(reading.status).toBe(401);
+    expect((reading.body["error"] as Json)["code"]).toBe("unauthorized");
+
+    // The write tool is not a second gate that can be reached without the first: the identity check
+    // answers 401 before the write scope is even asked about.
+    const writing = await mcp(
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "create_note", arguments: { body: "should not land", selector: "#a" } },
+      },
+      { overrides },
+    );
+    expect(writing.status).toBe(401);
+    expect((writing.body["error"] as Json)["code"]).toBe("unauthorized");
+  });
+
+  it("never accepts the admin secret at the MCP door", async () => {
+    const overrides: Partial<HandlerContext> = { authSecret: SHARED, adminSecret: ADMIN };
+
+    const refused = await mcp(
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_notes", arguments: {} } },
+      { overrides, headers: { "x-bluepencil-auth": ADMIN } },
+    );
+    expect(refused.status).toBe(401);
+    expect((refused.body["error"] as Json)["code"]).toBe("unauthorized");
+
+    // Control: the same value is the operator's bridge on the notes routes — that is why the door
+    // has to say no explicitly rather than by accident.
+    const notes = handleRequest(
+      {
+        method: "GET",
+        url: `${BASE}/notes`,
+        headers: { "x-bluepencil-auth": ADMIN },
+        body: "",
+      },
+      context(overrides),
+    );
+    expect(notes.status).toBe(200);
   });
 });
 

@@ -47,6 +47,7 @@ import {
 } from "../src/federation/registry";
 import { runStdioServer } from "../src/mcp/stdio";
 import { VERSION } from "../src/version";
+import { errorText, oneLine } from "./text";
 
 /* ------------------------------------------------------------------------------------------------
  * Contract
@@ -83,14 +84,6 @@ export interface RunningFederator {
 /* ------------------------------------------------------------------------------------------------
  * Argument parsing (same F5 contract as the hub)
  * ---------------------------------------------------------------------------------------------- */
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function oneLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
 
 const VALUED_FLAGS = [
   "--registry",

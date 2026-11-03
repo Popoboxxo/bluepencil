@@ -8,13 +8,26 @@
 
 services:
   hub:
-    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:latest}
+    # Exact version, never `:latest`: a restart must not silently change the code under an
+    # operator. Update by bumping this tag (or BLUEPENCIL_IMAGE); digest pinning for production
+    # deployments is documented in docs/DOCKER.md, but is not the compose default.
+    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.12.0}
     # Building from this checkout instead of pulling the published image:
     # build: .
     container_name: bluepencil-hub
     restart: unless-stopped
     ports:
-      - "${BLUEPENCIL_PORT:-8787}:8787"
+      # Host loopback only. Widening this (e.g. "0.0.0.0:…") is a deliberate edit that exposes
+      # the credential-gated API to the network; see docs/DOCKER.md before you change it.
+      - "127.0.0.1:${BLUEPENCIL_PORT:-8787}:8787"
+    # Hardening defaults (G11): the image writes only to the /data volume and /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     volumes:
       - bluepencil-notes:/data
     environment:

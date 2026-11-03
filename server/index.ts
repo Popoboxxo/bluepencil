@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { FederationError, federationStartupExitCode } from "../src/federation/errors";
 import { SERVER_VERSION } from "./handler";
 import { HELP, StoreFileError, flushHubJournal, parseHubArgs, startHub } from "./hub";
+import { errorText, oneLine } from "./text";
 
 export type { FileNoteStore, HubOptions, RunningServer, ServerOptions } from "./hub";
 export {
@@ -25,14 +26,6 @@ export {
   parseNoteSet,
 } from "./hub";
 export { startHub as startServer, parseHubArgs as parseServerArgs } from "./hub";
-
-function oneLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function fail(message: string, code: number): never {
   process.stderr.write(`bluepencil server: ${oneLine(message)}\n`);

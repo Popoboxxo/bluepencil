@@ -18,12 +18,25 @@
  * The window is injectable (`PageRelayWindow`) so the tests can drive timer, abort and reply without
  * a browser; production always uses the global `window`.
  */
+import { AUTHORIZATION_HEADER, BLUEPENCIL_AUTH_HEADER } from "./credential";
 import { PAGE_FETCH_KIND, replyToResponse, type HubFetchReply } from "./hub-fetch";
 
 /** Global key holding the once-per-document install flag. */
 export const PAGE_TRANSPORT_KEY = "__bluepencilTransport";
 /** Global key holding the in-flight request map, shared by every adapter in this document. */
 export const PAGE_TRANSPORT_PENDING_KEY = "__bluepencilTransportPending";
+
+/**
+ * Header names a page request may never carry (SEC-14, AC-B14).
+ *
+ * The page has no credential, and the worker attaches the one header the configured mode means. A
+ * page-side `authorization`/`x-bluepencil-auth` is dropped here (case-insensitively) so it cannot
+ * even reach the bridge; the worker would refuse it as `disallowed_header` anyway.
+ */
+const CREDENTIAL_HEADERS: ReadonlySet<string> = new Set([
+  AUTHORIZATION_HEADER.toLowerCase(),
+  BLUEPENCIL_AUTH_HEADER.toLowerCase(),
+]);
 
 /** How long the page waits for the bridge's answer: above the worker's 30 s, so its error wins. */
 export const PAGE_RELAY_TIMEOUT_MS = 35_000;
@@ -189,6 +202,12 @@ export function createPageFetch(
       } else {
         Object.assign(headers, source as Record<string, string>);
       }
+    }
+
+    // Strip the credential names before the envelope leaves the page: no page-supplied credential
+    // may travel through the relay, whatever the host configured on the element.
+    for (const name of Object.keys(headers)) {
+      if (CREDENTIAL_HEADERS.has(name.toLowerCase())) delete headers[name];
     }
 
     const body = init?.body;

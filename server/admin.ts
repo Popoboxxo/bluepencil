@@ -32,12 +32,14 @@
  * - **Credential management survives `--read-only`.** Minting and revoking are not note writes;
  *   a presentation hub still needs to be able to cut a device off. Note writes stay 403.
  * - **Limits and a brake.** Device names, token ids and TTLs are bounded, and failed secret checks
- *   are throttled by the injected `AdminThrottle` (10 per 5 minutes per peer, then 429).
+ *   are throttled by the injected `AdminThrottle` (10 per 5 minutes per peer, then 429) — the same
+ *   `admin` budget `authorize()` spends when the same secret is presented on `/notes*` (SEC-03).
  *
  * The notes themselves are edited through the *existing* notes API with the admin secret, so there
  * is exactly one implementation of note handling in this repository.
  */
 import { readFileSync } from "node:fs";
+import { ADMIN_HEADER } from "../src/core/protocol-headers";
 import { dirname, join } from "node:path";
 
 import type { HandlerContext, ServerErrorCode, ServerRequest, ServerResponse } from "./handler";
@@ -47,9 +49,13 @@ import { renderAdminHtml } from "./admin-html";
 import { ADMIN_STRINGS, adminLanguage } from "./admin-i18n";
 import { presenceOf } from "./presence";
 import { acceptedCredentials, credentialMode } from "./credentials";
+import { errorText } from "./text";
 
-/** The header an admin request carries; matched case-insensitively by the caller. */
-export const ADMIN_HEADER = "x-bluepencil-admin";
+/**
+ * The header an admin request carries; matched case-insensitively by the caller. Re-exported from
+ * the protocol header module so the name stays available at this import path (AC-H04).
+ */
+export { ADMIN_HEADER };
 
 /** Longest accepted device name — enough for "caro's laptop (firefox)" and short enough to render. */
 const DEVICE_NAME_MAX_LENGTH = 200;
@@ -181,10 +187,6 @@ function bodyOf(request: ServerRequest): Record<string, unknown> {
   return {};
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /**
  * Reads the device registry. A missing path or a missing file is the documented empty start; every
  * other problem — unreadable file, invalid JSON, a document that is not an array, an entry that is
@@ -192,7 +194,7 @@ function errorText(error: unknown): string {
  * silent "no devices". Extra fields are tolerated; the known ones are normalised so a caller never
  * has to defend against a hand-edited file.
  */
-export function readRegistry(path: string | undefined): RegistryRead {
+function readRegistry(path: string | undefined): RegistryRead {
   if (path === undefined) return { records: [] };
   let raw: string;
   try {
@@ -294,24 +296,44 @@ function revocationNote(durable: boolean, known: boolean, error: string | undefi
   return error === undefined ? "live only (no revocation file configured)" : "live only — the revocation list could not be written";
 }
 
+/** What the body-dependent half of the admin surface needs after the gate let the request through. */
+export interface AdminGateRoute {
+  path: string;
+  method: string;
+}
+
+/** `adminGate`'s answer: not an admin request, a response to write now, or an authorized route. */
+export type AdminGateResult =
+  | { kind: "none" }
+  | { kind: "response"; response: ServerResponse }
+  | { kind: "route"; route: AdminGateRoute };
+
 /**
- * Handles `{base}/admin…`; returns `null` when the request is not an admin request (or when this hub
- * runs without `--admin-secret`, so the caller answers the ordinary 404 and the surface stays
- * invisible rather than merely guarded).
+ * The header-only half of the admin surface (SEC-03, SEC-08): existence, preflight, method table,
+ * the page and the throttled secret check — everything that needs no request body.
+ *
+ * It is separate from `handleAdmin` so the `node:http` glue can refuse an unauthenticated admin
+ * request before reading a body (SEC-08) without duplicating the gate. The router's `gateRequest`
+ * calls it too, and `handleAdmin` calls it again before dispatching; on the allowed path the second
+ * call only records another success (idempotent), and a refused request never reaches it.
+ *
+ * **One budget for the admin secret on both doors.** The `admin` budget is the same one
+ * `authorize()` consults for `x-bluepencil-auth` on `/notes*`, so guessing the admin secret through
+ * the notes routes (SEC-03) spends exactly the budget that locks `/admin/*`, and vice versa.
  */
-export function handleAdmin(request: ServerRequest, context: HandlerContext): ServerResponse | null {
+export function adminGate(request: ServerRequest, context: HandlerContext): AdminGateResult {
   const method = (request.method ?? "GET").toUpperCase();
   // The helper normalises `..` exactly like the router does; splitting on "?" would let
   // `/admin/../admin/status` through as a different path than the one it actually resolves to.
   const rawPath = requestPath(request.url ?? "/");
   const base = context.base.replace(/\/+$/, "");
   const prefix = `${base}/admin`;
-  if (rawPath !== prefix && !rawPath.startsWith(`${prefix}/`)) return null;
+  if (rawPath !== prefix && !rawPath.startsWith(`${prefix}/`)) return { kind: "none" };
 
   // Not configured: this hub has no admin surface at all — the router's ordinary 404, not a locked
   // page that advertises itself. Checked before everything below, including the page itself.
   if (context.adminSecret === undefined) {
-    return null;
+    return { kind: "none" };
   }
 
   // `{prefix}/` is the page as well: a browser address bar and a hand-typed URL both end up there,
@@ -331,7 +353,7 @@ export function handleAdmin(request: ServerRequest, context: HandlerContext): Se
             ? ["POST"]
             : null;
   if (documented === null) {
-    return refusal(context, 404, "not_found", `unknown admin endpoint ${path.replace(base, "")}`);
+    return { kind: "response", response: refusal(context, 404, "not_found", `unknown admin endpoint ${path.replace(base, "")}`) };
   }
 
   // A CORS preflight carries no custom header — the browser cannot know the secret yet — so it is
@@ -342,8 +364,11 @@ export function handleAdmin(request: ServerRequest, context: HandlerContext): Se
   const preflight = preflightResponse(method, context, documented, [ADMIN_HEADER]);
   if (preflight !== null) {
     return {
-      ...preflight,
-      headers: { ...preflight.headers, allow: [...documented, "OPTIONS"].join(", ") },
+      kind: "response",
+      response: {
+        ...preflight,
+        headers: { ...preflight.headers, allow: [...documented, "OPTIONS"].join(", ") },
+      },
     };
   }
 
@@ -355,44 +380,67 @@ export function handleAdmin(request: ServerRequest, context: HandlerContext): Se
       `${method} is not allowed on ${path.replace(base, "")} — documented method(s): ${documented.join(", ")}`,
     );
     response.headers.allow = documented.join(", ");
-    return response;
+    return { kind: "response", response };
   }
 
   // The page itself is not a secret — it carries no notes and no settings, and the operator types
   // the credential into it. Gating it would make "open the admin page" require curl.
   if (path === prefix && method === "GET") {
-    return page(context, request);
+    return { kind: "response", response: page(context, request) };
   }
 
   // Brute-force brake before the comparison, never after: a wrong guess costs the peer its budget,
-  // and a peer that exhausted it learns nothing from the answer except that it must wait.
-  if (context.adminThrottle !== undefined && !context.adminThrottle.allow(request.remote)) {
-    return json(
-      context,
-      429,
-      {
-        error: {
-          code: "too_many_attempts",
-          message: `too many wrong ${ADMIN_HEADER} attempts from this address — wait before trying again`,
+  // and a peer that exhausted it learns nothing from the answer except that it must wait. The
+  // `admin` budget is shared with the admin secret's second use on `/notes*` (SEC-03).
+  if (context.adminThrottle !== undefined && !context.adminThrottle.allow(request.remote, "admin")) {
+    return {
+      kind: "response",
+      response: json(
+        context,
+        429,
+        {
+          error: {
+            code: "too_many_attempts",
+            message: `too many wrong ${ADMIN_HEADER} attempts from this address — wait before trying again`,
+          },
         },
-      },
-      { "retry-after": "300" },
-    );
+        { "retry-after": "300" },
+      ),
+    };
   }
 
   const presented = headerOf(request, ADMIN_HEADER);
   if (!matches(context.adminSecret, presented)) {
-    context.adminThrottle?.failure(request.remote);
-    return refusal(
-      context,
-      401,
-      "unauthorized",
-      presented === undefined
-        ? `missing ${ADMIN_HEADER} — this hub's admin surface is enabled (--admin-secret)`
-        : `invalid ${ADMIN_HEADER}`,
-    );
+    context.adminThrottle?.failure(request.remote, "admin");
+    return {
+      kind: "response",
+      response: refusal(
+        context,
+        401,
+        "unauthorized",
+        presented === undefined
+          ? `missing ${ADMIN_HEADER} — this hub's admin surface is enabled (--admin-secret)`
+          : `invalid ${ADMIN_HEADER}`,
+      ),
+    };
   }
-  context.adminThrottle?.success(request.remote);
+  context.adminThrottle?.success(request.remote, "admin");
+
+  return { kind: "route", route: { path, method } };
+}
+
+/**
+ * Handles `{base}/admin…`; returns `null` when the request is not an admin request (or when this hub
+ * runs without `--admin-secret`, so the caller answers the ordinary 404 and the surface stays
+ * invisible rather than merely guarded).
+ */
+export function handleAdmin(request: ServerRequest, context: HandlerContext): ServerResponse | null {
+  const gate = adminGate(request, context);
+  if (gate.kind === "none") return null;
+  if (gate.kind === "response") return gate.response;
+  const { path, method } = gate.route;
+  const base = context.base.replace(/\/+$/, "");
+  const prefix = `${base}/admin`;
 
   if (path === `${prefix}/status` && method === "GET") {
     return json(context, 200, statusPayload(context, readRegistry(context.devicesPath)));

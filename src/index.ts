@@ -9,7 +9,13 @@
  *   init(config)  → nothing is mounted, nothing is fetched while the layer is disabled
  *   enable()      → builds the layer, evaluates `enabled()` first
  *   disable()     → removes nodes, listeners, observers and styles; idempotent
- *   destroy()     → final teardown, the instance can be discarded
+ *   destroy()     → final teardown, the instance can be discarded; idempotent
+ *
+ * `destroy()` is terminal (BP-09): every later access to `blueprint.layer`/`blueprint.store`,
+ * `enable()` and the reads that would need the store throws `BlueprintDestroyedError`
+ * (`code: "blueprint_destroyed"`). There is no second mount and no inert handle: a host that wants
+ * to start again creates a new instance. `blueprint.layer.enable()` is routed through this facade's
+ * `enable()` — the same `enabled` gate decides, so there is exactly one enable path (FR-1.1).
  *
  * `enabled` gate (FR-1.1): when the host passes `enabled`, it is evaluated on **every**
  * enable(); returning false means no DOM node, no request, no listener (fail closed).
@@ -57,6 +63,19 @@ export interface BlueprintConfig extends Omit<LayerOptions, "store"> {
   autoEnable?: boolean;
 }
 
+/**
+ * Thrown by a blueprint that has been `destroy()`ed (BP-09). The `code` is stable for hosts that
+ * match on a value instead of an instance (`error.code === "blueprint_destroyed"`).
+ */
+export class BlueprintDestroyedError extends Error {
+  readonly code = "blueprint_destroyed" as const;
+
+  constructor(message = "blueprint instance has been destroyed; create a new one") {
+    super(message);
+    this.name = "BlueprintDestroyedError";
+  }
+}
+
 export interface Blueprint {
   readonly store: Store;
   readonly layer: LayerHandle;
@@ -76,7 +95,10 @@ export interface Blueprint {
   ready(): Promise<void>;
   /** Export the current set as Markdown (default) or JSON (FR-7.1/7.2). */
   export(options?: { format?: "markdown" | "json"; includeDone?: boolean }): string;
-  /** Final teardown: layer removed and store released (FR-12.2). */
+  /**
+   * Final teardown: layer removed and store released (FR-12.2). Idempotent and terminal (BP-09):
+   * afterwards `store`, `layer` and `enable()` throw `BlueprintDestroyedError`.
+   */
   destroy(): Promise<void>;
 }
 
@@ -112,6 +134,19 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
   let loading: Promise<void> | null = null;
   /** True once a facade reload completed, or once the layer (which reloads on enable) owns it. */
   let loaded = false;
+  /** Terminal flag of BP-09; set by `destroy()`, never cleared. */
+  let destroyed = false;
+  /** Coalesces concurrent `destroy()` calls into the one teardown (idempotent). */
+  let destroying: Promise<void> | null = null;
+  /** The single handle exposed as `blueprint.layer`; its `enable()` goes through the facade gate. */
+  let layerFacade: LayerHandle | null = null;
+
+  /** Reject every path that would resurrect or observe a destroyed instance (BP-09). */
+  const assertAlive = (): void => {
+    if (destroyed) {
+      throw new BlueprintDestroyedError();
+    }
+  };
 
   const storeConfig: StoreOptions = {
     ...(adapter !== undefined ? { adapter: adapter as AdapterLike } : {}),
@@ -121,11 +156,13 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
   };
 
   const ensureStore = (): Store => {
+    assertAlive();
     store ??= createStore(storeConfig);
     return store;
   };
 
   const ensureLayer = (): LayerHandle => {
+    assertAlive();
     layer ??= createLayer({
       ...layerOptions,
       // Issue #21: the layer stamps the bundle it exports, so the environment the store scopes by
@@ -134,6 +171,27 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
       store: ensureStore(),
     } as LayerOptions);
     return layer;
+  };
+
+  /**
+   * `blueprint.layer` never exposes the raw handle's `enable()`: the call is routed through this
+   * facade's `enable()`, so the `enabled` gate is the one and only decision point (FR-1.1, BP-09).
+   * Every other member is delegated unchanged.
+   */
+  const ensureLayerFacade = (): LayerHandle => {
+    assertAlive();
+    layerFacade ??= new Proxy(ensureLayer(), {
+      get(target, prop, receiver) {
+        if (prop === "enable") {
+          return () => {
+            enable();
+          };
+        }
+        const value = Reflect.get(target, prop, receiver) as unknown;
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    return layerFacade;
   };
 
   /** Report a failed load through the host's `onError`; never escalate into the host (NFR-14). */
@@ -174,6 +232,7 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
   };
 
   const enable = (): boolean => {
+    assertAlive();
     if (gate && !gate()) {
       return false;
     }
@@ -187,9 +246,19 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
     return true;
   };
 
+  const storeFacade = lazy(ensureStore);
+
   const blueprint: Blueprint = {
-    store: lazy(ensureStore),
-    layer: lazy(ensureLayer),
+    // Getters (not values) so that *reading* the property after `destroy()` throws, instead of
+    // handing out an inert handle (a variant the spec explicitly rejects, AC-K05).
+    get store() {
+      assertAlive();
+      return storeFacade;
+    },
+    get layer() {
+      assertAlive();
+      return ensureLayerFacade();
+    },
     enable,
     disable: () => layer?.disable(),
     isEnabled: () => layer?.isEnabled() ?? false,
@@ -225,13 +294,27 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
         includeDone,
       });
     },
-    destroy: async () => {
-      layer?.disable();
-      await store?.destroy();
-      layer = null;
-      store = null;
-      loading = null;
-      loaded = false;
+    destroy: () => {
+      if (destroying !== null) {
+        return destroying;
+      }
+      const activeLayer = layer;
+      const activeStore = store;
+      destroying = (async () => {
+        try {
+          activeLayer?.disable();
+          await activeStore?.destroy();
+        } finally {
+          // Terminal from here on (BP-09): the instance is never mountable again.
+          destroyed = true;
+          layer = null;
+          layerFacade = null;
+          store = null;
+          loading = null;
+          loaded = false;
+        }
+      })();
+      return destroying;
     },
   };
 

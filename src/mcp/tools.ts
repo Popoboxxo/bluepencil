@@ -30,6 +30,7 @@ import { canonicalBundle, canonicalNote, serializeCanonical } from "../data/cano
 import { createBundle, inspectBundle, parseBundle, type BundleSummary } from "../data/bundle";
 import { validateNote } from "../data/schema";
 import { excludeDone, isRecord, type Adapter } from "../core/adapter";
+import { parseOriginInput } from "../core/origin";
 import { createFileAdapter, type FileAdapterIo } from "../adapters/file";
 import { parseNoteSet, serializeNoteSet } from "../adapters/memory";
 import { summarize } from "../core/protocol";
@@ -54,20 +55,21 @@ import {
   type Note,
   type NoteFilter,
   type NoteIntent,
+  type NoteOrigin,
   type NoteStatus,
 } from "../core/model";
 
 /** Merge modes the tool accepts (FR-14.3) — the schema and the validator share this list. */
-export const MERGE_MODES = ["merge", "upsert", "replace-session"] as const;
+const MERGE_MODES = ["merge", "upsert", "replace-session"] as const;
 /** Conflict policies the tool accepts (FR-14.4) — the schema and the validator share this list. */
-export const CONFLICT_POLICIES = ["fail", "keep-incoming", "keep-existing"] as const;
+const CONFLICT_POLICIES = ["fail", "keep-incoming", "keep-existing"] as const;
 /** Output formats of `list_notes` and `export_bundle`. */
-export const FORMATS = ["json", "markdown"] as const;
+const FORMATS = ["json", "markdown"] as const;
 /**
  * Message kinds this server may append. `decision` is missing on purpose: a decision is a human
  * act (PROTOCOL §6.1), so the tool never advertises it and refuses it explicitly.
  */
-export const AGENT_MESSAGE_KINDS: readonly MessageKind[] = MESSAGE_KINDS.filter(
+const AGENT_MESSAGE_KINDS: readonly MessageKind[] = MESSAGE_KINDS.filter(
   (kind) => kind !== "decision",
 );
 
@@ -197,6 +199,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         priority: { type: "string", enum: [...NOTE_PRIORITIES] },
         route: { type: "string" },
         session: { type: "string" },
+        origin: {
+          type: ["string", "null"],
+          description:
+            "Site provenance (FR-2.2): a canonical http(s) origin returns exactly that origin, " +
+            "null returns the unassigned notes; omit the field to leave the filter unchanged.",
+        },
         include_done: { type: "boolean", default: false },
         format: { type: "string", enum: [...FORMATS], default: "json" },
         instance: { type: "string" },
@@ -248,6 +256,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         quote: { type: "string" },
         route: { type: "string" },
         session: { type: "string" },
+        origin: {
+          type: ["string", "null"],
+          description:
+            "Site provenance (FR-2.2) — normalised to a canonical http(s) origin; absent or null " +
+            "stores the note as unassigned.",
+        },
         ticket_ref: { type: "string" },
         instance: { type: "string" },
       },
@@ -351,6 +365,28 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
 ];
 
+/**
+ * `name → handler`, colocated with `TOOL_DEFINITIONS`: the definition array says which names
+ * exist and this table says who answers them. There is no `switch` and no built-up method name —
+ * the lookup is a plain object access, so a name can never reach a handler that was not written
+ * for it. An unknown (or somehow unhandled) name keeps the pre-0.12 refusal text byte for byte,
+ * which is the error contract `callTool` has always had (AC-L02).
+ */
+type ToolHandler = (context: ToolContext, args: Record<string, unknown>) => Promise<ToolResponse>;
+
+const TOOL_HANDLERS: Record<string, ToolHandler> = {
+  list_notes: handleListNotes,
+  list_instances: handleListInstances,
+  get_note: handleGetNote,
+  create_note: handleCreateNote,
+  reply: handleReply,
+  set_status: handleSetStatus,
+  set_intent: handleSetIntent,
+  export_bundle: handleExportBundle,
+  inspect_bundle: handleInspectBundle,
+  import_bundle: handleImportBundle,
+};
+
 /** Scopes a tool list can be projected for — mirrors `McpBackend.scope`. */
 export type ToolScope = "single" | "aggregate";
 
@@ -380,7 +416,7 @@ function withoutProperties(
  * `list_notes`; `list_instances` does not exist without an aggregate. `aggregate` is the complete
  * federation surface: ten tools, `instance`/`limit` included.
  */
-export function toolDefinitionsForScope(scope: ToolScope): ToolDefinition[] {
+function toolDefinitionsForScope(scope: ToolScope): ToolDefinition[] {
   if (scope === "aggregate") return [...TOOL_DEFINITIONS];
   return TOOL_DEFINITIONS.filter((tool) => tool.name !== "list_instances").map((tool) => ({
     ...tool,
@@ -455,6 +491,30 @@ function readLimitArgument(value: unknown): { value?: number; issue?: string } {
   }
   // The aggregate owns the bound; clamping keeps a too-large value useful instead of failing it.
   return { value: Math.min(Math.floor(limit), 1000) };
+}
+
+/**
+ * The optional `origin` argument of `create_note` and `list_notes` (FR-16.1).
+ *
+ * `absent` means the caller said nothing: `create_note` then stores `null` and `list_notes` adds no
+ * origin filter. Everything the caller did send goes through the same strict `parseOriginInput` the
+ * hub and the CLI use — `null`, `""` and `"null"` are the unassigned bucket, a canonical origin is
+ * taken verbatim and any other value is the named `invalid_origin` refusal. The filter is passed to
+ * the shared adapter unchanged; this layer never widens or drops it (AC-A12, FR-15.3).
+ */
+type OriginArgument = { present: true; origin: NoteOrigin } | { present: false } | { issue: string };
+
+function readOriginArgument(value: unknown): OriginArgument {
+  if (value === undefined) return { present: false };
+  const parsed = parseOriginInput(value);
+  if (!parsed.ok) {
+    return {
+      issue:
+        "origin must be a canonical http(s) origin or null " +
+        `(invalid_origin; got ${JSON.stringify(value)})`,
+    };
+  }
+  return { present: true, origin: parsed.origin };
 }
 
 /**
@@ -559,6 +619,8 @@ function toFilter(context: ToolContext, args: Record<string, unknown>): { filter
   if (type.issue) return { issue: type.issue };
   const priority = readEnumArgument(args.priority, NOTE_PRIORITIES, "priority");
   if (priority.issue) return { issue: priority.issue };
+  const origin = readOriginArgument(args.origin);
+  if ("issue" in origin) return { issue: origin.issue };
 
   let environment: Environment | undefined;
   if (args.environment !== undefined) {
@@ -592,6 +654,7 @@ function toFilter(context: ToolContext, args: Record<string, unknown>): { filter
       ...(priority.value !== undefined ? { priority: priority.value } : {}),
       ...(typeof args.route === "string" ? { route: args.route } : {}),
       ...(typeof args.session === "string" ? { session: args.session } : {}),
+      ...(origin.present ? { origin: origin.origin } : {}),
     },
   };
 }
@@ -821,390 +884,428 @@ async function dispatchTool(
   // F3: the environment binding is resolved where a tool actually needs it (filter, note guard,
   // create, inspect, Markdown header) — an aggregate backend has no single binding, and its tools
   // must not all fail on call.
-
-  switch (name) {
-    case "list_notes": {
-      const built = toFilter(context, args);
-      if ("issue" in built) {
-        return errorResponse(built.issue);
-      }
-      const format = readEnumArgument(args.format, FORMATS, "format");
-      if (format.issue) {
-        return errorResponse(format.issue);
-      }
-      const includeDone = args.include_done === true;
-
-      if (isFederated(context)) {
-        const instanceArg = readInstanceArgument(args.instance);
-        if (instanceArg.issue) return errorResponse(instanceArg.issue);
-        const limitArg = readLimitArgument(args.limit);
-        if (limitArg.issue) return errorResponse(limitArg.issue);
-
-        const listed = await context.backend.list(built.filter, {
-          ...(instanceArg.value === undefined ? {} : { instance: instanceArg.value }),
-          ...(limitArg.value === undefined ? {} : { limit: limitArg.value }),
-          ...(built.filter.environment === undefined
-            ? {}
-            : { environment: built.filter.environment }),
-        });
-        const ordered = includeDone ? listed.notes : excludeDone(listed.notes);
-
-        // Every selected instance failed: an empty list must not look like "no notes" (T68).
-        if (listed.instances.length > 0 && listed.instances.every((row) => !row.ok)) {
-          return toMcpError(
-            listed.errors[0] ??
-              new FederationError("partial", "every selected instance failed"),
-          );
-        }
-
-        const environment = built.filter.environment;
-        if (format.value === "markdown") {
-          const lines = ordered.map(
-            (note) => `- [${(note as FederatedNote).instance}] ${summarize(note)}`,
-          );
-          return {
-            content: [
-              {
-                type: "text",
-                text: [
-                  `# ${context.appName} — ${ordered.length} note(s)` +
-                    (environment === undefined ? "" : ` [env: ${environment}]`),
-                  "",
-                  ...(lines.length > 0 ? lines : ["(no notes)"]),
-                ].join("\n"),
-              },
-            ],
-          };
-        }
-        return jsonResponse({
-          instances: listed.instances,
-          partial: listed.partial,
-          truncated: listed.truncated,
-          errors: listed.errors.map(errorJson),
-          ...(environment === undefined ? {} : { environment }),
-          count: ordered.length,
-          notes: ordered.map((note) => noteForRead(context, note)),
-        });
-      }
-
-      // Single store: the 0.8 path exactly — one binding, one envelope, one text.
-      const environment = boundEnvironment(context);
-      // One read path for every list: the shared filter (FR-15.3) including the session's
-      // environment (FR-16.3) and the shared done-rule. The backend returns the shared review order
-      // (M2/FR-16.7), so sorting a second time here would only duplicate that rule (F5).
-      const { notes } = await context.backend.list(built.filter);
-      const ordered = includeDone ? notes : excludeDone(notes);
-      if (format.value === "markdown") {
-        const lines = ordered.map((note) => `- ${summarize(note)}`);
-        return {
-          content: [
-            {
-              type: "text",
-              text: [
-                `# ${context.appName} — ${ordered.length} note(s) [env: ${environment}]`,
-                "",
-                ...(lines.length > 0 ? lines : ["(no notes)"]),
-              ].join("\n"),
-            },
-          ],
-        };
-      }
-      return jsonResponse({
-        environment,
-        app: context.appName,
-        count: ordered.length,
-        notes: ordered.map(canonicalNote),
-      });
-    }
-
-    case "list_instances": {
-      const rows = await context.backend.instances();
-      return jsonResponse(rows.map(publicInstance));
-    }
-
-    case "get_note": {
-      const instanceArg = readInstanceArgument(args.instance);
-      if (instanceArg.issue) return errorResponse(instanceArg.issue);
-      const lookup = await loadBoundNote(
-        context,
-        String(args.id ?? ""),
-        "reading the note",
-        instanceArg.value,
-      );
-      if ("refusal" in lookup) {
-        return lookup.refusal;
-      }
-      return jsonResponse(noteForRead(context, lookup.note));
-    }
-
-    case "create_note": {
-      const refusal = requireWrite(context);
-      if (refusal) return refusal;
-      const type = readEnumArgument(args.type, NOTE_TYPES, "type");
-      if (type.issue) {
-        return errorResponse(type.issue);
-      }
-      const intent = readEnumArgument(args.intent, NOTE_INTENTS, "intent");
-      if (intent.issue) {
-        return errorResponse(intent.issue);
-      }
-      const severity = readEnumArgument(args.severity, NOTE_SEVERITIES, "severity");
-      if (severity.issue) {
-        return errorResponse(severity.issue);
-      }
-      // FR-3.7: the value is checked here, the rule "only on a feature" is the model's — an agent
-      // may pass it with any type, and the model silently omits it where it is meaningless.
-      const priority = readEnumArgument(args.priority, NOTE_PRIORITIES, "priority");
-      if (priority.issue) {
-        return errorResponse(priority.issue);
-      }
-      const body = String(args.body ?? "").trim();
-      if (body === "") {
-        return errorResponse("body must not be empty");
-      }
-      const anchor: Anchor = {};
-      if (typeof args.hook === "string" && args.hook) anchor.hook = args.hook;
-      if (typeof args.selector === "string" && args.selector) anchor.selector = args.selector;
-      if (typeof args.quote === "string" && args.quote) anchor.quote = args.quote;
-      if (typeof args.route === "string" && args.route) anchor.route = args.route;
-      if (!anchor.hook && !anchor.selector && !anchor.quote) {
-        return errorResponse("an anchor needs at least one of hook, selector or quote");
-      }
-      const instanceArg = readInstanceArgument(args.instance);
-      if (instanceArg.issue) return errorResponse(instanceArg.issue);
-      const federated = isFederated(context);
-      // A federated write is validated against the *target's* environment; the session must never
-      // inject (or rewrite) an environment into the draft (NFR-18).
-      const environment = federated ? undefined : boundEnvironment(context);
-      const before = federated ? [] : (await context.backend.list({})).notes;
-      const attempt = await attemptWrite(context, "create_note", () =>
-        context.backend.create(
-          {
-            type: type.value ?? "text",
-            body,
-            anchor,
-            intent: intent.value ?? "implement",
-            ...(severity.value !== undefined ? { severity: severity.value } : {}),
-            ...(priority.value !== undefined ? { priority: priority.value } : {}),
-            author: agentAuthor(context),
-            authorType: "agent",
-            source: "agent",
-            // The note is born in the target's environment, never in another one (FR-16.3).
-            ...(environment === undefined ? {} : { environment }),
-            ...(typeof args.session === "string" ? { sessionRef: args.session } : {}),
-            ...(typeof args.ticket_ref === "string" ? { ticketRef: args.ticket_ref } : {}),
-          },
-          federated ? instanceArg.value : undefined,
-        ),
-      );
-      if ("failure" in attempt) return attempt.failure;
-      const created = attempt.value;
-      const failure = await confirmWrite(context, `create_note ${created.id}`, [...before, created]);
-      if (failure) return failure;
-      return jsonResponse({ created: noteForWrite(context, created) });
-    }
-
-    case "reply": {
-      const refusal = requireWrite(context);
-      if (refusal) return refusal;
-      const id = String(args.id ?? "");
-      const instanceArg = readInstanceArgument(args.instance);
-      if (instanceArg.issue) return errorResponse(instanceArg.issue);
-      if (args.kind === "decision") {
-        return errorResponse(
-          "a decision must come from a human (PROTOCOL §6.1) — use kind=decision_request and let the human answer",
-        );
-      }
-      const kind = readEnumArgument(args.kind, AGENT_MESSAGE_KINDS, "kind");
-      if (kind.issue) {
-        return errorResponse(kind.issue);
-      }
-      const text = String(args.text ?? "");
-      if (text.trim() === "") {
-        return errorResponse("text must not be empty");
-      }
-      const lookup = await loadBoundNote(context, id, "replying to the note", instanceArg.value);
-      if ("refusal" in lookup) {
-        return lookup.refusal;
-      }
-      const note = lookup.note;
-      const messageKind: MessageKind = kind.value ?? "reply";
-      // Every refusal comes before the first write: an answer that is not allowed must not append a
-      // message either (PROTOCOL §4.5/§6.2/§6.3).
-      if (messageKind !== "decision_request" && args.set_done === true) {
-        if (note.intent === "feedback") {
-          return errorResponse("intent=feedback notes are not set to done by an agent (PROTOCOL §4.5/§6.2)");
-        }
-        if (note.status === "needs_decision") {
-          return errorResponse("refusing to mark a pending decision as done (PROTOCOL §6.3)");
-        }
-      }
-      const before = isFederated(context) ? [] : (await context.backend.list({})).notes;
-      const attempt = await attemptWrite(context, `reply to ${id}`, async () => {
-        const message = createMessage({
-          text,
-          kind: messageKind,
-          author: agentAuthor(context),
-          authorType: "agent",
-          now: nowIso(context),
-        });
-        let updated = await context.backend.addMessage(id, message, instanceArg.value);
-        if (messageKind === "decision_request") {
-          updated = await context.backend.update(id, { status: "needs_decision" }, instanceArg.value);
-        } else if (args.set_done === true) {
-          updated = await context.backend.update(id, { status: "done" }, instanceArg.value);
-        }
-        return updated;
-      });
-      if ("failure" in attempt) return attempt.failure;
-      const updated = attempt.value;
-      const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
-      const failure = await confirmWrite(context, `reply to ${id}`, expected);
-      if (failure) return failure;
-      return jsonResponse({ note: noteForWrite(context, updated) });
-    }
-
-    case "set_status": {
-      const refusal = requireWrite(context);
-      if (refusal) return refusal;
-      const id = String(args.id ?? "");
-      const instanceArg = readInstanceArgument(args.instance);
-      if (instanceArg.issue) return errorResponse(instanceArg.issue);
-      const status = readEnumArgument(args.status, NOTE_STATUSES, "status");
-      if (status.issue) {
-        return errorResponse(status.issue);
-      }
-      const wanted: NoteStatus | undefined = status.value;
-      if (wanted === undefined) {
-        return errorResponse(`status must be one of ${NOTE_STATUSES.join(", ")}`);
-      }
-      const lookup = await loadBoundNote(context, id, "setting the status", instanceArg.value);
-      if ("refusal" in lookup) {
-        return lookup.refusal;
-      }
-      if (wanted === "done") {
-        if (lookup.note.status === "needs_decision") {
-          return errorResponse("refusing to mark a pending decision as done (PROTOCOL §6.3)");
-        }
-        if (lookup.note.intent === "feedback") {
-          return errorResponse("intent=feedback notes are decided by the human (PROTOCOL §6.2)");
-        }
-      }
-      const before = isFederated(context) ? [] : (await context.backend.list({})).notes;
-      const attempt = await attemptWrite(context, `set_status on ${id}`, () =>
-        context.backend.update(id, { status: wanted }, instanceArg.value),
-      );
-      if ("failure" in attempt) return attempt.failure;
-      const updated = attempt.value;
-      const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
-      const failure = await confirmWrite(context, `set_status on ${id}`, expected);
-      if (failure) return failure;
-      return jsonResponse({ note: noteForWrite(context, updated) });
-    }
-
-    case "set_intent": {
-      const refusal = requireWrite(context);
-      if (refusal) return refusal;
-      const id = String(args.id ?? "");
-      const instanceArg = readInstanceArgument(args.instance);
-      if (instanceArg.issue) return errorResponse(instanceArg.issue);
-      const intent = readEnumArgument(args.intent, NOTE_INTENTS, "intent");
-      if (intent.issue) {
-        return errorResponse(intent.issue);
-      }
-      const wanted: NoteIntent | undefined = intent.value;
-      if (wanted === undefined) {
-        return errorResponse(`intent must be one of ${NOTE_INTENTS.join(", ")}`);
-      }
-      const lookup = await loadBoundNote(context, id, "changing the intent", instanceArg.value);
-      if ("refusal" in lookup) {
-        return lookup.refusal;
-      }
-      const before = isFederated(context) ? [] : (await context.backend.list({})).notes;
-      const attempt = await attemptWrite(context, `set_intent on ${id}`, () =>
-        context.backend.update(id, { intent: wanted }, instanceArg.value),
-      );
-      if ("failure" in attempt) return attempt.failure;
-      const updated = attempt.value;
-      const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
-      const failure = await confirmWrite(context, `set_intent on ${id}`, expected);
-      if (failure) return failure;
-      return jsonResponse({ note: noteForWrite(context, updated) });
-    }
-
-    case "export_bundle": {
-      const format = readEnumArgument(args.format, FORMATS, "format");
-      if (format.issue) {
-        return errorResponse(format.issue);
-      }
-      const instanceArg = readInstanceArgument(args.instance);
-      if (instanceArg.issue) return errorResponse(instanceArg.issue);
-      // A single-store backend ignores the instance; a federator refuses the aggregate (NFR-18).
-      return context.backend.exportBundle(
-        isFederated(context) ? (instanceArg.value ?? "") : "self",
-        {
-          format: format.value === "json" ? "json" : "markdown",
-          includeDone: args.include_done !== false,
-        },
-      );
-    }
-
-    case "inspect_bundle": {
-      const parsed = parseBundleInput(args.bundle);
-      if (typeof parsed === "string") {
-        return errorResponse(parsed);
-      }
-      // A federated session has no target environment to compare against; the summary is still
-      // useful and remains purely informational.
-      return jsonResponse(
-        isFederated(context) ? inspectBundle(parsed) : summaryWithEnvironment(parsed, boundEnvironment(context)),
-      );
-    }
-
-    case "import_bundle": {
-      const refusal = requireWrite(context);
-      if (refusal) return refusal;
-
-      // F12b: a bogus enum value must never be echoed back and treated as the default. Both values
-      // are validated before the bundle is even looked at, so a bad call names the allowed set
-      // instead of failing for an unrelated reason.
-      const mode = readEnumArgument(args.mode, MERGE_MODES, "mode");
-      if (mode.issue) {
-        return errorResponse(mode.issue);
-      }
-      const onConflict = readEnumArgument(args.on_conflict, CONFLICT_POLICIES, "on_conflict");
-      if (onConflict.issue) {
-        return errorResponse(onConflict.issue);
-      }
-      const policy =
-        onConflict.value === "keep-incoming" || onConflict.value === "keep-existing"
-          ? onConflict.value
-          : undefined;
-      const instanceArg = readInstanceArgument(args.instance);
-      if (instanceArg.issue) return errorResponse(instanceArg.issue);
-      if (isFederated(context) && args.allow_env_mismatch === true) {
-        // Never forwarded in federation mode, and rejected before any request (NFR-18).
-        throw new FederationError(
-          "invalid_argument",
-          "allow_env_mismatch is not available in federation mode (NFR-18)",
-        );
-      }
-      return context.backend.importBundle(
-        args.bundle,
-        {
-          mode: mode.value ?? "merge",
-          dryRun: args.dry_run !== false,
-          ...(policy !== undefined ? { onConflict: policy } : {}),
-          // In federation mode this is always false (rejected above); single-store keeps 0.8.
-          allowEnvMismatch: isFederated(context) ? false : args.allow_env_mismatch === true,
-        },
-        isFederated(context) ? (instanceArg.value ?? "") : "self",
-      );
-    }
-
-    default:
-      return errorResponse(`tool "${name}" is not implemented`);
+  const handler = TOOL_HANDLERS[name];
+  if (!handler) {
+    return errorResponse(`tool "${name}" is not implemented`);
   }
+  return handler(context, args);
+}
+
+async function handleListNotes(
+  context: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResponse> {
+  const built = toFilter(context, args);
+  if ("issue" in built) {
+    return errorResponse(built.issue);
+  }
+  const format = readEnumArgument(args.format, FORMATS, "format");
+  if (format.issue) {
+    return errorResponse(format.issue);
+  }
+  const includeDone = args.include_done === true;
+
+  if (isFederated(context)) {
+    const instanceArg = readInstanceArgument(args.instance);
+    if (instanceArg.issue) return errorResponse(instanceArg.issue);
+    const limitArg = readLimitArgument(args.limit);
+    if (limitArg.issue) return errorResponse(limitArg.issue);
+
+    const listed = await context.backend.list(built.filter, {
+      ...(instanceArg.value === undefined ? {} : { instance: instanceArg.value }),
+      ...(limitArg.value === undefined ? {} : { limit: limitArg.value }),
+      ...(built.filter.environment === undefined
+        ? {}
+        : { environment: built.filter.environment }),
+    });
+    const ordered = includeDone ? listed.notes : excludeDone(listed.notes);
+
+    // Every selected instance failed: an empty list must not look like "no notes" (T68).
+    if (listed.instances.length > 0 && listed.instances.every((row) => !row.ok)) {
+      return toMcpError(
+        listed.errors[0] ??
+          new FederationError("partial", "every selected instance failed"),
+      );
+    }
+
+    const environment = built.filter.environment;
+    if (format.value === "markdown") {
+      const lines = ordered.map(
+        (note) => `- [${(note as FederatedNote).instance}] ${summarize(note)}`,
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: [
+              `# ${context.appName} — ${ordered.length} note(s)` +
+                (environment === undefined ? "" : ` [env: ${environment}]`),
+              "",
+              ...(lines.length > 0 ? lines : ["(no notes)"]),
+            ].join("\n"),
+          },
+        ],
+      };
+    }
+    return jsonResponse({
+      instances: listed.instances,
+      partial: listed.partial,
+      truncated: listed.truncated,
+      errors: listed.errors.map(errorJson),
+      ...(environment === undefined ? {} : { environment }),
+      count: ordered.length,
+      notes: ordered.map((note) => noteForRead(context, note)),
+    });
+  }
+
+  // Single store: the 0.8 path exactly — one binding, one envelope, one text.
+  const environment = boundEnvironment(context);
+  // One read path for every list: the shared filter (FR-15.3) including the session's
+  // environment (FR-16.3) and the shared done-rule. The backend returns the shared review order
+  // (M2/FR-16.7), so sorting a second time here would only duplicate that rule (F5).
+  const { notes } = await context.backend.list(built.filter);
+  const ordered = includeDone ? notes : excludeDone(notes);
+  if (format.value === "markdown") {
+    const lines = ordered.map((note) => `- ${summarize(note)}`);
+    return {
+      content: [
+        {
+          type: "text",
+          text: [
+            `# ${context.appName} — ${ordered.length} note(s) [env: ${environment}]`,
+            "",
+            ...(lines.length > 0 ? lines : ["(no notes)"]),
+          ].join("\n"),
+        },
+      ],
+    };
+  }
+  return jsonResponse({
+    environment,
+    app: context.appName,
+    count: ordered.length,
+    notes: ordered.map(canonicalNote),
+  });
+}
+
+async function handleListInstances(
+  context: ToolContext,
+  _args: Record<string, unknown>,
+): Promise<ToolResponse> {
+  const rows = await context.backend.instances();
+  return jsonResponse(rows.map(publicInstance));
+}
+
+async function handleGetNote(
+  context: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResponse> {
+  const instanceArg = readInstanceArgument(args.instance);
+  if (instanceArg.issue) return errorResponse(instanceArg.issue);
+  const lookup = await loadBoundNote(
+    context,
+    String(args.id ?? ""),
+    "reading the note",
+    instanceArg.value,
+  );
+  if ("refusal" in lookup) {
+    return lookup.refusal;
+  }
+  return jsonResponse(noteForRead(context, lookup.note));
+}
+
+async function handleCreateNote(
+  context: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResponse> {
+  const refusal = requireWrite(context);
+  if (refusal) return refusal;
+  const type = readEnumArgument(args.type, NOTE_TYPES, "type");
+  if (type.issue) {
+    return errorResponse(type.issue);
+  }
+  const intent = readEnumArgument(args.intent, NOTE_INTENTS, "intent");
+  if (intent.issue) {
+    return errorResponse(intent.issue);
+  }
+  const severity = readEnumArgument(args.severity, NOTE_SEVERITIES, "severity");
+  if (severity.issue) {
+    return errorResponse(severity.issue);
+  }
+  // FR-3.7: the value is checked here, the rule "only on a feature" is the model's — an agent
+  // may pass it with any type, and the model silently omits it where it is meaningless.
+  const priority = readEnumArgument(args.priority, NOTE_PRIORITIES, "priority");
+  if (priority.issue) {
+    return errorResponse(priority.issue);
+  }
+  // FR-16.1: an incoming origin is normalised at the boundary, never trusted verbatim. An
+  // absent field stores `null` (createNote does that); an invalid one is refused before the
+  // first write, so a bad argument cannot leave a half-created note behind.
+  const origin = readOriginArgument(args.origin);
+  if ("issue" in origin) {
+    return errorResponse(origin.issue);
+  }
+  const body = String(args.body ?? "").trim();
+  if (body === "") {
+    return errorResponse("body must not be empty");
+  }
+  const anchor: Anchor = {};
+  if (typeof args.hook === "string" && args.hook) anchor.hook = args.hook;
+  if (typeof args.selector === "string" && args.selector) anchor.selector = args.selector;
+  if (typeof args.quote === "string" && args.quote) anchor.quote = args.quote;
+  if (typeof args.route === "string" && args.route) anchor.route = args.route;
+  if (!anchor.hook && !anchor.selector && !anchor.quote) {
+    return errorResponse("an anchor needs at least one of hook, selector or quote");
+  }
+  const instanceArg = readInstanceArgument(args.instance);
+  if (instanceArg.issue) return errorResponse(instanceArg.issue);
+  const federated = isFederated(context);
+  // A federated write is validated against the *target's* environment; the session must never
+  // inject (or rewrite) an environment into the draft (NFR-18).
+  const environment = federated ? undefined : boundEnvironment(context);
+  const before = federated ? [] : (await context.backend.list({})).notes;
+  const attempt = await attemptWrite(context, "create_note", () =>
+    context.backend.create(
+      {
+        type: type.value ?? "text",
+        body,
+        anchor,
+        intent: intent.value ?? "implement",
+        ...(severity.value !== undefined ? { severity: severity.value } : {}),
+        ...(priority.value !== undefined ? { priority: priority.value } : {}),
+        author: agentAuthor(context),
+        authorType: "agent",
+        source: "agent",
+        // The note is born in the target's environment, never in another one (FR-16.3).
+        ...(environment === undefined ? {} : { environment }),
+        ...(origin.present ? { origin: origin.origin } : {}),
+        ...(typeof args.session === "string" ? { sessionRef: args.session } : {}),
+        ...(typeof args.ticket_ref === "string" ? { ticketRef: args.ticket_ref } : {}),
+      },
+      federated ? instanceArg.value : undefined,
+    ),
+  );
+  if ("failure" in attempt) return attempt.failure;
+  const created = attempt.value;
+  const failure = await confirmWrite(context, `create_note ${created.id}`, [...before, created]);
+  if (failure) return failure;
+  return jsonResponse({ created: noteForWrite(context, created) });
+}
+
+async function handleReply(
+  context: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResponse> {
+  const refusal = requireWrite(context);
+  if (refusal) return refusal;
+  const id = String(args.id ?? "");
+  const instanceArg = readInstanceArgument(args.instance);
+  if (instanceArg.issue) return errorResponse(instanceArg.issue);
+  if (args.kind === "decision") {
+    return errorResponse(
+      "a decision must come from a human (PROTOCOL §6.1) — use kind=decision_request and let the human answer",
+    );
+  }
+  const kind = readEnumArgument(args.kind, AGENT_MESSAGE_KINDS, "kind");
+  if (kind.issue) {
+    return errorResponse(kind.issue);
+  }
+  const text = String(args.text ?? "");
+  if (text.trim() === "") {
+    return errorResponse("text must not be empty");
+  }
+  const lookup = await loadBoundNote(context, id, "replying to the note", instanceArg.value);
+  if ("refusal" in lookup) {
+    return lookup.refusal;
+  }
+  const note = lookup.note;
+  const messageKind: MessageKind = kind.value ?? "reply";
+  // Every refusal comes before the first write: an answer that is not allowed must not append a
+  // message either (PROTOCOL §4.5/§6.2/§6.3).
+  if (messageKind !== "decision_request" && args.set_done === true) {
+    if (note.intent === "feedback") {
+      return errorResponse("intent=feedback notes are not set to done by an agent (PROTOCOL §4.5/§6.2)");
+    }
+    if (note.status === "needs_decision") {
+      return errorResponse("refusing to mark a pending decision as done (PROTOCOL §6.3)");
+    }
+  }
+  const before = isFederated(context) ? [] : (await context.backend.list({})).notes;
+  const attempt = await attemptWrite(context, `reply to ${id}`, async () => {
+    const message = createMessage({
+      text,
+      kind: messageKind,
+      author: agentAuthor(context),
+      authorType: "agent",
+      now: nowIso(context),
+    });
+    let updated = await context.backend.addMessage(id, message, instanceArg.value);
+    if (messageKind === "decision_request") {
+      updated = await context.backend.update(id, { status: "needs_decision" }, instanceArg.value);
+    } else if (args.set_done === true) {
+      updated = await context.backend.update(id, { status: "done" }, instanceArg.value);
+    }
+    return updated;
+  });
+  if ("failure" in attempt) return attempt.failure;
+  const updated = attempt.value;
+  const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
+  const failure = await confirmWrite(context, `reply to ${id}`, expected);
+  if (failure) return failure;
+  return jsonResponse({ note: noteForWrite(context, updated) });
+}
+
+async function handleSetStatus(
+  context: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResponse> {
+  const refusal = requireWrite(context);
+  if (refusal) return refusal;
+  const id = String(args.id ?? "");
+  const instanceArg = readInstanceArgument(args.instance);
+  if (instanceArg.issue) return errorResponse(instanceArg.issue);
+  const status = readEnumArgument(args.status, NOTE_STATUSES, "status");
+  if (status.issue) {
+    return errorResponse(status.issue);
+  }
+  const wanted: NoteStatus | undefined = status.value;
+  if (wanted === undefined) {
+    return errorResponse(`status must be one of ${NOTE_STATUSES.join(", ")}`);
+  }
+  const lookup = await loadBoundNote(context, id, "setting the status", instanceArg.value);
+  if ("refusal" in lookup) {
+    return lookup.refusal;
+  }
+  if (wanted === "done") {
+    if (lookup.note.status === "needs_decision") {
+      return errorResponse("refusing to mark a pending decision as done (PROTOCOL §6.3)");
+    }
+    if (lookup.note.intent === "feedback") {
+      return errorResponse("intent=feedback notes are decided by the human (PROTOCOL §6.2)");
+    }
+  }
+  const before = isFederated(context) ? [] : (await context.backend.list({})).notes;
+  const attempt = await attemptWrite(context, `set_status on ${id}`, () =>
+    context.backend.update(id, { status: wanted }, instanceArg.value),
+  );
+  if ("failure" in attempt) return attempt.failure;
+  const updated = attempt.value;
+  const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
+  const failure = await confirmWrite(context, `set_status on ${id}`, expected);
+  if (failure) return failure;
+  return jsonResponse({ note: noteForWrite(context, updated) });
+}
+
+async function handleSetIntent(
+  context: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResponse> {
+  const refusal = requireWrite(context);
+  if (refusal) return refusal;
+  const id = String(args.id ?? "");
+  const instanceArg = readInstanceArgument(args.instance);
+  if (instanceArg.issue) return errorResponse(instanceArg.issue);
+  const intent = readEnumArgument(args.intent, NOTE_INTENTS, "intent");
+  if (intent.issue) {
+    return errorResponse(intent.issue);
+  }
+  const wanted: NoteIntent | undefined = intent.value;
+  if (wanted === undefined) {
+    return errorResponse(`intent must be one of ${NOTE_INTENTS.join(", ")}`);
+  }
+  const lookup = await loadBoundNote(context, id, "changing the intent", instanceArg.value);
+  if ("refusal" in lookup) {
+    return lookup.refusal;
+  }
+  const before = isFederated(context) ? [] : (await context.backend.list({})).notes;
+  const attempt = await attemptWrite(context, `set_intent on ${id}`, () =>
+    context.backend.update(id, { intent: wanted }, instanceArg.value),
+  );
+  if ("failure" in attempt) return attempt.failure;
+  const updated = attempt.value;
+  const expected = before.map((candidate) => (candidate.id === updated.id ? updated : candidate));
+  const failure = await confirmWrite(context, `set_intent on ${id}`, expected);
+  if (failure) return failure;
+  return jsonResponse({ note: noteForWrite(context, updated) });
+}
+
+async function handleExportBundle(
+  context: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResponse> {
+  const format = readEnumArgument(args.format, FORMATS, "format");
+  if (format.issue) {
+    return errorResponse(format.issue);
+  }
+  const instanceArg = readInstanceArgument(args.instance);
+  if (instanceArg.issue) return errorResponse(instanceArg.issue);
+  // A single-store backend ignores the instance; a federator refuses the aggregate (NFR-18).
+  return context.backend.exportBundle(
+    isFederated(context) ? (instanceArg.value ?? "") : "self",
+    {
+      format: format.value === "json" ? "json" : "markdown",
+      includeDone: args.include_done !== false,
+    },
+  );
+}
+
+async function handleInspectBundle(
+  context: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResponse> {
+  const parsed = parseBundleInput(args.bundle);
+  if (typeof parsed === "string") {
+    return errorResponse(parsed);
+  }
+  // A federated session has no target environment to compare against; the summary is still
+  // useful and remains purely informational.
+  return jsonResponse(
+    isFederated(context) ? inspectBundle(parsed) : summaryWithEnvironment(parsed, boundEnvironment(context)),
+  );
+}
+
+async function handleImportBundle(
+  context: ToolContext,
+  args: Record<string, unknown>,
+): Promise<ToolResponse> {
+  const refusal = requireWrite(context);
+  if (refusal) return refusal;
+
+  // F12b: a bogus enum value must never be echoed back and treated as the default. Both values
+  // are validated before the bundle is even looked at, so a bad call names the allowed set
+  // instead of failing for an unrelated reason.
+  const mode = readEnumArgument(args.mode, MERGE_MODES, "mode");
+  if (mode.issue) {
+    return errorResponse(mode.issue);
+  }
+  const onConflict = readEnumArgument(args.on_conflict, CONFLICT_POLICIES, "on_conflict");
+  if (onConflict.issue) {
+    return errorResponse(onConflict.issue);
+  }
+  const policy =
+    onConflict.value === "keep-incoming" || onConflict.value === "keep-existing"
+      ? onConflict.value
+      : undefined;
+  const instanceArg = readInstanceArgument(args.instance);
+  if (instanceArg.issue) return errorResponse(instanceArg.issue);
+  if (isFederated(context) && args.allow_env_mismatch === true) {
+    // Never forwarded in federation mode, and rejected before any request (NFR-18).
+    throw new FederationError(
+      "invalid_argument",
+      "allow_env_mismatch is not available in federation mode (NFR-18)",
+    );
+  }
+  return context.backend.importBundle(
+    args.bundle,
+    {
+      mode: mode.value ?? "merge",
+      dryRun: args.dry_run !== false,
+      ...(policy !== undefined ? { onConflict: policy } : {}),
+      // In federation mode this is always false (rejected above); single-store keeps 0.8.
+      allowEnvMismatch: isFederated(context) ? false : args.allow_env_mismatch === true,
+    },
+    isFederated(context) ? (instanceArg.value ?? "") : "self",
+  );
 }
 
 function summaryWithEnvironment(

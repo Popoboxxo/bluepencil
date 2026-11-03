@@ -2,8 +2,9 @@
  * Unit tests of the embed vocabulary and the attach surface of the element (FR-17).
  *
  * Covers: `src/embed/attributes.ts` (attribute → configuration mapping, issue reporting),
- * `src/embed/version.ts` (manifest, version resolution, integrity) and the new element attributes
- * (`endpoint`, `headers`, `token*`, `route*`, `gate`, `theme`, `destroy()`).
+ * `src/embed/version.ts` (manifest, version resolution, integrity) and the element attributes
+ * (`endpoint`, `headers`, `route*`, `gate`, `theme`, `modes`, `destroy()`) — including the removal
+ * of the `token*` credential attributes (ADR-0.12-S3, AC-C10).
  *
  * Everything runs against the real modules and a real jsdom document — no stubs of other agents'
  * modules. The HTTP store is exercised through a stubbed `fetch`, so the wiring from an HTML
@@ -16,6 +17,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ALL_ATTRIBUTES,
+  EMBED_ATTRIBUTES,
+  LEGACY_TOKEN_ATTRIBUTES,
   collectDataAttributes,
   parseLoaderOptions,
   readAnnotateSelectors,
@@ -28,12 +31,13 @@ import {
   readHeaders,
   readKeymap,
   readJsonAttribute,
+  readLegacyTokenAttributes,
   readModes,
   readRoute,
   readStore,
   readTheme,
   resolveGlobalPath,
-  type AttributeSource,
+  type EmbedAttributeSource,
 } from "../../src/embed/attributes";
 import {
   absoluteUrl,
@@ -50,7 +54,7 @@ import { BluepencilNotesElement } from "../../src/element/index";
 /* helpers                                                                     */
 /* -------------------------------------------------------------------------- */
 
-function source(attributes: Record<string, string>): AttributeSource {
+function source(attributes: Record<string, string>): EmbedAttributeSource {
   return {
     getAttribute: (name: string) => attributes[name] ?? null,
   };
@@ -113,15 +117,13 @@ describe("embed attributes — parsing", () => {
 });
 
 describe("embed attributes — headers, theme, store, environment", () => {
-  it("merges static headers, the dynamic function and the token (token wins)", () => {
+  it("merges static headers and the dynamic function (function wins)", () => {
     const resolve = (path: string) =>
       path === "host.headers" ? () => ({ "X-Dynamic": "yes", "X-Workspace": "from-fn" }) : undefined;
     const result = readHeaders(
       source({
         headers: '{"X-Workspace":"from-json","X-Static":"1"}',
         "headers-from": "host.headers",
-        token: "t0ken",
-        "token-header": "X-Api-Key",
       }),
       resolve,
     );
@@ -130,15 +132,27 @@ describe("embed attributes — headers, theme, store, environment", () => {
       "X-Workspace": "from-fn",
       "X-Static": "1",
       "X-Dynamic": "yes",
-      "X-Api-Key": "t0ken",
     });
   });
 
-  it("prefixes the token with token-scheme only when it is set", () => {
-    expect(readHeaders(source({ token: "abc" }), noGlobals).headers?.()).toEqual({ Authorization: "abc" });
-    expect(
-      readHeaders(source({ token: "abc", "token-scheme": "Bearer" }), noGlobals).headers?.(),
-    ).toEqual({ Authorization: "Bearer abc" });
+  it("never builds a credential header from a removed token attribute (AC-C10)", () => {
+    const result = readHeaders(
+      source({ token: "t0ken", "token-header": "X-Api-Key", "token-scheme": "Bearer" }),
+      noGlobals,
+    );
+    // No header function at all: the http adapter then sends only `Accept`, and the host is told why.
+    expect(result.headers).toBeUndefined();
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0]).toContain("token attributes are no longer supported in 0.12.0");
+    expect(result.issues[0]).toContain("worker-only");
+    expect(result.issues[0]).toContain("options page");
+  });
+
+  it("keeps the configured headers and still reports a legacy token attribute", () => {
+    const result = readHeaders(source({ headers: '{"A":"1"}', token: "s3cret" }), noGlobals);
+    expect(result.headers?.()).toEqual({ A: "1" });
+    expect(result.issues[0]).toContain("token attributes are no longer supported");
+    expect(JSON.stringify(result.headers?.())).not.toContain("s3cret");
   });
 
   it("reports an unresolvable headers-from and keeps the static headers working", () => {
@@ -180,14 +194,97 @@ describe("embed attributes — headers, theme, store, environment", () => {
   });
 });
 
+describe("embed attributes — the removed token vocabulary (AC-C10, ADR-0.12-S3)", () => {
+  it("removes token, token-header and token-scheme from the vocabulary and observations", () => {
+    expect(LEGACY_TOKEN_ATTRIBUTES).toEqual(["token", "token-header", "token-scheme"]);
+    for (const name of LEGACY_TOKEN_ATTRIBUTES) {
+      expect(EMBED_ATTRIBUTES).not.toContain(name);
+      expect(ALL_ATTRIBUTES).not.toContain(name);
+      expect(BluepencilNotesElement.observedAttributes).not.toContain(name);
+    }
+  });
+
+  it("names exactly the attributes the host set and says where the credential lives now", () => {
+    expect(readLegacyTokenAttributes(source({}))).toEqual({ issues: [] });
+
+    const read = readLegacyTokenAttributes(
+      source({ token: "abc", "token-scheme": "Bearer", endpoint: "/api" }),
+    );
+    expect(read.issues).toHaveLength(1);
+    expect(read.issues[0]).toContain("`token`");
+    expect(read.issues[0]).toContain("`token-scheme`");
+    expect(read.issues[0]).not.toContain("`token-header`");
+    // Actionable: worker-only credential + the place it is configured now.
+    expect(read.issues[0]).toContain("worker-only");
+    expect(read.issues[0]).toContain("service worker");
+    expect(read.issues[0]).toContain("extension options page");
+  });
+
+  it("detects an empty token attribute too — presence is the signal, not the value", () => {
+    expect(readLegacyTokenAttributes(source({ token: "" })).issues).toHaveLength(1);
+  });
+
+  it("reports a legacy data-token* key on the loader tag and never forwards the value", () => {
+    const options = parseLoaderOptions({
+      endpoint: "/api",
+      token: "s3cret",
+      "token-header": "X-Api-Key",
+    });
+    // No credential reaches the element (which would put it back into the page's DOM).
+    expect(options.attributes).toEqual({ endpoint: "/api" });
+    expect(JSON.stringify(options.attributes)).not.toContain("s3cret");
+    expect(options.issues).toHaveLength(1);
+    expect(options.issues?.[0]).toContain("token attributes are no longer supported");
+    // Nothing to report when the tag is clean.
+    expect(parseLoaderOptions({ endpoint: "/api" }).issues).toBeUndefined();
+  });
+});
+
 describe("embed attributes — route and gate", () => {
-  it('route="url" stores the location, route-from delegates to the host', () => {
-    const url = readRoute(source({ route: "url" }), noGlobals, { pathname: "/a", search: "?b=1" });
-    expect(url.getRoute?.()).toBe("/a?b=1");
+  it("defaults to the path-only route when the element has no `route` (AC-C04)", () => {
+    // G8: the safe default does not cost the deep-link context — the path stays, the query goes.
+    const implicit = readRoute(source({}), noGlobals, { pathname: "/p", search: "?token=secret&x=1" });
+    expect(implicit.issues).toEqual([]);
+    expect(implicit.getRoute?.()).toBe("/p");
+
+    // An explicit `route="url"` means exactly the same thing.
+    const explicit = readRoute(source({ route: "url" }), noGlobals, { pathname: "/p", search: "?x=1" });
+    expect(explicit.getRoute?.()).toBe("/p");
+  });
+
+  it('route="url-with-query" keeps the query, filtered by query-allow/query-deny (AC-C02, AC-C03)', () => {
+    const full = readRoute(source({ route: "url-with-query" }), noGlobals, {
+      pathname: "/p",
+      search: "?token=secret&x=1",
+    });
+    expect(full.getRoute?.()).toBe("/p?token=secret&x=1");
+
+    const filtered = readRoute(
+      source({ route: "url-with-query", "query-allow": "utm_*", "query-deny": "utm_source" }),
+      noGlobals,
+      { pathname: "/p", search: "?utm_source=a&utm_medium=b&ref=c" },
+    );
+    expect(filtered.issues).toEqual([]);
+    expect(filtered.getRoute?.()).toBe("/p?utm_medium=b");
+  });
+
+  it("accepts a complete policy as an override, and route-from still delegates to the host", () => {
+    const overridden = readRoute(source({ route: "url-with-query" }), noGlobals, { pathname: "/p", search: "?a=1" }, {
+      query: { mode: "url", allow: [], deny: [] },
+    });
+    expect(overridden.getRoute?.()).toBe("/p");
 
     const host = readRoute(source({ "route-from": "router.current" }), () => () => "/spa/route", undefined);
     expect(host.getRoute?.()).toBe("/spa/route");
     expect(host.issues).toEqual([]);
+
+    // route-from wins over `route`: it returns the whole string, unfiltered (host responsibility).
+    const wins = readRoute(
+      source({ route: "url", "route-from": "router.current" }),
+      () => () => "/spa/route?a=1",
+      { pathname: "/ignored", search: "" },
+    );
+    expect(wins.getRoute?.()).toBe("/spa/route?a=1");
 
     // The host function receives the annotated element, so it can answer for *that* note instead of
     // for whatever is on screen when the composer opens (FR-2.4). Measured on the AI-Extremismus
@@ -203,13 +300,17 @@ describe("embed attributes — route and gate", () => {
   });
 
   it("reports an unknown route mode, a missing function and a missing location", () => {
-    expect(readRoute(source({ route: "hash" }), noGlobals, { pathname: "/", search: "" }).issues[0]).toContain(
-      'route must be "url"',
-    );
+    const unknown = readRoute(source({ route: "hash" }), noGlobals, { pathname: "/", search: "?a=1" });
+    expect(unknown.issues[0]).toContain('route must be "url" or "url-with-query"');
+    // Unknown values keep the safe default: the path survives, the query does not.
+    expect(unknown.getRoute?.()).toBe("/");
     expect(readRoute(source({ route: "url" }), noGlobals, undefined).issues[0]).toContain("needs a location");
     expect(readRoute(source({ "route-from": "gone" }), noGlobals, undefined).issues[0]).toContain(
       "does not resolve to a function",
     );
+    // The implicit default in a host without a location (SSR) is simply unavailable — no issue.
+    const implicit = readRoute(source({}), noGlobals, undefined);
+    expect(implicit).toEqual({ issues: [] });
   });
 
   it("reads the gate as a re-evaluated function and reports the other shapes", () => {
@@ -275,6 +376,64 @@ describe("embed attributes — loader options", () => {
   it("forwards the modes ceiling to the element like any other element attribute", () => {
     expect(ALL_ATTRIBUTES).toContain("modes");
     expect(parseLoaderOptions({ modes: "text,design" }).attributes.modes).toBe("text,design");
+  });
+
+  it("forwards the route vocabulary — data-route, data-query-allow, data-query-deny (AC-C04)", () => {
+    for (const name of ["route", "query-allow", "query-deny"]) {
+      expect(ALL_ATTRIBUTES).toContain(name);
+    }
+    const forwarded = parseLoaderOptions({
+      route: "url-with-query",
+      "query-allow": "utm_*",
+      "query-deny": "token",
+    }).attributes;
+    expect(forwarded).toEqual({
+      route: "url-with-query",
+      "query-allow": "utm_*",
+      "query-deny": "token",
+    });
+    // The loader translates nothing: the element reads the very same vocabulary.
+    expect(source(forwarded).getAttribute("query-allow")).toBe("utm_*");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* withdrawn voice vocabulary (AC-G03, G13)                                    */
+/* -------------------------------------------------------------------------- */
+
+describe("embed attributes — the withdrawn voice vocabulary is silently ignored", () => {
+  it("does not forward data-voice or data-voice-engine from the loader", () => {
+    expect(ALL_ATTRIBUTES).not.toContain("voice");
+    expect(ALL_ATTRIBUTES).not.toContain("voice-engine");
+
+    const script = document.createElement("script");
+    script.setAttribute("data-voice", "");
+    script.setAttribute("data-voice-engine", "hostVoice.engine");
+    script.setAttribute("data-modes", "text");
+    document.head.append(script);
+
+    const data = collectDataAttributes(script);
+    // The old keys are still read off the tag, but they are not part of the vocabulary any more.
+    expect(data.voice).toBe("");
+    expect(data["voice-engine"]).toBe("hostVoice.engine");
+
+    const options = parseLoaderOptions(data);
+    expect(options.attributes).toEqual({ modes: "text" });
+    expect(Object.keys(options.attributes)).not.toContain("voice");
+    expect(Object.keys(options.attributes)).not.toContain("voice-engine");
+  });
+
+  it("mounts an element that still carries voice attributes without an issue or a mic", () => {
+    const element = mount({
+      adapter: "memory",
+      voice: "true",
+      "voice-engine": "hostVoice.engine",
+    });
+
+    // Silent ignore, deliberately unlike the removed `token*` attributes: no config error at all.
+    expect(element.issues).toEqual([]);
+    expect(document.querySelector(".bp-voice")).toBeNull();
+    expect(document.querySelector('[data-bp-action="composer-voice"]')).toBeNull();
   });
 });
 
@@ -406,6 +565,39 @@ describe("element — the attach surface", () => {
   it("observes every documented attribute", () => {
     expect([...BluepencilNotesElement.observedAttributes]).toEqual([...ALL_ATTRIBUTES]);
     expect([...BluepencilNotesElement.observedAttributes]).toContain("modes");
+    expect([...BluepencilNotesElement.observedAttributes]).toContain("query-allow");
+    expect([...BluepencilNotesElement.observedAttributes]).toContain("query-deny");
+  });
+
+  it("stores the path by default, without any `route` attribute (AC-C04)", async () => {
+    document.body.innerHTML = `
+      <main id="host">
+        <p data-bluepencil="intro">Text</p>
+      </main>`;
+    const element = mount({ adapter: "memory" });
+    try {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+      const paragraph = document.querySelector("p");
+      if (paragraph === null) throw new Error("fixture missing");
+      paragraph.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+
+      const textarea = document.querySelector('[data-bp-part="composer"] textarea') as HTMLTextAreaElement | null;
+      if (textarea === null) throw new Error("composer did not open");
+      textarea.value = "Pfad prüfen";
+      document
+        .querySelector('[data-bp-part="composer"] [data-bp-action="composer-save"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const note = element.blueprint?.store.notes()[0];
+      if (note === undefined) throw new Error("note was not stored");
+      // jsdom's location is http://localhost:3000/ — the path is stored, the query is not.
+      expect(note.anchor.route).toBe("/");
+      expect(element.issues).toEqual([]);
+    } finally {
+      element.destroy();
+      element.remove();
+    }
   });
 
   it("passes the modes ceiling into the layer's bar", () => {
@@ -432,7 +624,7 @@ describe("element — the attach surface", () => {
     }
   });
 
-  it("builds an HTTP store from endpoint, headers and token", async () => {
+  it("builds an HTTP store from endpoint and headers", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal("fetch", (async (input: RequestInfo | URL, init?: RequestInit) => {
       calls.push({ url: String(input), init });
@@ -445,8 +637,6 @@ describe("element — the attach surface", () => {
     const element = mount({
       endpoint: "/api/v1/bluepencil",
       headers: '{"X-Workspace":"7"}',
-      token: "abc",
-      "token-scheme": "Bearer",
     });
     // The layer's own enable() already hydrates the store; asking for `ready()` must not add a read.
     await element.blueprint?.ready();
@@ -454,9 +644,42 @@ describe("element — the attach surface", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("/api/v1/bluepencil/notes");
     const headers = calls[0]?.init?.headers as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer abc");
     expect(headers["X-Workspace"]).toBe("7");
+    expect(headers.Authorization).toBeUndefined();
     expect(element.issues).toEqual([]);
+  });
+
+  it("does not send silently unauthenticated when a host still passes token attributes (AC-C10)", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    vi.stubGlobal("fetch", (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return new Response(JSON.stringify({ notes: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch);
+
+    const element = mount({
+      endpoint: "/api/v1/bluepencil",
+      token: "page-secret",
+      "token-header": "X-Api-Key",
+      "token-scheme": "Bearer",
+    });
+    await element.blueprint?.ready();
+
+    // The request still happens (the layer keeps working) — but it carries no credential and the
+    // host hears about the removal instead of debugging a mysterious 401.
+    expect(calls).toHaveLength(1);
+    const headers = calls[0]?.init?.headers as Record<string, string>;
+    expect(JSON.stringify(headers)).not.toContain("page-secret");
+    expect(headers["X-Api-Key"]).toBeUndefined();
+    expect(headers.Authorization).toBeUndefined();
+    expect(element.issues.join(" | ")).toContain("token attributes are no longer supported in 0.12.0");
+    expect(element.issues.join(" | ")).toContain("worker-only");
+
+    // The element never copies the credential into a DOM attribute of its own.
+    const written = [...element.attributes].map((attribute) => `${attribute.name}=${attribute.value}`);
+    expect(written.join(" ")).not.toContain("data-bp-token");
   });
 
   it("keeps the adapter name path when no endpoint is given", () => {

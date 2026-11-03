@@ -197,6 +197,53 @@ describe("GET {base}/config — the answer itself", () => {
   });
 });
 
+describe("the probes stay credential-free (AC-D13)", () => {
+  it("answers /config and /health without a credential while the notes are closed", () => {
+    // A client has to be able to learn *which* credential to bring before it has one, and a
+    // container runtime's healthcheck must not turn into a 401 on an authenticated deployment.
+    const overrides: Partial<HandlerContext> = { authSecret: SHARED };
+
+    const config = handleRequest(
+      { method: "GET", url: `${BASE}/config`, headers: {}, body: "" },
+      context(overrides),
+    );
+    expect(config.status).toBe(200);
+
+    const health = handleRequest(
+      { method: "GET", url: `${BASE}/health`, headers: {}, body: "" },
+      context(overrides),
+    );
+    expect(health.status).toBe(200);
+    expect((JSON.parse(health.body) as Json)["ok"]).toBe(true);
+
+    // The control: the gate is real on the route that carries notes.
+    const notes = handleRequest(
+      { method: "GET", url: `${BASE}/notes`, headers: {}, body: "" },
+      context(overrides),
+    );
+    expect(notes.status).toBe(401);
+  });
+
+  it("names the credential kind and never a value", () => {
+    const text = JSON.stringify(configOf({ authSecret: SHARED }));
+    expect(text).toContain('"auth":"secret"');
+    expect(text).not.toContain(SHARED);
+  });
+
+  it("is Host-checked like every other route, credential or not", () => {
+    // Credential-free is not the same as ungated: SEC-02's Host rule applies to the probes too.
+    for (const path of ["/config", "/health"]) {
+      const response = handleRequest(
+        { method: "GET", url: `${BASE}${path}`, headers: { host: "evil.example" }, body: "" },
+        context({ bind: { host: "127.0.0.1", port: 8787 } }),
+      );
+      expect(response.status, path).toBe(403);
+      const body = JSON.parse(response.body) as { error: { code: string } };
+      expect(body.error.code).toBe("host_not_allowed");
+    }
+  });
+});
+
 describe("GET {base}/config — against a running hub", () => {
   it("reports the binding the socket actually has, not the one that was asked for", async () => {
     const server = await startServer({

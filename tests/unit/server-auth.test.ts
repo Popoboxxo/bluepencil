@@ -1,4 +1,6 @@
 /**
+ * @vitest-environment node — the throttle cases start real hubs on real sockets.
+ *
  * Hub authentication (#36, phase 1 — the shared secret).
  *
  * The property under test is deliberately narrow: a hub configured with a secret answers an
@@ -15,7 +17,10 @@
  *   - it is not confused with `--read-only`. A read-only hub refuses writes with 403; an
  *     unauthenticated one refuses *reads* too, with 401. Getting those backwards is the easy mistake.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   handleRequest,
   type HandlerContext,
@@ -23,6 +28,8 @@ import {
   type ServerRequest,
   type ServerResponse,
 } from "../../server/handler";
+import { startServer, type ServerOptions } from "../../server/index";
+import { createTokenIssuer } from "../../server/tokens";
 
 const BASE = "/api/v1/bluepencil";
 
@@ -301,5 +308,148 @@ describe("hub authentication — read-only is a separate thing", () => {
     });
 
     expect(response.status).toBe(403);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * The shared credential throttle (SEC-03, SEC-07, G2; AC-D05, AC-D06)
+ * ---------------------------------------------------------------------------------------------- */
+
+const ADMIN = "admin-fixture-secret-1";
+const TOKEN_KEY = "signing-key-fixture-value-1-0123456789";
+
+interface Running {
+  port: number;
+  close: () => Promise<void>;
+}
+
+const started: Running[] = [];
+const dirs: string[] = [];
+
+afterEach(async () => {
+  while (started.length > 0) await started.pop()?.close();
+  while (dirs.length > 0) {
+    const dir = dirs.pop();
+    if (dir !== undefined) rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+async function serve(options: Partial<ServerOptions>): Promise<Running> {
+  const dir = mkdtempSync(join(tmpdir(), "bp-auth-throttle-"));
+  dirs.push(dir);
+  const storePath = join(dir, "notes.json");
+  writeFileSync(storePath, JSON.stringify({ version: 1, notes: [] }), "utf8");
+  const running = await startServer({
+    storePath,
+    port: 0,
+    host: "127.0.0.1",
+    environment: "dev",
+    journal: "none",
+    quiet: true,
+    ...options,
+  });
+  started.push(running);
+  return running;
+}
+
+async function get(
+  port: number,
+  path: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: unknown; retryAfter: string | null }> {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+    headers,
+    signal: AbortSignal.timeout(5_000),
+  });
+  const text = await response.text();
+  let body: unknown = null;
+  try {
+    body = JSON.parse(text) as unknown;
+  } catch {
+    body = null;
+  }
+  return { status: response.status, body, retryAfter: response.headers.get("retry-after") };
+}
+
+function codeOf(body: unknown): string {
+  return String((body as { error?: { code?: string } } | null)?.error?.code ?? "");
+}
+
+const WRONG_ADMIN = { "x-bluepencil-auth": "wrong-admin-guess-value" };
+const WRONG_SECRET = { "x-bluepencil-auth": "wrong-client-secret-value" };
+const BOGUS_TOKEN = { authorization: "Bearer not-a-token-this-hub-signed" };
+
+describe("hub authentication — the shared credential throttle", () => {
+  it("[AC-D05] counts wrong admin secrets on /notes and locks /admin/* with the same budget", async () => {
+    // The SEC-03 bypass: the admin secret is a second credential on /notes, so guessing it there
+    // must spend the same `admin` budget the admin surface's own header spends. A token key makes
+    // the notes gate active without introducing a client shared secret.
+    const hub = await serve({ tokenKey: TOKEN_KEY, adminSecret: ADMIN });
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      expect((await get(hub.port, `${BASE}/notes`, WRONG_ADMIN)).status, `attempt ${attempt}`).toBe(401);
+    }
+
+    const throttled = await get(hub.port, `${BASE}/notes`, WRONG_ADMIN);
+    expect(throttled.status).toBe(429);
+    expect(codeOf(throttled.body)).toBe("too_many_attempts");
+    expect(throttled.retryAfter).toBe("300");
+
+    // The notes route and the admin surface share the `admin` counter: the budget is spent.
+    const adminDoor = await get(hub.port, `${BASE}/admin/status`, { "x-bluepencil-admin": "wrong-admin" });
+    expect(adminDoor.status).toBe(429);
+  });
+
+  it("[AC-D05] a successful admin-secret check on /notes resets the shared counter", async () => {
+    const hub = await serve({ tokenKey: TOKEN_KEY, adminSecret: ADMIN });
+
+    for (let attempt = 0; attempt < 9; attempt += 1) {
+      expect((await get(hub.port, `${BASE}/notes`, WRONG_ADMIN)).status).toBe(401);
+    }
+    // The admin secret is accepted as a notes credential on the notes routes (FR-6.16).
+    expect((await get(hub.port, `${BASE}/notes`, { "x-bluepencil-auth": ADMIN })).status).toBe(200);
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      expect(
+        (await get(hub.port, `${BASE}/notes`, WRONG_ADMIN)).status,
+        `after reset, attempt ${attempt}`,
+      ).toBe(401);
+    }
+  });
+
+  it("[AC-D06] exhausting the secret budget never locks the token budget", async () => {
+    const hub = await serve({ authSecret: CREDENTIAL, tokenKey: TOKEN_KEY });
+    const token = createTokenIssuer({ key: TOKEN_KEY }).issue({ device: "read-device", scope: ["read"] }).token;
+
+    // Alternating failures first: the two kinds count into separate budgets, so ten mixed attempts
+    // leave each budget at five.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect((await get(hub.port, `${BASE}/notes`, WRONG_SECRET)).status).toBe(401);
+      expect((await get(hub.port, `${BASE}/notes`, BOGUS_TOKEN)).status).toBe(401);
+    }
+
+    // Five more secret failures burn the `secret` budget (10 total).
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect((await get(hub.port, `${BASE}/notes`, WRONG_SECRET)).status).toBe(401);
+    }
+    expect((await get(hub.port, `${BASE}/notes`, WRONG_SECRET)).status).toBe(429);
+
+    // The token budget only saw five failures, so the valid token still reads the note set.
+    expect((await get(hub.port, `${BASE}/notes`, { authorization: `Bearer ${token}` })).status).toBe(200);
+
+    // And the secret budget stays exhausted: a correct secret cannot buy its way past the brake.
+    expect((await get(hub.port, `${BASE}/notes`, { "x-bluepencil-auth": CREDENTIAL })).status).toBe(429);
+  });
+
+  it("[AC-D06] exhausting the token budget never locks the secret budget", async () => {
+    const hub = await serve({ authSecret: CREDENTIAL, tokenKey: TOKEN_KEY });
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      expect((await get(hub.port, `${BASE}/notes`, BOGUS_TOKEN)).status, `attempt ${attempt}`).toBe(401);
+    }
+    expect((await get(hub.port, `${BASE}/notes`, BOGUS_TOKEN)).status).toBe(429);
+
+    // A valid shared secret is untouched by the burned token budget.
+    expect((await get(hub.port, `${BASE}/notes`, { "x-bluepencil-auth": CREDENTIAL })).status).toBe(200);
   });
 });

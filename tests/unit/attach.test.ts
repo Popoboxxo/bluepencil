@@ -10,11 +10,24 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { attach, attachFromDocument, start, type AttachDeps } from "../../src/embed/attach";
+import { sha256Hex, verifyIntegrity } from "../../src/embed/version";
 import { BluepencilNotesElement } from "../../src/element/index";
 
 /* -------------------------------------------------------------------------- */
 /* helpers                                                                     */
 /* -------------------------------------------------------------------------- */
+
+/** The bytes the harness serves for the element build — the digest has to match these. */
+const ELEMENT_BODY = "export const nothing = true;";
+
+/** SHA-256 of the harness build, so a passing (and a deliberately failing) pin can be written. */
+async function elementDigest(): Promise<string> {
+  const digest = await sha256Hex(new TextEncoder().encode(ELEMENT_BODY));
+  if (digest === undefined) {
+    throw new Error("this test runtime has no WebCrypto");
+  }
+  return digest;
+}
 
 interface Harness {
   deps: Partial<AttachDeps>;
@@ -44,7 +57,7 @@ function harness(options: { element?: string; integrity?: boolean } = {}): Harne
       if (String(input).includes("latest.json")) {
         return new Response(JSON.stringify(state.manifest), { status: 200 });
       }
-      return new Response("export const nothing = true;", { status: 200 });
+      return new Response(ELEMENT_BODY, { status: 200 });
     }) as unknown as typeof fetch,
     importModule: async (url: string) => {
       state.loaded.push(url);
@@ -277,6 +290,12 @@ describe("attach — runtime updates", () => {
 
   it("keeps the running layer when an update fails its integrity check", async () => {
     const state = harness();
+    // Opting in now fails closed without a digest, so the initial manifest has to carry one.
+    state.manifest = {
+      version: "0.2.0",
+      element: "/bp/0.2.0/bluepencil.element.min.js",
+      sha256: await elementDigest(),
+    };
     const handle = await attach({
       scriptUrl: "https://c.example/attach.js",
       manifest: "latest.json",
@@ -488,6 +507,166 @@ describe("attach — failure contract", () => {
         deps: { ...state.deps, moduleTimeoutMs: 30, setTimeoutImpl: (fn) => (fn(), 0) },
       }),
     ).rejects.toThrow(/was not defined within/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* loader integrity (G7, AC-C06…AC-C08)                                        */
+/* -------------------------------------------------------------------------- */
+
+describe("attach — loader integrity", () => {
+  const base = {
+    scriptUrl: "https://c.example/bluepencil/attach.js",
+    manifest: "latest.json",
+    integrity: true,
+    watchSeconds: 0,
+    tag: "bluepencil-notes",
+    auto: true,
+    attributes: { adapter: "memory" },
+  } as const;
+
+  it("fails closed when data-integrity is on and neither pin nor manifest digest exists (AC-C06)", async () => {
+    const state = harness();
+    await expect(attach({ ...base, deps: state.deps })).rejects.toThrow(/integrity_missing/);
+
+    // The build is not imported, nothing is mounted, and the loader did not even fetch bytes.
+    expect(state.loaded).toEqual([]);
+    expect(attachedElements()).toHaveLength(0);
+    expect(state.fetchCalls).toEqual(["https://c.example/bluepencil/latest.json"]);
+  });
+
+  it("reports integrity_missing visibly through bp-attach-error (AC-C06)", async () => {
+    const state = harness();
+    const errors: unknown[] = [];
+    document.addEventListener("bp-attach-error", (event) => errors.push((event as CustomEvent).detail));
+    loaderScript({ "data-manifest": "latest.json", "data-integrity": "true" });
+
+    const api = await attachFromDocument(document, state.deps);
+
+    expect(api.handles).toHaveLength(0);
+    expect(state.loaded).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(String(errors[0])).toMatch(/integrity_missing/);
+  });
+
+  it("fails closed on a watch swap whose manifest dropped the digest (AC-C06)", async () => {
+    const state = harness();
+    state.manifest = { version: "0.2.0", element: "/bp/0.2.0/e.js", sha256: await elementDigest() };
+    const handle = await attach({ ...base, deps: state.deps });
+    const mounted = attachedElements()[0];
+
+    state.manifest = { version: "0.3.0", element: "/bp/0.3.0/e.js" };
+    await expect(handle.check()).rejects.toThrow(/integrity_missing/);
+
+    // The verified layer survives; the unverified build is never imported.
+    expect(attachedElements()).toEqual([mounted]);
+    expect(state.loaded).toEqual(["https://c.example/bp/0.2.0/e.js"]);
+    expect(handle.version).toBe("0.2.0");
+    handle.destroy();
+  });
+
+  it("lets the data-sha256 host pin win over a manifest digest (AC-C07)", async () => {
+    const state = harness();
+    const digest = await elementDigest();
+    // The manifest digest is wrong on purpose: a host pin must not be replaced by a downloaded one.
+    state.manifest = { version: "0.2.0", element: "/bp/0.2.0/e.js", sha256: "ab".repeat(32) };
+
+    const handle = await attach({ ...base, sha256: digest, deps: state.deps });
+
+    expect(state.loaded).toEqual(["https://c.example/bp/0.2.0/e.js"]);
+    expect(attachedElements()).toHaveLength(1);
+    expect(handle.version).toBe("0.2.0");
+    handle.destroy();
+  });
+
+  it("refuses to execute when the host pin does not match the bytes (AC-C07)", async () => {
+    const state = harness();
+    await expect(attach({ ...base, sha256: "ab".repeat(32), deps: state.deps })).rejects.toThrow(
+      /integrity_mismatch/,
+    );
+    expect(state.loaded).toEqual([]);
+    expect(attachedElements()).toHaveLength(0);
+  });
+
+  it("checks the manifest digest on a cross-origin CDN and warns without a host pin (AC-C08)", async () => {
+    const state = harness();
+    const digest = await elementDigest();
+    state.manifest = { version: "0.2.0", element: "https://cdn.example/bp/0.2.0/e.js", sha256: digest };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const handle = await attach({ ...base, deps: state.deps });
+
+    // Allowed, not blocked: the build is fetched for the digest, then imported as a normal module.
+    expect(state.fetchCalls).toEqual([
+      "https://c.example/bluepencil/latest.json",
+      "https://cdn.example/bp/0.2.0/e.js",
+    ]);
+    expect(state.loaded).toEqual(["https://cdn.example/bp/0.2.0/e.js"]);
+    expect(attachedElements()).toHaveLength(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/cross-origin/);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/data-sha256/);
+    handle.destroy();
+  });
+
+  it("does not warn for a same-origin manifest build without a pin", async () => {
+    const state = harness();
+    state.manifest = { version: "0.2.0", element: "/bp/0.2.0/e.js", sha256: await elementDigest() };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const handle = await attach({ ...base, deps: state.deps });
+
+    expect(warn).not.toHaveBeenCalled();
+    handle.destroy();
+  });
+
+  it("reads data-sha256 from the loader tag and uses it as the pin (AC-C07)", async () => {
+    const state = harness();
+    const digest = await elementDigest();
+    // The manifest digest is wrong on purpose, so only the tag's pin can make this pass.
+    state.manifest = { version: "0.2.0", element: "/bp/0.2.0/e.js", sha256: "ab".repeat(32) };
+    loaderScript({
+      "data-manifest": "latest.json",
+      "data-integrity": "true",
+      "data-sha256": digest,
+    });
+
+    const api = await attachFromDocument(document, state.deps);
+
+    expect(api.handles).toHaveLength(1);
+    expect(state.loaded).toEqual(["https://c.example/bp/0.2.0/e.js"]);
+    expect(attachedElements()).toHaveLength(1);
+    api.destroy();
+  });
+
+  it("never fetches or checks anything without data-integrity (no opt-in = unchanged)", async () => {
+    const state = harness();
+    const handle = await attach({ ...base, integrity: false, deps: state.deps });
+
+    expect(state.fetchCalls).toEqual(["https://c.example/bluepencil/latest.json"]);
+    expect(state.loaded).toEqual(["https://c.example/bp/0.2.0/bluepencil.element.min.js"]);
+    handle.destroy();
+  });
+
+  it("returns the trust anchor through verifyIntegrity, never a silent ok", async () => {
+    const bytes = new TextEncoder().encode(ELEMENT_BODY);
+    const digest = await elementDigest();
+
+    expect(await verifyIntegrity({ bytes, expected: digest })).toEqual({ ok: true, source: "host-pin" });
+    expect(await verifyIntegrity({ bytes, manifestSha256: digest })).toEqual({ ok: true, source: "manifest" });
+
+    const missing = await verifyIntegrity({ bytes });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) {
+      expect(missing.code).toBe("integrity_missing");
+    }
+
+    const mismatch = await verifyIntegrity({ bytes, expected: "ab".repeat(32) });
+    expect(mismatch.ok).toBe(false);
+    if (!mismatch.ok) {
+      expect(mismatch.code).toBe("integrity_mismatch");
+      expect(mismatch.issue).toContain("integrity check failed");
+    }
   });
 });
 

@@ -27,32 +27,23 @@
  *    panel or the composer, never into the page (NFR-14).
  */
 
-import {
-  deriveAnchor,
-  describeElement,
-  resolveAnchor,
-  resolveAnchorDetailed,
-  revealAnchor,
-} from "../core/anchor";
-import { captureContext, selectionQuote } from "../core/capture";
+import { deriveAnchor, describeElement, resolveAnchorDetailed } from "../core/anchor";
+import { selectionQuote } from "../core/capture";
 import { toJson } from "../core/export/json";
 import { toMarkdown } from "../core/export/markdown";
 import type {
   Anchor,
-  CapturedContext,
   Environment,
-  MessageKind,
   Note,
   NotePriority,
   NoteSeverity,
   NoteStatus,
 } from "../core/model";
 import { isNotePriority, isNoteSeverity } from "../core/model";
-import { answerDecision } from "../core/protocol";
 import type { Store } from "../core/store";
-import { applyTranslations, createTranslator, normalizeLanguage, type Translate } from "../i18n";
+import { applyTranslations } from "../i18n";
 import type { MessageKey } from "../i18n/en";
-import { createComposer, type Composer, type ComposerSaveInput, type ComposerSaveResult, type ComposerTarget } from "./composer";
+import { createComposer, type Composer, type ComposerTarget } from "./composer";
 import { createLegend } from "./legend";
 import { keyIdentifier, resolveKeymap, type KeymapOverrides } from "./keymap";
 import {
@@ -62,19 +53,21 @@ import {
   type CaptureMode,
   type CaptureSemantics,
 } from "./modes";
-import { createPresentation, type PresentationHandle } from "./present";
-import type { VoiceEngineFactory } from "./voice";
+import { createLayerJump, type LayerJumpUnit } from "./layer-jump";
+import { createLayerNotes, type LayerNotesUnit } from "./layer-notes";
+import { createLayerSettings } from "./layer-settings";
+import { createLayerPresentation, type LayerPresentationUnit } from "./layer-presentation";
 import { VERSION } from "../version";
 import {
   createPanel,
   createSettings,
-  DEFAULT_SETTINGS,
   noteCounters,
   type LayerSettings,
   type Panel,
   type PanelActions,
   type SettingsPopover,
 } from "./panel";
+import { createLayerTeardown } from "./layer-teardown";
 import { STYLES } from "./styles";
 
 /* -------------------------------------------------------------------------- */
@@ -107,10 +100,6 @@ export interface LayerOptions {
   markerStrategy?: "overlay" | "sibling";
   defaultShowDone?: boolean;
   buildRef?: string;
-  /** Dictation opt-in (FR-21.1): false/absent means no mic button and no recognition listener. */
-  voice?: boolean;
-  /** Host-injected recogniser factory (FR-21.6); wins over the browser Web Speech API. */
-  voiceEngine?: VoiceEngineFactory;
   /** Name/build of the embedding app, stamped into an exported bundle (issue #21). */
   app?: { name: string; buildRef?: string };
   /** Exporter recorded in an exported bundle (issue #21); default `"unknown"`. */
@@ -163,9 +152,6 @@ function modeSlot(mode: CaptureMode): BarSlot {
  * Not `disable()`: annotations stay, only the layer's own controls go (NFR-15 keeps that meaning).
  */
 export type ChromeLevel = "full" | "quiet" | "off";
-
-/** Below this width the strip yields to its handle on its own (FR-12.13). */
-const NARROW_WIDTH = 720;
 
 /* -------------------------------------------------------------------------- */
 /* style registry — one sheet per document, removed with the last layer        */
@@ -385,71 +371,6 @@ function isEditableTarget(target: unknown): boolean {
 
 let instanceCounter = 0;
 
-/** UI preferences key — namespaced like the storage keys of the adapters (ARCHITECTURE §6b). */
-function settingsKey(view: Window | undefined): string {
-  const host = view?.location?.host !== undefined && view.location.host !== "" ? view.location.host : "local";
-  return `bluepencil:ui:${host}:v1`;
-}
-
-function readStoredSettings(view: Window | undefined): Partial<LayerSettings> {
-  try {
-    const raw = view?.localStorage?.getItem(settingsKey(view));
-    if (typeof raw !== "string") return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return {};
-    const source = parsed as Record<string, unknown>;
-    const result: Partial<LayerSettings> = {};
-    if (typeof source.showDone === "boolean") result.showDone = source.showDone;
-    if (typeof source.feedbackOnly === "boolean") result.feedbackOnly = source.feedbackOnly;
-    if (typeof source.author === "string") result.author = source.author;
-    if (typeof source.language === "string") result.language = source.language;
-    if (typeof source.barCollapsed === "boolean") result.barCollapsed = source.barCollapsed;
-    if (source.chromeLevel === "full" || source.chromeLevel === "quiet" || source.chromeLevel === "off") {
-      result.chromeLevel = source.chromeLevel;
-    }
-    // FR-4.10: a partial/corrupt modes object degrades to the defaults per mode instead of
-    // discarding the whole preference.
-    if (typeof source.modes === "object" && source.modes !== null) {
-      const modes = { ...DEFAULT_SETTINGS.modes };
-      const storedModes = source.modes as Record<string, unknown>;
-      for (const mode of CAPTURE_MODES) {
-        const value = storedModes[mode];
-        if (typeof value === "boolean") modes[mode] = value;
-      }
-      result.modes = modes;
-    }
-    return result;
-  } catch (error) {
-    // Private mode / disabled storage must degrade, never break (NFR-5).
-    return {};
-  }
-}
-
-/**
- * `?bp-chrome=quiet|full|off` — the level for one load, never persisted (FR-12.12). For screenshots,
- * QA runs and handovers: whoever takes over can set the state without touching a stored preference.
- */
-function chromeFromUrl(view: Window | undefined): ChromeLevel | null {
-  const search = view?.location?.search ?? "";
-  const match = /[?&]bp-chrome=(quiet|full|off)(&|$)/.exec(search);
-  return match === null ? null : (match[1] as ChromeLevel);
-}
-
-/**
- * The host ceiling (FR-4.10), normalised once: absent means every mode, `"none"` means none,
- * and an explicit list is filtered against the known modes and deduplicated. An embed attribute
- * can carry anything, so an unknown value is dropped here instead of reaching the bar.
- */
-function normaliseHostModes(value: readonly CaptureMode[] | "none" | undefined): CaptureMode[] {
-  if (value === "none") return [];
-  if (value === undefined) return [...CAPTURE_MODES];
-  const result: CaptureMode[] = [];
-  for (const entry of value) {
-    if (isCaptureMode(entry) && !result.includes(entry)) result.push(entry);
-  }
-  return result;
-}
-
 export function createLayer(options: LayerOptions): LayerHandle {
   instanceCounter += 1;
   const instanceId = `i${instanceCounter}`;
@@ -459,38 +380,24 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
   /* -- state --------------------------------------------------------------- */
 
-  const stored = readStoredSettings(view);
   /**
-   * A `?bp-chrome=` level is good for this load only (FR-12.12): it is never written back, and an
-   * explicit change at runtime wins over it (then it is gone).
+   * The settings unit (CQ-03 split, spec §3.13 L): preferences, persistence, translator, chrome
+   * level and the host mode ceiling. `settings` stays a live alias so the render paths read the
+   * same object the unit mutates in place.
    */
-  let chromeOverride = chromeFromUrl(view);
-  /**
-   * True while the viewport is too narrow for a strip (FR-12.13). A viewport fact, not a preference:
-   * it is never persisted, and it yields to an explicit `setChrome()` on a wide screen.
-   */
-  let narrow =
-    view !== undefined && typeof view.innerWidth === "number" && view.innerWidth > 0 && view.innerWidth <= NARROW_WIDTH;
-  const settings: LayerSettings = {
-    ...DEFAULT_SETTINGS,
-    showDone: options.defaultShowDone ?? false,
-    ...(options.chrome === undefined ? {} : { chromeLevel: options.chrome }),
-    ...stored,
-  };
-  // An explicit host language always wins over the persisted one (FR-10.3); without it the
-  // persisted choice survives a reload (FR-4.5).
-  settings.language = normalizeLanguage(options.language ?? settings.language);
-
-  /** Host ceiling (FR-4.10), fixed for the lifetime of the instance. */
-  const hostModes = normaliseHostModes(options.modes);
-
-  let translator = createTranslator(settings.language);
-  /** Stable translator handed to the components — a language switch only swaps `translator`. */
-  const t: Translate = (key, vars) => translator.t(key, vars);
+  const settingsUnit = createLayerSettings({
+    ...(view === undefined ? {} : { view }),
+    ...(options.language === undefined ? {} : { language: options.language }),
+    ...(options.chrome === undefined ? {} : { chrome: options.chrome }),
+    ...(options.defaultShowDone === undefined ? {} : { defaultShowDone: options.defaultShowDone }),
+    ...(options.modes === undefined ? {} : { modes: options.modes }),
+  });
+  const settings = settingsUnit.settings;
+  const hostModes = settingsUnit.hostModes;
+  const t = settingsUnit.t;
 
   let enabled = false;
   let mode: Mode = "off";
-  let selectedId: string | null = null;
   let degradedReported = false;
 
   /** Element resolution per note id, refreshed on every render (FR-2.4/4.7). */
@@ -502,20 +409,6 @@ export function createLayer(options: LayerOptions): LayerHandle {
   /** Store hydration of the last `enable()`; awaited by `hydrated()` (never rejects). */
   let hydration: Promise<void> = Promise.resolve();
 
-  /** Modes the host offers and the user kept enabled (FR-4.10). */
-  function availableModes(): CaptureMode[] {
-    return hostModes.filter((mode) => settings.modes[mode] !== false);
-  }
-
-  function modeAvailable(mode: CaptureMode): boolean {
-    return hostModes.includes(mode) && settings.modes[mode] !== false;
-  }
-
-  /** False in a read-only host (`modes: "none"`) — the feedback-only toggle has nothing to act on. */
-  function anyModeAvailable(): boolean {
-    return availableModes().length > 0;
-  }
-
   /** Nodes belonging to this instance (all inside `root`). */
   let root: HTMLElement | null = null;
   let bar: HTMLElement | null = null;
@@ -524,7 +417,6 @@ export function createLayer(options: LayerOptions): LayerHandle {
   let modeHint: HTMLElement | null = null;
   let modeHintText: HTMLElement | null = null;
   let markersLayer: HTMLElement | null = null;
-  let highlight: HTMLElement | null = null;
   let liveRegion: HTMLElement | null = null;
   let barCollapseButton: HTMLButtonElement | null = null;
   const counterValues: Partial<Record<keyof ReturnType<typeof noteCounters>, HTMLElement>> = {};
@@ -534,7 +426,42 @@ export function createLayer(options: LayerOptions): LayerHandle {
   let composer: Composer | null = null;
   let legend: ReturnType<typeof createLegend> | null = null;
   /** Presentation mode surface (FR-20); null until enable() builds it. */
-  let presentation: PresentationHandle | null = null;
+  let presentation: LayerPresentationUnit | null = null;
+
+  /**
+   * The write path (CQ-03 split, spec §3.13 L): one unit for every store mutation, the composer
+   * target and the author resolution. Created once per layer instance; `dispose()` on `disable()`.
+   */
+  const notes: LayerNotesUnit = createLayerNotes({
+    store: options.store,
+    t,
+    settings: () => settings,
+    panel: () => panel,
+    composer: () => composer,
+    ...(options.anchorHooks === undefined ? {} : { anchorHooks: options.anchorHooks }),
+    ...(options.buildRef === undefined ? {} : { buildRef: options.buildRef }),
+    ...(view === undefined ? {} : { view }),
+    ...(options.identity === undefined ? {} : { identity: options.identity }),
+    announce,
+    renderAll,
+    onError: reportError,
+  });
+
+  /**
+   * The selection, the highlight overlay and `j`/`k`/digits navigation (CQ-03 split, spec §3.13 L;
+   * FR-4.7). Created per instance; the overlay itself per `enable()`.
+   */
+  const jump: LayerJumpUnit = createLayerJump({
+    panel: () => panel,
+    elementFor: (note) => resolutions.get(note.id) ?? null,
+    onRevealed: (note, element) => {
+      resolutions.set(note.id, element);
+    },
+    visibleNotes: () => panel?.visibleNotes() ?? [],
+    renderMarkers,
+    ...(options.anchorHooks === undefined ? {} : { anchorHooks: options.anchorHooks }),
+    onError: reportError,
+  });
 
   /**
    * Resolved once (FR-1.11): the handler and the legend both read this — a shortcut that only exists
@@ -553,6 +480,9 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
   /** Every listener this instance owns, so `disable()` can prove a complete teardown. */
   const listeners: [EventTarget, string, EventListener, boolean | AddEventListenerOptions][] = [];
+
+  /** Ordered `dispose()` steps of one enable cycle (CQ-03 split, spec §3.13 L; FR-12.2). */
+  const teardown = createLayerTeardown();
 
   function listen(
     target: EventTarget,
@@ -627,16 +557,6 @@ export function createLayer(options: LayerOptions): LayerHandle {
     );
   }
 
-  /* -- persistence (FR-4.5, FR-1.2) --------------------------------------- */
-
-  function persistSettings(): void {
-    try {
-      view?.localStorage?.setItem(settingsKey(view), JSON.stringify(settings));
-    } catch {
-      // Best effort only: storage may be unavailable or full (NFR-5).
-    }
-  }
-
   /* -- container (one per instance, FR-12.3) ------------------------------- */
 
   function resolveMount(node: Element | Document | undefined): Element | null {
@@ -673,19 +593,8 @@ export function createLayer(options: LayerOptions): LayerHandle {
     markersLayer.setAttribute("data-bp-part", "markers");
     markersLayer.setAttribute("aria-hidden", "true");
 
-    highlight = doc.createElement("div");
-    highlight.className = "bp-highlight";
-    highlight.id = `bp-${instanceId}-highlight`;
-    highlight.setAttribute("data-bp-part", "highlight");
-    highlight.setAttribute("aria-hidden", "true");
-    highlight.hidden = true;
-    // No timer for UI state (NFR-2): the highlight removes itself when its CSS animation ends.
-    listen(highlight, "animationend", () => {
-      if (highlight) {
-        highlight.hidden = true;
-        highlight.removeAttribute("style");
-      }
-    });
+    // The highlight overlay is owned by the jump unit; it registers its own animation listener.
+    const highlight = jump.attach(doc, instanceId);
 
     /* -- bar and handle (FR-1.2, FR-4.8) ----------------------------------- */
 
@@ -793,7 +702,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
       resolve: (note) => resolutions.get(note.id) ?? null,
       degraded: (note) => degradations.has(note.id) || note.anchor.degraded !== undefined,
       showDone: () => settings.showDone,
-      selectedId: () => selectedId,
+      selectedId: () => jump.selectedId(),
       actions: panelActions(),
       onError: reportError,
     });
@@ -804,14 +713,9 @@ export function createLayer(options: LayerOptions): LayerHandle {
       instanceId,
       author: () => settings.author,
       feedbackOnly: () => settings.feedbackOnly,
-      onSave: (input) => saveNote(input),
+      onSave: (input) => notes.save(input),
       onCancel: () => applyUiState(),
       onError: reportError,
-      voice: () => options.voice === true,
-      ...(options.voiceEngine === undefined ? {} : { voiceEngine: options.voiceEngine }),
-      // Same source as the layer chrome (`normalizeLanguage(options.language)` above): an engine that
-      // listened in a different language than the UI shows would dictate the wrong words.
-      language: () => settings.language,
     });
 
     settingsPopover = createSettings({
@@ -829,7 +733,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
       t,
       instanceId,
       keymap: options.keymap,
-      modes: () => availableModes(),
+      modes: () => settingsUnit.availableModes(),
       onClose: () => applyUiState(),
     });
 
@@ -838,25 +742,22 @@ export function createLayer(options: LayerOptions): LayerHandle {
     // The panel writes through the same store as the composer (FR-15.3: one source of truth), so a
     // cue edited while presenting is the same note the review list shows. Writes go through
     // `mutate` like every other layer action, which keeps the error path in one place.
-    presentation = createPresentation(
-      {
-        notes: () => options.store.notes(),
-        routeOf: (note) => note.anchor.route,
-        t: (key) => t(key),
-        onWrite: (id, body) => {
-          const note = options.store.notes().find((candidate) => candidate.id === id);
-          if (!note) return;
-          void mutate(() => options.store.update(id, { body }), note);
-        },
-        onRetime: (id, at) => {
-          const note = options.store.notes().find((candidate) => candidate.id === id);
-          if (!note) return;
-          void mutate(() => options.store.update(id, { timing: { ...note.timing, at } }), note);
-        },
-        onError: reportError,
+    presentation = createLayerPresentation({
+      t,
+      notes: () => options.store.notes(),
+      onWrite: (id, body) => {
+        const note = options.store.notes().find((candidate) => candidate.id === id);
+        if (!note) return;
+        void notes.mutate(() => options.store.update(id, { body }), note);
       },
-      doc,
-    );
+      onRetime: (id, at) => {
+        const note = options.store.notes().find((candidate) => candidate.id === id);
+        if (!note) return;
+        void notes.mutate(() => options.store.update(id, { timing: { ...note.timing, at } }), note);
+      },
+      onError: reportError,
+    });
+    presentation.attach(doc);
 
     node.append(
       markersLayer,
@@ -877,8 +778,6 @@ export function createLayer(options: LayerOptions): LayerHandle {
   }
 
   /* -- rendering: resolution, markers, counters, panel (FR-4.1/4.7/4.8) --- */
-
-  let activeTarget: (ComposerTarget & { element: Element | null }) | null = null;
 
   function anchorOptions(): { hooks?: string[] } {
     return options.anchorHooks ? { hooks: options.anchorHooks } : {};
@@ -1014,7 +913,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     renderCounters();
     // The presenter panel reads the same store snapshot, so it follows the same render pass —
     // a note added or retimed in the review list is visible in the next cue immediately.
-    presentation?.refresh(options.store.notes());
+    presentation?.refresh();
     applyTranslations(root, t);
   }
 
@@ -1031,13 +930,13 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (!enabled || !root) return;
     // FR-4.10: a mode that became unavailable (host ceiling or a settings change) cannot stay
     // active — falling back to "off" is the only state the bar can still show honestly.
-    if (mode !== "off" && !modeAvailable(mode)) mode = "off";
+    if (mode !== "off" && !settingsUnit.modeAvailable(mode)) mode = "off";
     root.setAttribute("data-bp-mode", mode);
     root.setAttribute("data-bp-instance", instanceId);
     // Chrome level (FR-12.9): full keeps the bar/handle pair as before, quiet leaves only the
     // handle, off leaves the annotations without any chrome of their own. A narrow viewport behaves
     // as `quiet` on its own (FR-12.13) without touching the stored preference.
-    const level = chromeOverride ?? (narrow && settings.chromeLevel === "full" ? "quiet" : settings.chromeLevel);
+    const level = settingsUnit.chromeLevel();
     root.setAttribute("data-bp-dock", options.dock === "bottom" ? "bottom" : "top");
     if (bar) bar.hidden = settings.barCollapsed || level !== "full";
     if (handle) handle.hidden = level === "off" || (level === "full" && !settings.barCollapsed);
@@ -1048,7 +947,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
       const button = pressedButtons[modeSlot(captureMode)];
       if (!button) continue;
       // Unavailable modes disappear instead of looking clickable but inert (FR-4.10).
-      button.hidden = !modeAvailable(captureMode);
+      button.hidden = !settingsUnit.modeAvailable(captureMode);
       const pressed = mode === captureMode;
       button.setAttribute("aria-pressed", pressed ? "true" : "false");
       button.classList.toggle("is-active", pressed);
@@ -1063,7 +962,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     }
     // A read-only host offers no capture at all; the feedback-only toggle would be meaningless.
     const feedbackButton = pressedButtons["feedback-only"];
-    if (feedbackButton) feedbackButton.hidden = !anyModeAvailable();
+    if (feedbackButton) feedbackButton.hidden = !settingsUnit.anyModeAvailable();
     if (modeHint) modeHint.hidden = mode === "off";
     if (modeHintText && mode !== "off") {
       modeHintText.setAttribute("data-bp-i18n", `mode.${mode}.hint` as MessageKey);
@@ -1079,7 +978,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
 
   /** Toggle a capture mode; unavailable modes are a no-op (FR-4.10) — the button/key is inert. */
   function toggleMode(next: CaptureMode): void {
-    if (!modeAvailable(next)) return;
+    if (!settingsUnit.modeAvailable(next)) return;
     setMode(mode === next ? "off" : next);
   }
 
@@ -1101,11 +1000,8 @@ export function createLayer(options: LayerOptions): LayerHandle {
    * a fact about the viewport, not a choice.
    */
   function onViewportResize(): void {
-    if (view === undefined || typeof view.innerWidth !== "number") return;
-    const next = view.innerWidth > 0 && view.innerWidth <= NARROW_WIDTH;
-    if (next === narrow) return;
-    narrow = next;
-    applyUiState();
+    if (view === undefined) return;
+    if (settingsUnit.updateWidth(view.innerWidth)) applyUiState();
   }
 
   /**
@@ -1113,7 +1009,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
    * "off" really means off; `disable()` remains the call that removes every node (NFR-15).
    */
   function setChromeLevel(level: ChromeLevel): void {
-    chromeOverride = null; // an explicit choice wins over the one-load URL parameter
+    settingsUnit.setChromeOverride(null); // an explicit choice wins over the one-load URL parameter
     applySettingsPatch({ chromeLevel: level });
     if (level === "off") {
       if (legend?.isOpen()) legend.close();
@@ -1124,232 +1020,52 @@ export function createLayer(options: LayerOptions): LayerHandle {
   }
 
   function applySettingsPatch(patch: Partial<LayerSettings>): void {
-    let languageChanged = false;
-    if (patch.showDone !== undefined) settings.showDone = patch.showDone;
-    if (patch.feedbackOnly !== undefined) settings.feedbackOnly = patch.feedbackOnly;
-    if (patch.author !== undefined) settings.author = patch.author;
-    if (patch.barCollapsed !== undefined) settings.barCollapsed = patch.barCollapsed;
-    if (patch.chromeLevel !== undefined) settings.chromeLevel = patch.chromeLevel;
-    if (patch.modes !== undefined) settings.modes = { ...settings.modes, ...patch.modes };
-    if (patch.language !== undefined) {
-      const next = normalizeLanguage(patch.language);
-      languageChanged = next !== settings.language;
-      settings.language = next;
-    }
-    if (languageChanged) {
-      translator = createTranslator(settings.language);
-      root?.setAttribute("lang", settings.language);
-    }
-    persistSettings();
+    // State, persistence and the translator swap live in the settings unit; the root's `lang`
+    // attribute and the render pass stay here, because they are DOM.
+    const { languageChanged } = settingsUnit.patch(patch);
+    if (languageChanged) root?.setAttribute("lang", settings.language);
     applyUiState();
   }
 
   /** Settings -> "reset to defaults" (FR-4.5), including the host's `defaultShowDone` (D4). */
   function resetSettings(): void {
-    settings.showDone = options.defaultShowDone ?? DEFAULT_SETTINGS.showDone;
-    settings.feedbackOnly = DEFAULT_SETTINGS.feedbackOnly;
-    settings.author = DEFAULT_SETTINGS.author;
-    settings.barCollapsed = DEFAULT_SETTINGS.barCollapsed;
-    settings.modes = { ...DEFAULT_SETTINGS.modes };
-    settings.language = normalizeLanguage(options.language);
-    translator = createTranslator(settings.language);
+    settingsUnit.reset();
     panel?.resetFilters();
-    persistSettings();
     applyUiState();
   }
 
-  /* -- store actions (the layer is the only part of the UI that writes) ---- */
+  /* -- panel actions (wiring table over the units) ------------------------- */
 
-  /** Run a store mutation; failures are reported, never thrown into the page (NFR-14). */
-  async function mutate(action: () => Promise<unknown>, note?: Note): Promise<void> {
-    try {
-      await action();
-    } catch (error) {
-      reportError(error);
-      if (note) panel?.reportNoteError(note, "panel.error.action");
-    }
-  }
-
-  function authorName(): string {
-    const configured = settings.author.trim();
-    if (configured !== "") return configured;
-    const identity = options.identity;
-    if (identity !== undefined && identity !== "prompt" && identity !== "anonymous") {
-      try {
-        const user = identity.getUser?.();
-        if (user && typeof user.name === "string" && user.name.trim() !== "") return user.name.trim();
-      } catch (error) {
-        reportError(error);
-      }
-    }
-    return "anonymous";
-  }
-
-  /** Save the composer form into the store (FR-2.3, FR-9.3 — text only, resolved anchor first). */
-  async function saveNote(input: ComposerSaveInput): Promise<ComposerSaveResult> {
-    const target = activeTarget;
-    const element = target?.element ?? null;
-    if (target === null || element === null) {
-      return { ok: false, reasonKey: "composer.error.save" };
-    }
-    if (!element.isConnected) {
-      return { ok: false, reasonKey: "composer.error.vanished" };
-    }
-    let resolved = true;
-    try {
-      resolved = resolveAnchor(target.anchor, anchorOptions()) !== null;
-    } catch (error) {
-      reportError(error);
-      resolved = false;
-    }
-    if (!resolved) {
-      return { ok: false, reasonKey: "composer.error.vanished" };
-    }
-
-    // Design semantics carry the captured state (a bug is captured that way too, FR-1.13); a text
-    // quote deliberately carries none. `target.context` is what the capture mode resolved.
-    const context =
-      target.context ??
-      (input.type === "design" || input.type === "bug" ? captureSafely(element) : null);
-    try {
-      await options.store.create({
-        type: input.type,
-        body: input.body,
-        anchor: { ...target.anchor },
-        intent: input.intent,
-        // FR-3.6: only a bug carries a severity; `createNote` drops it for any other type.
-        ...(input.severity !== undefined ? { severity: input.severity } : {}),
-        // FR-3.7: only a feature carries a priority; `createNote` drops it for any other type.
-        ...(input.priority !== undefined ? { priority: input.priority } : {}),
-        author: authorName(),
-        authorType: "human",
-        source: "ui:human",
-        context,
-      });
-    } catch (error) {
-      reportError(error);
-      return { ok: false, reasonKey: "composer.error.save" };
-    }
-    announce("a11y.liveSaved");
-    renderAll();
-    return { ok: true };
-  }
-
-  function captureSafely(element: Element): CapturedContext | null {
-    try {
-      return captureContext(element, {
-        ...(options.buildRef !== undefined ? { buildRef: options.buildRef } : {}),
-        ...(view ? { view } : {}),
-      });
-    } catch (error) {
-      reportError(error);
-      return null;
-    }
-  }
-
+  /**
+   * The panel's action table: it only routes to the units and to the layer's own render/export
+   * steps. The write path itself lives in `layer-notes.ts` (CQ-03 split, spec §3.13 L).
+   */
   function panelActions(): PanelActions {
     return {
       reply: (note, text) => {
-        void replyTo(note, text);
+        void notes.reply(note, text);
       },
       setIntent: (note, intent) => {
-        void mutate(() => options.store.setIntent(note.id, intent), note);
+        void notes.mutate(() => options.store.setIntent(note.id, intent), note);
       },
       setStatus: (note, status: NoteStatus) => {
-        void mutate(() => options.store.setStatus(note.id, status), note);
+        void notes.mutate(() => options.store.setStatus(note.id, status), note);
       },
       setSeverity: (note, severity: NoteSeverity | null) => {
-        void mutate(() => options.store.update(note.id, { severity }), note);
+        void notes.mutate(() => options.store.update(note.id, { severity }), note);
       },
       setPriority: (note, priority: NotePriority | null) => {
-        void mutate(() => options.store.update(note.id, { priority }), note);
+        void notes.mutate(() => options.store.update(note.id, { priority }), note);
       },
       remove: (note) => {
-        void mutate(() => options.store.remove(note.id), note);
+        void notes.mutate(() => options.store.remove(note.id), note);
       },
-      jump: (note, element) => jumpTo(note, element),
+      jump: (note, element) => jump.jumpTo(note, element),
       export: (format) => exportNotes(format),
       setShowDone: (value) => {
         applySettingsPatch({ showDone: value });
       },
     };
-  }
-
-  /**
-   * Answer a note (FR-5.5). `src/core/protocol.ts` decides the vocabulary: an answer to a pending
-   * decision is `kind=decision` and reopens the note; everything else is a human `kind=reply`.
-   */
-  async function replyTo(note: Note, text: string): Promise<void> {
-    const body = text.trim();
-    if (body === "") {
-      panel?.reportNoteError(note, "panel.reply.empty");
-      return;
-    }
-    const author = authorName();
-    const answered = note.status === "needs_decision" ? answerDecision(note, { text: body, author }) : null;
-    const lastMessage = answered?.messages[answered.messages.length - 1];
-    const kind: MessageKind = lastMessage?.kind ?? "reply";
-    try {
-      await options.store.reply(note.id, { text: body, author, authorType: "human", kind });
-      if (answered !== null && answered.status !== note.status) {
-        await options.store.setStatus(note.id, answered.status);
-      }
-    } catch (error) {
-      reportError(error);
-      panel?.reportNoteError(note, "panel.reply.error");
-      return;
-    }
-    announce("a11y.liveSaved");
-    renderAll();
-  }
-
-  /* -- jump and highlight (FR-4.7) ---------------------------------------- */
-
-  function jumpTo(note: Note, element: Element | null): void {
-    selectedId = note.id;
-    if (element !== null) {
-      try {
-        const scroll = (element as { scrollIntoView?: (options?: ScrollIntoViewOptions) => void })
-          .scrollIntoView;
-        if (typeof scroll === "function") scroll.call(element, { block: "center", inline: "nearest" });
-      } catch {
-        // Scrolling is best effort; an unresolvable layout must not break the jump.
-      }
-      showHighlight(element);
-    }
-    panel?.render();
-    renderMarkers();
-
-    if (element !== null || note.anchor.reveal === undefined) return;
-
-    // Issue #20: the target may only exist inside a transient container (closed dialog/popover,
-    // inactive tab). Activate the trigger the anchor was captured with and jump to whatever the
-    // container then reveals — a note is never left unreachable while a way in is known.
-    void revealAnchor(note.anchor, anchorOptions())
-      .then((revealed) => {
-        if (revealed === null) return;
-        resolutions.set(note.id, revealed);
-        jumpTo(note, revealed);
-      })
-      .catch((error: unknown) => {
-        reportError(error);
-      });
-  }
-
-  /** Highlight overlay instead of touching host styles — the host box stays untouched (FR-1.8). */
-  function showHighlight(element: Element): void {
-    if (!highlight || typeof element.getBoundingClientRect !== "function") return;
-    const rect = element.getBoundingClientRect();
-    highlight.hidden = true;
-    highlight.style.top = `${Math.round(rect.top)}px`;
-    highlight.style.left = `${Math.round(rect.left)}px`;
-    highlight.style.width = `${Math.round(rect.width)}px`;
-    highlight.style.height = `${Math.round(rect.height)}px`;
-    highlight.hidden = false;
-    // Restart the CSS animation without a timer (NFR-2): a synchronous reflow read is enough.
-    highlight.style.animation = "none";
-    void highlight.offsetWidth;
-    highlight.style.animation = "";
   }
 
   /* -- export (FR-7.1/7.2) ------------------------------------------------ */
@@ -1597,7 +1313,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     if (!isElement(actionNode)) return;
     const action = actionNode.getAttribute("data-bp-action");
     settingsPopover?.commitFields();
-    const note = noteForNode(actionNode);
+    const note = notes.noteForNode(actionNode);
 
     switch (action) {
       case "mode-text":
@@ -1663,27 +1379,27 @@ export function createLayer(options: LayerOptions): LayerHandle {
         return;
       case "marker":
       case "jump":
-        if (note) jumpTo(note, resolutions.get(note.id) ?? null);
+        if (note) jump.jumpTo(note, resolutions.get(note.id) ?? null);
         return;
       case "reply":
-        if (note) void replyTo(note, panel?.replyValue(note) ?? "");
+        if (note) void notes.reply(note, panel?.replyValue(note) ?? "");
         return;
       case "toggle-intent":
         if (note) {
-          void mutate(
+          void notes.mutate(
             () => options.store.setIntent(note.id, note.intent === "implement" ? "feedback" : "implement"),
             note,
           );
         }
         return;
       case "mark-done":
-        if (note) void mutate(() => options.store.setStatus(note.id, "done"), note);
+        if (note) void notes.mutate(() => options.store.setStatus(note.id, "done"), note);
         return;
       case "reopen":
-        if (note) void mutate(() => options.store.setStatus(note.id, "open"), note);
+        if (note) void notes.mutate(() => options.store.setStatus(note.id, "open"), note);
         return;
       case "delete":
-        confirmDelete(actionNode, note);
+        notes.confirmDelete(actionNode, note);
         return;
       case "export-markdown":
         exportNotes("markdown");
@@ -1694,25 +1410,6 @@ export function createLayer(options: LayerOptions): LayerHandle {
       default:
         composer?.handleClick(event);
     }
-  }
-
-  /** Two-step delete for a single note (FR-8.1) — no blocking `confirm()` in the host page. */
-  function confirmDelete(button: Element, note: Note | null): void {
-    if (note === null) return;
-    if (button.getAttribute("data-bp-confirm") !== "true") {
-      button.setAttribute("data-bp-confirm", "true");
-      button.setAttribute("data-bp-i18n", "panel.action.confirmDelete");
-      button.textContent = t("panel.action.confirmDelete");
-      return;
-    }
-    void mutate(() => options.store.remove(note.id), note);
-  }
-
-  function noteForNode(node: Element): Note | null {
-    const holder = node.closest("[data-bp-note-id]") ?? node;
-    const id = holder.getAttribute("data-bp-note-id");
-    if (id === null || id === "") return null;
-    return options.store.notes().find((note) => note.id === id) ?? null;
   }
 
   /** Filters (FR-4.2) and the settings surface (FR-4.5) — both delegated to one listener. */
@@ -1826,35 +1523,35 @@ export function createLayer(options: LayerOptions): LayerHandle {
     let handled = true;
     if (shortcut === undefined) {
       if (/^[1-9]$/.test(key)) {
-        jumpToIndex(Number(key) - 1);
+        jump.jumpToIndex(Number(key) - 1);
       } else {
         handled = false;
       }
     } else {
       switch (shortcut.id) {
         case "mode.text":
-          if (!modeAvailable("text")) {
+          if (!settingsUnit.modeAvailable("text")) {
             handled = false;
             break;
           }
           toggleMode("text");
           break;
         case "mode.design":
-          if (!modeAvailable("design")) {
+          if (!settingsUnit.modeAvailable("design")) {
             handled = false;
             break;
           }
           toggleMode("design");
           break;
         case "mode.bug":
-          if (!modeAvailable("bug")) {
+          if (!settingsUnit.modeAvailable("bug")) {
             handled = false;
             break;
           }
           toggleMode("bug");
           break;
         case "mode.feature":
-          if (!modeAvailable("feature")) {
+          if (!settingsUnit.modeAvailable("feature")) {
             handled = false;
             break;
           }
@@ -1867,7 +1564,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
         case "feedback-only":
           // The bar button is hidden when no mode is available; the shortcut must be just as inert
           // and leave the key to the host (FR-4.10, FR-12.6).
-          if (!anyModeAvailable()) {
+          if (!settingsUnit.anyModeAvailable()) {
             handled = false;
             break;
           }
@@ -1890,10 +1587,10 @@ export function createLayer(options: LayerOptions): LayerHandle {
           applyUiState();
           break;
         case "next":
-          moveSelection(1);
+          jump.moveSelection(1);
           break;
         case "previous":
-          moveSelection(-1);
+          jump.moveSelection(-1);
           break;
         case "cancel":
           // `Esc` is consumed by `escape()` above; this branch keeps the switch exhaustive.
@@ -1902,17 +1599,14 @@ export function createLayer(options: LayerOptions): LayerHandle {
           presentation?.toggle();
           break;
         case "present.mode":
-          if (presentation) {
-            presentation.setMode(presentation.mode === "edit" ? "read" : "edit");
-          }
+          presentation?.toggleMode();
           break;
         case "present.audience":
           presentation?.openAudience();
           break;
         case "present.timer":
           // One key for both directions: the clock knows whether it is running.
-          if (presentation?.elapsedRunning()) presentation.pause();
-          else presentation?.start();
+          presentation?.toggleClock();
           break;
         case "present.reset":
           presentation?.reset();
@@ -1960,29 +1654,6 @@ export function createLayer(options: LayerOptions): LayerHandle {
       return true;
     }
     return false;
-  }
-
-  function moveSelection(delta: number): void {
-    const list = visibleList();
-    if (list.length === 0) return;
-    const current = selectedId === null ? -1 : list.findIndex((note) => note.id === selectedId);
-    const nextIndex =
-      current === -1
-        ? delta > 0
-          ? 0
-          : list.length - 1
-        : Math.min(Math.max(current + delta, 0), list.length - 1);
-    const note = list[nextIndex];
-    if (!note) return;
-    if (!panel?.isOpen()) panel?.open();
-    jumpTo(note, resolutions.get(note.id) ?? null);
-  }
-
-  function jumpToIndex(index: number): void {
-    const note = visibleList()[index];
-    if (!note) return;
-    if (!panel?.isOpen()) panel?.open();
-    jumpTo(note, resolutions.get(note.id) ?? null);
   }
 
   function onScroll(): void {
@@ -2045,7 +1716,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
       reportError(error);
       return;
     }
-    const context = semantics === "design" ? captureSafely(element) : null;
+    const context = semantics === "design" ? notes.capture(element) : null;
     const target: ComposerTarget = {
       type: preset.type,
       anchor,
@@ -2054,7 +1725,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
       element,
       label,
     };
-    activeTarget = target;
+    notes.setTarget(target);
     composer?.open(target);
   }
 
@@ -2091,6 +1762,81 @@ export function createLayer(options: LayerOptions): LayerHandle {
     }
   }
 
+  /**
+   * Registers the teardown steps in the order `disable()` must run them (FR-12.2, NFR-15): the
+   * event/listener surface first, then the units, then state and the style/root nodes.
+   */
+  function registerTeardown(): void {
+    teardown.add(unlistenAll);
+    teardown.add(() => {
+      if (unsubscribeStore) {
+        try {
+          unsubscribeStore();
+        } catch (error) {
+          reportError(error);
+        }
+        unsubscribeStore = null;
+      }
+    });
+    teardown.add(() => {
+      if (resizeObserver) {
+        try {
+          resizeObserver.disconnect();
+        } catch (error) {
+          reportError(error);
+        }
+        resizeObserver = null;
+      }
+      observedTargets = [];
+    });
+    teardown.add(() => {
+      panel?.close();
+      composer?.close();
+      legend?.close();
+      settingsPopover?.close();
+    });
+    teardown.add(() => {
+      // FR-12.2: teardown must leave no timer, listener or channel behind. The presentation surface
+      // owns a 250 ms ticker and a BroadcastChannel, so it is torn down with everything else.
+      presentation?.dispose();
+      presentation = null;
+    });
+    // The jump unit owns the highlight node and its animation listener (FR-12.2).
+    teardown.add(() => {
+      jump.dispose();
+    });
+    teardown.add(() => {
+      notes.dispose();
+    });
+    teardown.add(() => {
+      markerNodes.clear();
+      resolutions.clear();
+      degradations.clear();
+      mode = "off";
+    });
+    teardown.add(() => {
+      if (ownerDocument) releaseStyles(ownerDocument);
+    });
+    teardown.add(() => {
+      root?.remove();
+      root = null;
+      bar = null;
+      handle = null;
+      handleCount = null;
+      modeHint = null;
+      modeHintText = null;
+      markersLayer = null;
+      liveRegion = null;
+      barCollapseButton = null;
+      panel = null;
+      composer = null;
+      legend = null;
+      settingsPopover = null;
+      // Settings owns no node, but the unit contract is uniform; the stored preference survives.
+      settingsUnit.dispose();
+    });
+  }
+
   function enable(): void {
     if (enabled) return;
     if (!ownerDocument || typeof ownerDocument.createElement !== "function") {
@@ -2104,6 +1850,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     }
     root = node;
     enabled = true;
+    registerTeardown();
     acquireStyles(ownerDocument);
     attachListeners();
     attachObserver();
@@ -2129,69 +1876,17 @@ export function createLayer(options: LayerOptions): LayerHandle {
     }
   }
 
-  /** Complete, idempotent teardown: nodes, listeners, observer, subscription, style (FR-12.2). */
+  /** Complete, idempotent teardown: the ordered `dispose()` list (FR-12.2). */
   function disable(): void {
     if (!enabled) return;
     enabled = false;
-
-    unlistenAll();
-    if (unsubscribeStore) {
-      try {
-        unsubscribeStore();
-      } catch (error) {
-        reportError(error);
-      }
-      unsubscribeStore = null;
-    }
-    if (resizeObserver) {
-      try {
-        resizeObserver.disconnect();
-      } catch (error) {
-        reportError(error);
-      }
-      resizeObserver = null;
-    }
-    observedTargets = [];
-
-    panel?.close();
-    composer?.close();
-    legend?.close();
-    settingsPopover?.close();
-    // FR-12.2: teardown must leave no timer, listener or channel behind. The presentation surface
-    // owns a 250 ms ticker and a BroadcastChannel, so it is torn down with everything else.
-    presentation?.destroy();
-    presentation = null;
-
-    markerNodes.clear();
-    resolutions.clear();
-    degradations.clear();
-    selectedId = null;
-    mode = "off";
-    activeTarget = null;
-
-    root?.remove();
-    root = null;
-    bar = null;
-    handle = null;
-    handleCount = null;
-    modeHint = null;
-    modeHintText = null;
-    markersLayer = null;
-    highlight = null;
-    liveRegion = null;
-    barCollapseButton = null;
-    panel = null;
-    composer = null;
-    legend = null;
-    settingsPopover = null;
-
-    if (ownerDocument) releaseStyles(ownerDocument);
+    teardown.run(reportError);
   }
 
   return {
     enable,
     disable,
-    chrome: () => chromeOverride ?? settings.chromeLevel,
+    chrome: () => settingsUnit.chrome(),
     setChrome: setChromeLevel,
     isEnabled: () => enabled,
     /** Store hydration of the last `enable()` (additive; used by `Blueprint.ready()`). */

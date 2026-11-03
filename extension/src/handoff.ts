@@ -2,8 +2,8 @@
  * The worker's settings → the element's attributes (#53).
  *
  * The layer and the embed loader speak the *same* vocabulary: the element reads plain attribute
- * names (`adapter`, `environment`, `app`, `identity`, `endpoint`, `token`, `token-header`,
- * `token-scheme`), and `data-*` is the **loader's** spelling, which `dist/attach.js` translates when
+ * names (`adapter`, `environment`, `app`, `identity`, `endpoint`), and `data-*` is the **loader's**
+ * spelling, which `dist/attach.js` translates when
  * it creates the element. The extension used to write the `data-*` spelling straight onto the
  * element, so nothing arrived: measured in the extension smoke, the layer fell back to its default
  * `memory` store while the attribute readback said `chromeStorage` — a green assertion over a broken
@@ -14,11 +14,50 @@
  */
 import type { ExtensionSettings } from "./settings";
 
-/** The subset of settings that decides the element's attributes. */
-export type AttributeSource = Pick<
+/**
+ * The settings that may cross into a page, and the type is final as of B.3a (CSR-17).
+ *
+ * A credential, its expiry and a device name belong to the extension only. They are omitted here at
+ * the type level *and* stripped at runtime: the page never receives a value it could read out of
+ * `__bluepencilConfig__` (SEC-14, AC-B15).
+ */
+export type PageSettings = Omit<ExtensionSettings, "token" | "tokenExpiresAt" | "deviceName">;
+
+/**
+ * The page-facing projection of the settings.
+ *
+ * The three extension-only fields are **removed**, not merely unnamed by the type: an object spread
+ * would carry them into `__bluepencilConfig__`, where any page script could read the hub credential.
+ * The credential is attached by the worker only, after validation (AC-B13, AC-B15).
+ */
+export function pageSettingsFor(settings: ExtensionSettings): PageSettings {
+  const page: Record<string, unknown> = { ...settings };
+  delete page.token;
+  delete page.tokenExpiresAt;
+  delete page.deviceName;
+  return page as unknown as PageSettings;
+}
+
+/**
+ * The subset of settings that decides the element's attributes.
+ *
+ * No `auth`, no `token`: from 0.12.0 the page has no credential attribute at all. The hub request is
+ * authenticated by the service worker, and the element only needs the endpoint to select the HTTP
+ * adapter (AC-B15, AC-B36).
+ */
+export type ExtensionAttributeSource = Pick<
   ExtensionSettings,
-  "environment" | "appName" | "language" | "identity" | "store" | "endpoint" | "auth" | "token"
+  "environment" | "appName" | "language" | "identity" | "store" | "endpoint"
 >;
+
+/**
+ * The route the extension writes, always the path-only mode (G8, AC-C04).
+ *
+ * `route="url"` means "store the page's pathname"; the query is never part of an extension note.
+ * The extension offers **no** query opt-in in 0.12.0: writing `route="url-with-query"` (or a
+ * `query-allow` list) would silently turn a deep-link token into a stored note field.
+ */
+const EXTENSION_ROUTE = "url" as const;
 
 /**
  * The attributes the element should be given, in its own vocabulary.
@@ -37,21 +76,24 @@ export type AttributeSource = Pick<
  *   used to offer "take it from the page", which has no counterpart in the element contract at all.
  * - **`route: "url"`** gives the tab's own URL a home. The worker used to write `data-bluepencil-url`,
  *   which no attribute reads; `route="url"` makes every note carry the page it was taken on, which is
- *   what the tab URL was recorded for.
- * - **the credential** keeps its two modes, because they are two different headers: the shared secret
- *   goes in `x-bluepencil-auth`, the signed token in `Authorization: Bearer <token>`. Choosing one is
- *   a decision, never an inference.
+ *   what the tab URL was recorded for. Since G8 the value is path-only: the query is never stored,
+ *   and the extension deliberately writes neither `url-with-query` nor `query-allow` (AC-C04).
+ * - **no credential attribute.** `token`, `token-header` and `token-scheme` are gone from the
+ *   element contract as the extension writes it: the worker attaches the header to each relayed hub
+ *   request instead (`credential.ts` + `hub-fetch.ts`), so no page value ever reaches the page
+ *   (SEC-14, AC-B15).
  */
 export function elementAttributesFor(
-  settings: AttributeSource,
+  settings: ExtensionAttributeSource,
   browserLanguage: string = "",
 ): Record<string, string> {
   const attributes: Record<string, string> = {
     environment: settings.environment,
     language: settings.language === "auto" ? autoLanguage(browserLanguage) : settings.language,
     identity: settings.identity,
-    // A review note belongs to the page it was taken on; the element stores the route itself.
-    route: "url",
+    // A review note belongs to the page it was taken on; the element stores the path only — the
+    // extension never opts into the query (G8, AC-C04).
+    route: EXTENSION_ROUTE,
   };
 
   if (settings.appName.trim().length > 0) {
@@ -64,19 +106,6 @@ export function elementAttributesFor(
     if (settings.endpoint.length > 0) {
       attributes.endpoint = settings.endpoint;
     }
-    // `none` wins over a leftover token, exactly as it does in the connection probe: the saved
-    // settings would not use that value, so handing it to the element would invent a credential.
-    const credential = configuredCredential(settings.token);
-    if (credential !== null && settings.auth !== "none") {
-      attributes.token = credential;
-      const spec = credentialHeaderFor(settings.auth);
-      // The element's attribute vocabulary spells header names lower case.
-      attributes["token-header"] = spec.header.toLowerCase();
-      if (spec.scheme !== null) {
-        // A bare token has to be turned into `Bearer <token>` by the element's own contract.
-        attributes["token-scheme"] = spec.scheme;
-      }
-    }
     return attributes;
   }
 
@@ -87,38 +116,4 @@ export function elementAttributesFor(
 /** `auto` follows the browser, which is where this code runs. Anything but German is the default. */
 function autoLanguage(browserLanguage: string): "en" | "de" {
   return browserLanguage.toLowerCase().startsWith("de") ? "de" : "en";
-}
-
-/**
- * The header a credential mode means — the single mapping the layer and the connection probe share.
- *
- * Two headers, because they are two different credentials: a shared secret every client holds, and a
- * per-device signed token. Choosing the wrong one produces a `401` that reads like a dead server, so
- * the mapping lives in one place rather than being spelled out once per caller.
- */
-export interface CredentialHeader {
-  /** Canonical header name; the element's `token-header` attribute wants the lower-case form. */
-  header: "Authorization" | "x-bluepencil-auth";
-  /** `Bearer` for a signed token, `null` for a shared secret. */
-  scheme: string | null;
-}
-
-/** The header for `secret` or `token`. Callers handle `none` themselves; there is no header for it. */
-export function credentialHeaderFor(auth: "secret" | "token"): CredentialHeader {
-  return auth === "token"
-    ? { header: "Authorization", scheme: "Bearer" }
-    : { header: "x-bluepencil-auth", scheme: null };
-}
-
-/**
- * The credential as it should be carried, or `null` when none is configured.
- *
- * Whitespace-only is *not* configured: sending it would turn a harmless probe into a guaranteed 401
- * and hand the element a header value no hub can match. The value is trimmed, so a token pasted with
- * a trailing newline travels without it. Both the layer and the probe read this one rule, so the URL
- * the options page tests is the URL the layer would actually use (#105).
- */
-export function configuredCredential(token: string): string | null {
-  const value = token.trim();
-  return value.length === 0 ? null : value;
 }

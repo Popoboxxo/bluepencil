@@ -9,10 +9,10 @@ apart. `npm run smoke:webstore` checks the three against each other.
 Everything in the blocks below is written to be pasted **verbatim**. The character budgets are the
 form's own (1,000 per field, 2,048 for the privacy-policy URL) and each block stays well under.
 
-> **Status: submittable.** The decisions below are taken — the host permission is kept as a deliberate
-> pre-grant, `tabs` is gone, the in-product disclosure is in the options page, and the plain-http hub
-> endpoint is justified rather than a gap. What is left is mechanical: enable Pages once, then fill the
-> form from the blocks below.
+> **Status: submittable.** The decisions below are taken — host access is **optional** and granted
+> per hub origin, `tabs` is gone, the in-product disclosure is in the options page, and the plain-http
+> hub endpoint is justified rather than a gap. What is left is mechanical: enable Pages once, then
+> fill the form from the blocks below.
 
 ## How to use this page
 
@@ -39,13 +39,13 @@ unless it is marked *manual*.
 | Technical → MV3 §1 | No remote code, no string evaluation | ✅ no `eval`, no `new Function`, no dynamic `import()`, CSP `script-src 'self'` |
 | Technical → Code Readability | Not obfuscated | ✅ no packer artefacts; minification only |
 | Technical → API Use | Chrome APIs used for their purpose | ✅ `scripting`/`storage`/`activeTab` only |
-| Privacy → Use of Permissions | Narrowest permission set | ✅ `tabs` dropped (D2), host access kept as a conservative pre-grant (D1) |
+| Privacy → Use of Permissions | Narrowest permission set | ✅ `tabs` dropped (D2), host access optional and granted per hub origin (D1) |
 | Privacy → Disclosure | In-product disclosure + consent | ✅ options page, before any field; checked + contrast-measured |
 | Privacy → Privacy Policy | Accurate policy, posted in the dashboard | ✅ `docs/PRIVACY.md`, published at `/privacy/` (live) |
 | Privacy → Limited Use | Affirmative statement on a project page | ✅ live at `/privacy/` + linked from the README |
 | Privacy → Handling | Secure transmission of user data | ✅ hub endpoint is user-specified (FAQ §15), loopback exempt (§16) |
 | Quality → Single purpose | One narrow purpose | ✅ annotation layer, one sentence, nothing else |
-| Quality → Minimum Functionality | Real, working functionality | ✅ 47-check smoke in a real Chrome |
+| Quality → Minimum Functionality | Real, working functionality | ✅ the extension smoke in a real Chrome |
 | Marketing → Ads / Affiliate | No ads, no affiliate injection | ✅ none, and no permission that could inject |
 | Marketing → Impersonation | No Chrome/OS mimicry, no fake badges | ✅ name and listing copy avoid both |
 | Listing → Requirements | Icon, screenshots, accurate metadata | *manual* — dashboard upload, not code |
@@ -57,33 +57,42 @@ All four are settled. Each names the evidence, because the next person to touch 
 options page has to know *why* it looks the way it does — otherwise the first well-meaning cleanup
 undoes it.
 
-### D1 — the `http(s)://*/*` host permission stays, as a deliberate pre-grant
+### D1 — host access is optional, granted per hub origin
 
-**Decision: keep.** The manifest declares no `content_scripts`; the overlay is injected on demand
-through `chrome.scripting` after an explicit user gesture (the toolbar click, Alt+Shift+B, the options
-*Turn on here*, or the page's own `request-mount`), into the page's MAIN world. The worker additionally
-dynamically registers one small MAIN-world content script (`bootstrap.js`, id `bluepencil-bootstrap`,
-`runAt: document_start`) via `chrome.scripting.registerContentScripts`. That registration is the channel
-into the page's own world under a strict `script-src 'self'` CSP — it is not a navigation-survival
-mechanism.
+**Decision: optional, never install-time.** The manifest declares
+
+```json
+"optional_host_permissions": ["http://*/*", "https://*/*"]
+```
+
+and **no** `host_permissions`. Both patterns are the only optional host access; `<all_urls>` is
+absent, and `file://`, `ftp://` and `chrome://` are never requested.
+
+**When the grant happens.** The options page asks for a hub's origin the **first time an HTTP
+endpoint is saved**, inside the click that pressed Save — `chrome.permissions.request` only answers
+while the user gesture is live. The pattern is the endpoint's origin (`scheme://host/*`, no port,
+because Chrome patterns have no port), and the request is per origin: a second hub asks for its own
+origin and a granted origin is not prompted again. A refusal is reported as `permission_denied` and
+the settings are not written.
+
+**What is injected, and when.** The manifest declares no `content_scripts` and no
+`web_accessible_resources`; the overlay is injected on demand through `chrome.scripting` after an
+explicit gesture — the toolbar click or Alt+Shift+B. Two packaged files are injected as files (the
+isolated-world bridge and the MAIN-world bootstrap) and the element is mounted in the page's own
+world. There is no persistent content-script registration to survive a navigation, and no string
+evaluation.
 
 **What the permission does not buy.** The overlay is **not** kept alive across a navigation in this
-release. `mainWorldHandoff` (`sw.ts`) writes the page global `__bluepencilConfig__` onto the *current*
-document only, and there is no `tabs.onUpdated` / `webNavigation` listener to re-hand it one, so a fresh
-document has zero `<bluepencil-notes>` until the user invokes the extension again. `extension/smoke.mjs`
-case 3 measures exactly this.
+release. The hand-off writes the page global `__bluepencilConfig__` onto the *current* document only,
+and there is no `tabs.onUpdated` / `webNavigation` listener to re-hand it one, so a fresh document has
+zero `<bluepencil-notes>` until the user invokes the extension again. `extension/smoke.mjs` case 3
+measures exactly this.
 
-**Why keep `http(s)://*/*` anyway.** It is a **conservative pre-grant**: host access is requested up
-front so it is in place the moment the user asks for the layer on any site, without a second permission
-prompt. That is broader than the on-demand injection strictly requires, and the narrower `activeTab`-only
-shape — injection under `activeTab`, with no host permission at all — is the shape the manifest
-deliberately does not take.
-
-**What must not be written in the form.** `extension/smoke.mjs` and `docs/EXTENSION.md` say the
-up-front grant is what makes the round trip testable in a headless browser. That is true, and it is not
-a justification the store accepts — "Use of Permissions" is about the feature, not the test. The
-justification block deliberately does not repeat it. The cost of this choice is a slower review, which
-is the honest trade.
+**What must not be written in the form.** Testability never justifies the grant.
+`extension/smoke.mjs` mounts with a test-only build (`extension/dist-test`) that adds
+`host_permissions`; the shipped manifest does not. The justification block below justifies the
+optional grant by the hub feature instead, because "Use of Permissions" is about the feature, not the
+test.
 
 ### D2 — `tabs` is gone
 
@@ -93,11 +102,11 @@ is the honest trade.
 - `tab.url` only ever fed the `tabUrl` field of the mount configuration, and nothing reads that field:
   the page a note belongs to comes from the element's own `route="url"`, which reads the page's
   `location.href` **in the page itself**.
-- For the tabs that remain in scope, the `http(s)://*/*` host permission already grants `url`.
+- The hub origin's optional grant already covers the URL of every tab that matters; nothing reads a
+  tab URL outside it.
 
-It is not needed by the on/off switch either: the options page asks the worker over
-`chrome.runtime.sendMessage` and never touches `chrome.tabs` (the `wireToggle` declaration in
-`options.ts` says so, and the code does not lie). `npm run smoke:webstore` fails if `tabs` comes back,
+It is not needed by the on/off switch either: the toolbar button and Alt+Shift+B go through the
+worker, and the options page never touches `chrome.tabs`. `npm run smoke:webstore` fails if `tabs` comes back,
 and `sw.ts` records the reasoning next to the `chrome.tabs` declaration, so the decision is visible
 where a future reader would look.
 
@@ -234,27 +243,26 @@ Not requested. The manifest no longer contains it, so the form will not show a f
 `npm run smoke:webstore` fails if anyone adds it back. Kept here because the *reason* is the part that
 gets lost: nothing reads a tab URL. The worker's `chrome.tabs.query` and `tab.id` never needed a
 permission, `tab.url` fed only a configuration field nothing consumes (the note's page comes from the
-element's own `route="url"` in the page), and the http/https host permission covers the URL of every tab
-that matters anyway. See **D2**.
+element's own `route="url"` in the page), and the optional hub-origin grant covers the URL of every
+tab that matters anyway. See **D2**.
 
 #### **Justification — host permission**
 
 ```
-http://*/* and https://*/* are a deliberate, conservative pre-grant of host access. The extension
-injects its annotation overlay on demand — only after an explicit user gesture, and only into the tab
-the user is looking at — but the grant is requested up front so the overlay is available the moment the
-user invokes it on any site, without a second permission prompt. It is broader than the on-demand
-injection strictly needs; that is the honest trade for a click-to-annotate tool that has to work on
-whatever page the user is already viewing.
+http://*/* and https://*/* are optional host permissions, not an install-time grant. Nothing is
+requested when the extension is installed. The browser asks for a hub's origin the first time the user
+saves that HTTP endpoint in the options page, inside the click that pressed Save; the grant is per
+origin and is remembered for that origin. The extension never runs on a page until the user invokes it
+there.
 
-Injection runs through chrome.scripting into the page's own JavaScript world. The extension also
-registers one small content script in that world, which is the channel that gets the layer past a
-page's strict script-src CSP; it does nothing until the user has invoked the extension on that tab and
-the settings arrive. The overlay is not kept alive across a navigation: a freshly loaded document has
-no overlay until the user invokes the extension again.
+Injection runs through chrome.scripting on demand — only after an explicit user gesture (the toolbar
+button or Alt+Shift+B), and only into the tab the user is looking at. Two packaged files are injected
+as files into that page (a bridge in the isolated world and the bootstrap in the page's own world);
+no code is fetched or evaluated at runtime. The overlay is not kept alive across a navigation: a
+freshly loaded document has no overlay until the user invokes the extension again.
 
-Access is limited to http and https — file://, ftp:// and chrome:// are not requested, and <all_urls>
-is not used.
+Access is limited to http and https — file://, ftp:// and chrome:// are never requested, and
+<all_urls> is not used.
 ```
 
 ### **Remote code**
@@ -268,9 +276,9 @@ The justification field is not required for a "No" answer. If a reviewer asks, t
 
 ```
 All logic ships inside the package. The extension's own build inlines the review layer into the
-content script that is registered in the page's world; no code is fetched or evaluated at runtime. The
-only network call in the package belongs to the optional hub adapter, which the user configures
-themselves, and it exchanges note data — never code.
+bootstrap file injected into the page's world; no code is fetched or evaluated at runtime. The only
+network call in the package belongs to the optional hub adapter, which the user configures themselves,
+and it exchanges note data — never code.
 ```
 
 ### **In-product disclosure** (not a dashboard field)
@@ -364,7 +372,7 @@ Policy, including the Limited Use requirements.
 
 ## Checklist before the first submission
 
-- [ ] **D1** decided: host permission kept as a conservative pre-grant (not by navigation behaviour, never by testability)
+- [ ] **D1** decided: host access optional, granted per hub origin on the first save (never by navigation behaviour, never by testability)
 - [ ] **D2** `tabs` removed from the manifest — and still absent (`npm run smoke:webstore`)
 - [ ] **D3** in-product disclosure in the options page, and its wording matches this page
 - [ ] **D4** plain-http endpoint justified, not changed (FAQ §15/§16)

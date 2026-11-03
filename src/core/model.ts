@@ -13,7 +13,9 @@
  *  - FR-3.5      schema version
  *  - FR-3.6      optional bug severity
  *  - FR-3.7      optional feature priority
+ *  - FR-2.2      origin next to the anchor route
  */
+import { normaliseOrigin } from "./origin";
 
 /** Schema version carried by every note and every bundle (FR-3.5, NFR-9). */
 export const SCHEMA_VERSION = 1;
@@ -69,6 +71,13 @@ export type AuthorType = (typeof AUTHOR_TYPES)[number];
 export type MessageKind = (typeof MESSAGE_KINDS)[number];
 /** Environment a note belongs to; imports never mix them by accident (NFR-18). */
 export type Environment = (typeof ENVIRONMENTS)[number];
+
+/**
+ * Origin a note was taken on (FR-2.2): a canonical `http(s)` origin, or `null` for "unassigned"
+ * (agent, CLI, import, opaque page). The canonical form is produced by `normaliseOrigin` in
+ * `core/origin.ts`; this alias only names the shape so every surface agrees on it.
+ */
+export type NoteOrigin = string | null;
 
 /**
  * Where a note came from (FR-13.3). Machine sources must stay distinguishable
@@ -168,6 +177,12 @@ export interface Note {
   schemaVersion: number;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Origin this note was taken on (FR-2.2). Optional on the wire so 0.11 documents validate
+   * unchanged; `createNote` always writes it (`null` when the draft has none). Read it through
+   * `originOf()` so "missing" and "unassigned" never diverge.
+   */
+  origin?: NoteOrigin;
   /** Review round this note belongs to (FR-3.4). */
   sessionRef?: string;
   type: NoteType;
@@ -231,6 +246,8 @@ export interface NoteDraft {
   authorType?: AuthorType;
   context?: CapturedContext | null;
   sessionRef?: string;
+  /** Origin the note was taken on; defaults to `null`, normalised by `createNote` (FR-2.2). */
+  origin?: NoteOrigin;
   source?: NoteSource;
   environment?: Environment;
   ticketRef?: string;
@@ -269,6 +286,11 @@ export interface NoteFilter {
   /** Exact priority filter (FR-3.7); only meaningful for feature notes. */
   priority?: NotePriority;
   session?: string;
+  /**
+   * Origin filter (FR-2.2): `undefined` means "no filter", `null` means "only unassigned".
+   * Adapters compare against `originOf(note)` exactly.
+   */
+  origin?: NoteOrigin;
   /** ISO timestamp — only notes updated at/after this point. */
   since?: string;
   source?: NoteSource;
@@ -396,6 +418,8 @@ export function createNote(draft: NoteDraft): Note {
     schemaVersion: SCHEMA_VERSION,
     createdAt: ts,
     updatedAt: ts,
+    // FR-2.2: always written, `null` when the draft has no (usable) origin.
+    origin: normaliseOrigin(draft.origin),
     type: draft.type,
     // FR-3.6: severity is meaningful only for a bug — silently omitted for every other type.
     ...(draft.type === "bug" && draft.severity !== undefined ? { severity: draft.severity } : {}),

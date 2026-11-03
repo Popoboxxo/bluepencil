@@ -6,24 +6,153 @@
  * writing go through `chrome.storage.local` directly — the same key the worker reads, so there is
  * one source of truth rather than a page-local copy that can drift.
  */
-import { probeConnection } from "./connection";
-import { configuredCredential } from "./handoff";
+import { insecureEndpointRefusal, probeConnection } from "./connection";
+import { configuredCredential, type CredentialMode } from "./credential";
+import {
+  decideSave,
+  hubOriginPattern,
+  permissionState,
+  type PermissionState,
+  type SaveDecision,
+} from "./permissions";
 import { DEFAULT_SETTINGS, expiryOfToken, normalizeSettings, type ExtensionSettings } from "./settings";
 
 declare const chrome: {
-  runtime: {
-    /** The worker's on/off path. Available to every extension page, so no permission is needed. */
-    sendMessage(message: unknown): Promise<unknown>;
-  };
   storage: {
     local: {
       get(key: string): Promise<Record<string, unknown>>;
       set(items: Record<string, unknown>): Promise<void>;
     };
   };
+  permissions: {
+    contains(permissions: { origins: string[] }): Promise<boolean>;
+    request(permissions: { origins: string[] }): Promise<boolean>;
+  };
 };
 
 const SETTINGS_KEY = "bluepencil:settings";
+
+/**
+ * The seams the save flow needs, injected so the gesture rule is testable without a browser.
+ *
+ * `request` is the critical one: `chrome.permissions.request` only answers while the click that
+ * started the save still holds the user gesture, so it is called **synchronously** from the submit
+ * handler — before any `await`. Everything else (persisting, remembering a refusal) may resolve
+ * later.
+ */
+export interface SaveGesturePorts {
+  request(pattern: string): Promise<boolean>;
+  persist(): Promise<void>;
+  onDenied?(pattern: string): void;
+}
+
+/**
+ * Runs one save, with the host-permission request still in the click context.
+ *
+ * The order is the contract (AC-B19): decide first (a local store never asks, an unusable URL is
+ * rejected before Chrome sees anything), then — for an `unknown` hub origin — hand the pattern to
+ * `request` *before returning this function's promise*, so the browser still associates it with the
+ * click. Only a granted answer persists; a refusal is reported as `permission_denied` and writes
+ * nothing.
+ */
+export function saveInGesture(
+  input: { store: string; endpoint: string; permission: PermissionState },
+  ports: SaveGesturePorts,
+): Promise<SaveDecision> {
+  const decision = decideSave(input);
+  if (!decision.ok) return Promise.resolve(decision);
+
+  if (decision.requestOrigin === null) {
+    return ports.persist().then(() => decision);
+  }
+
+  const pattern = decision.requestOrigin;
+  // No `await` above this line: the call below has to happen inside the submit handler's gesture.
+  const granted = ports.request(pattern);
+  return granted.then((ok) => {
+    if (!ok) {
+      ports.onDenied?.(pattern);
+      // Reuse `decideSave` for the refusal so the message (and its chrome://extensions pointer) has
+      // exactly one source. A "denied" permission can never produce an ok decision.
+      const refused = decideSave({ ...input, permission: "denied" });
+      if (refused.ok) throw new Error("a refused permission must not produce a save decision");
+      return refused;
+    }
+    return ports.persist().then(() => decision);
+  });
+}
+
+/**
+ * The save-time refusal for a cleartext endpoint, or `null` when the save may run.
+ *
+ * A thin adapter over `insecureEndpointRefusal`: the rule itself lives in `connection.ts`, so the
+ * save and the probe cannot disagree, and this gives the refusal the named code the spec records
+ * (`insecure_endpoint`, AC-B60) in the same shape a `SaveDecision` uses. `save_` renders the message
+ * and returns before it asks for a permission or writes anything.
+ */
+export function insecureSaveRefusal(input: { endpoint: string; auth: CredentialMode }):
+  | { ok: false; code: "insecure_endpoint"; message: string }
+  | null {
+  const message = insecureEndpointRefusal(input);
+  return message === null ? null : { ok: false, code: "insecure_endpoint", message };
+}
+
+/**
+ * What this options session has learned about each origin.
+ *
+ * `contains` is the only truth for a grant. Chrome has no "denied" state, so a `request` that
+ * answered `false` is remembered for this page's lifetime — deliberately not persisted: the next
+ * browser session may ask again. A grant is also cached, so a later save does not need to ask (and
+ * a fresh grant in `chrome://extensions` is picked up by the refresh in `load()`/after a save).
+ */
+const observedGrants = new Set<string>();
+const deniedPatterns: string[] = [];
+
+async function containsPattern(pattern: string): Promise<boolean> {
+  try {
+    return await chrome.permissions.contains({ origins: [pattern] });
+  } catch {
+    // A pattern Chrome rejects is not a grant; "unknown" is the honest answer in that case too.
+    return false;
+  }
+}
+
+/** The permission state for an endpoint, from the cached `contains` answer and this session's refusals. */
+function permissionFor(endpoint: string): PermissionState {
+  const pattern = hubOriginPattern(endpoint);
+  if (pattern === null) return "unknown";
+  return permissionState({
+    contains: observedGrants.has(pattern),
+    pattern,
+    deniedPatterns,
+  });
+}
+
+/** Refreshes the cached `contains` answer for an endpoint; a failed probe leaves the state unknown. */
+async function observePermission(endpoint: string): Promise<void> {
+  const pattern = hubOriginPattern(endpoint);
+  if (pattern === null) return;
+  if (await containsPattern(pattern)) observedGrants.add(pattern);
+  else observedGrants.delete(pattern);
+}
+
+/**
+ * Asks for one origin, synchronously, and turns a rejection into an answer.
+ *
+ * `chrome.permissions.request` throws (as a rejected promise) when the calling context has no user
+ * gesture — a synthetic `requestSubmit()`, for instance. That is not a refusal by the user: if the
+ * origin is already granted, the save may proceed. Anything else is reported as not granted.
+ */
+function requestPattern(pattern: string): Promise<boolean> {
+  // The call itself is synchronous; only its result is awaited by the caller.
+  let asked: Promise<boolean>;
+  try {
+    asked = chrome.permissions.request({ origins: [pattern] });
+  } catch {
+    return containsPattern(pattern);
+  }
+  return asked.catch(() => containsPattern(pattern));
+}
 
 /**
  * The text/select fields the form owns, in the shape the settings object uses.
@@ -56,11 +185,18 @@ function byId<T extends HTMLElement>(id: string): T {
   return node as T;
 }
 
-const form = byId<HTMLFormElement>("form");
-const status = byId<HTMLElement>("status");
-const hub = byId<HTMLElement>("hub");
-const save = byId<HTMLButtonElement>("save");
-const testConnection = byId<HTMLButtonElement>("test-connection");
+/**
+ * The page's elements, bound by `wirePage()`.
+ *
+ * They are not resolved at module scope so that importing this file outside `options.html` (the
+ * unit suite imports `saveInGesture`) does not throw on a missing `#form`. Every function that
+ * touches the DOM is only reachable from a listener or `load()`, both of which run after wiring.
+ */
+let form: HTMLFormElement;
+let status: HTMLElement;
+let hub: HTMLElement;
+let save: HTMLButtonElement;
+let testConnection: HTMLButtonElement;
 
 type StatusKind = "ok" | "error" | "warn" | "";
 
@@ -119,17 +255,14 @@ async function load(): Promise<void> {
     // Described on load, not only on save: opening the options page is how someone checks whether
     // their token is still alive, so leaving the state blank until they press Save would defeat it.
     describeCredential(settings);
+    // A hub origin granted in an earlier session must not trigger a prompt on the first Save.
+    void observePermission(settings.endpoint);
   } catch (error) {
     fill({ ...DEFAULT_SETTINGS });
     describeCredential({ ...DEFAULT_SETTINGS });
     say(`Could not read the stored settings: ${String(error)}`, "error");
   }
 }
-
-form.addEventListener("submit", (event) => {
-  event.preventDefault();
-  void save_();
-});
 
 /**
  * "Test connection" (#105): probe the URL and credential that are on screen *now*.
@@ -139,10 +272,6 @@ form.addEventListener("submit", (event) => {
  * use. Nothing is saved and nothing is stored — the only side effects are the button's disabled
  * state and the message in `#status`.
  */
-testConnection.addEventListener("click", () => {
-  void testConnection_();
-});
-
 async function testConnection_(): Promise<void> {
   const generation = beginStatus();
   testing = true;
@@ -150,6 +279,13 @@ async function testConnection_(): Promise<void> {
   say("Testing…");
   try {
     const settings = normalizeSettings(readForm());
+    // The same check the save path uses (ADR-0.12-S2): testing is not a way around it. Nothing is
+    // sent — there is no request whose credential could travel in cleartext.
+    const refusal = insecureEndpointRefusal({ endpoint: settings.endpoint, auth: settings.auth });
+    if (refusal !== null) {
+      sayIfCurrent(generation, refusal, "error");
+      return;
+    }
     const result = await probeConnection({
       endpoint: settings.endpoint,
       credential: { auth: settings.auth, token: settings.token },
@@ -169,50 +305,122 @@ async function testConnection_(): Promise<void> {
   }
 }
 
-async function save_(): Promise<void> {
+/**
+ * Saves the form, asking for the hub origin inside the click that triggered the submit.
+ *
+ * This function is synchronous until `saveInGesture` hands the pattern to `chrome.permissions
+ * .request`; only the persistence and the status updates are asynchronous. That split is the point
+ * (AC-B19): Chrome grants a permission request only while the user gesture is live, so an `await`
+ * before the request would turn a normal Save into a silent no-prompt refusal.
+ */
+function save_(): void {
   const generation = beginStatus();
   save.disabled = true;
-  try {
-    const settings = normalizeSettings(readForm());
-    // A hub store without a URL is a store that cannot be reached: the element would fall back to
-    // its default `memory` and the notes would be gone on reload. Refusing to save says so instead.
-    if (settings.store === "http" && settings.endpoint.trim().length === 0) {
-      sayIfCurrent(generation, "A hub needs a URL — without one the notes would be kept in this tab only.", "error");
+  const settings = normalizeSettings(readForm());
+  // Save the normalized form, not the raw input: what is stored is exactly what the worker will
+  // read back, so a bad value cannot sit in storage until the next mount fails.
+  // The token is stored the way the layer and the probe use it — `configuredCredential` trims it
+  // and maps a whitespace-only paste to "none" (#110). Storing the raw field instead meant storage
+  // and the value actually sent could disagree, which is exactly the round the smoke test compares.
+  settings.token = configuredCredential(settings.token) ?? "";
+  // The expiry is derived from the token rather than typed, so the user cannot state a wrong one.
+  const tokenExpiresAt = expiryOfToken(settings.token);
+  const stored: ExtensionSettings = { ...settings, tokenExpiresAt };
+  const endpoint = settings.endpoint;
+
+  // ADR-0.12-S2 (AC-B60): a credential must not go over plain HTTP to anything but this machine.
+  // Refused here — before `saveInGesture` asks Chrome for the origin and before `persist` — so a
+  // refused endpoint is neither granted a permission nor written. No silent downgrade to https and
+  // no "insecure" override: the user fixes the URL or sets Authentication to None.
+  //
+  // Only the hub store sends the credential, so only the hub store is judged: `decideSave` likewise
+  // never asks for a permission for a local store. A hidden cleartext URL left in the form must not
+  // block an unrelated local save — nothing would be sent.
+  const refusal =
+    settings.store === "http" ? insecureSaveRefusal({ endpoint, auth: settings.auth }) : null;
+  if (refusal !== null) {
+    sayIfCurrent(generation, refusal.message, "error");
+    save.disabled = false;
+    return;
+  }
+
+  /** Runs the save for an already-resolved permission state. Synchronous through the request seam. */
+  const finish = (permission: PermissionState): void => {
+    let outcome: Promise<SaveDecision>;
+    try {
+      outcome = saveInGesture(
+        { store: settings.store, endpoint, permission },
+        {
+          request: async (pattern) => {
+            // `requestPattern` is called before the first `await`, so the request still runs inside
+            // the submit's user gesture. A `true` answer is authoritative for the session cache,
+            // even if a `contains` probe around it was stale.
+            const granted = await requestPattern(pattern);
+            if (granted) observedGrants.add(pattern);
+            else observedGrants.delete(pattern);
+            return granted;
+          },
+          onDenied: (pattern) => {
+            observedGrants.delete(pattern);
+            if (!deniedPatterns.includes(pattern)) deniedPatterns.push(pattern);
+          },
+          persist: async () => {
+            await chrome.storage.local.set({ [SETTINGS_KEY]: stored });
+          },
+        },
+      );
+    } catch (error) {
+      // `saveInGesture` reports every expected refusal as a decision. Reaching here is a defect in
+      // that contract, and saying so is still better than a button that appears to do nothing.
+      sayIfCurrent(generation, `Could not save: ${String(error)}`, "error");
+      save.disabled = false;
       return;
     }
-    // Save the normalized form, not the raw input: what is stored is exactly what the worker will
-    // read back, so a bad value cannot sit in storage until the next mount fails.
-    // The token is stored the way the layer and the probe use it — `configuredCredential` trims it
-    // and maps a whitespace-only paste to "none" (#110). Storing the raw field instead meant storage
-    // and the value actually sent could disagree, which is exactly the round the smoke test compares.
-    settings.token = configuredCredential(settings.token) ?? "";
-    // The expiry is derived from the token rather than typed, so the user cannot state a wrong one.
-    const tokenExpiresAt = expiryOfToken(settings.token);
-    await chrome.storage.local.set({
-      [SETTINGS_KEY]: { ...settings, tokenExpiresAt },
-    });
-    // A probe that started before this save may finish after it. Its ticket is older, so it is
-    // discarded — and a save that itself became stale must not repaint the form either.
-    if (generation !== statusGeneration) return;
-    const stored = await chrome.storage.local.get(SETTINGS_KEY);
-    // Re-check after the await: the read is another turn, and a probe started in this window has a
-    // newer ticket. Repainting the form or saying "Saved." then would answer the probe with a stale
-    // save, which is the mirror image of the race the first check guards.
-    if (generation !== statusGeneration) return;
-    const current = normalizeSettings(stored[SETTINGS_KEY]);
-    fill(current);
-    describeCredential(current);
-    sayIfCurrent(generation, "Saved.", "ok");
-  } catch (error) {
-    sayIfCurrent(generation, `Could not save: ${String(error)}`, "error");
-  } finally {
-    save.disabled = false;
-  }
-}
 
-byId<HTMLSelectElement>("store").addEventListener("change", (event) => {
-  showSidecar((event.target as HTMLSelectElement).value);
-});
+    void outcome
+      .then(async (result) => {
+        if (!result.ok) {
+          // `permission_denied` lands here for both a session refusal and a refusal in this click;
+          // neither may write settings (no `set` in the rejected branch at all).
+          sayIfCurrent(generation, result.message, "error");
+          return;
+        }
+        // A probe that started before this save may finish after it. Its ticket is older, so it is
+        // discarded — and a save that itself became stale must not repaint the form either.
+        if (generation !== statusGeneration) return;
+        const read = await chrome.storage.local.get(SETTINGS_KEY);
+        // Re-check after the await: the read is another turn, and a probe started in this window
+        // has a newer ticket. Repainting the form or saying "Saved." then would answer the probe
+        // with a stale save, which is the mirror image of the race the first check guards.
+        if (generation !== statusGeneration) return;
+        const current = normalizeSettings(read[SETTINGS_KEY]);
+        fill(current);
+        describeCredential(current);
+        sayIfCurrent(generation, "Saved.", "ok");
+      })
+      .catch((error: unknown) => {
+        sayIfCurrent(generation, `Could not save: ${String(error)}`, "error");
+      })
+      .finally(() => {
+        save.disabled = false;
+      });
+  };
+
+  const permission = permissionFor(endpoint);
+  if (permission === "denied") {
+    // A grant made in `chrome://extensions` while this page is open must be usable without a
+    // reload. This branch never asks for a permission, so the extra `contains` round cannot lose a
+    // gesture; a still-refused origin reaches `finish("denied")` and writes nothing.
+    void observePermission(endpoint)
+      .then(() => finish(permissionFor(endpoint)))
+      .catch((error: unknown) => {
+        sayIfCurrent(generation, `Could not save: ${String(error)}`, "error");
+        save.disabled = false;
+      });
+    return;
+  }
+  finish(permission);
+}
 
 /**
  * The form's current values, in the shape the settings object uses.
@@ -285,46 +493,6 @@ function describeCredential(settings: ExtensionSettings): void {
     hours > 0 ? `Expires in about ${hours} h ${minutes} min.` : `Expires in about ${minutes} min.`;
 }
 
-byId<HTMLSelectElement>("auth").addEventListener("change", () => {
-  describeCredential(normalizeSettings(readForm()));
-});
-
-/**
- * The on/off switch for the current tab (#36).
- *
- * It goes through `chrome.runtime.sendMessage`, not through a direct `chrome.tabs` call, so the
- * options page does not need the `tabs` permission to influence a tab — it asks the worker, which
- * already has it. That is also the only way to reach the MAIN world, where the element lives.
- */
-function wireToggle(id: string, enabled: boolean): void {
-  byId<HTMLButtonElement>(id).addEventListener("click", () => {
-    const status = byId<HTMLSpanElement>("toggle-status");
-    status.textContent = "Working…";
-    status.className = "";
-    void chrome.runtime
-      .sendMessage({ type: "bluepencil:toggle", enabled })
-      .then((reply: unknown) => {
-        const ok = typeof reply === "object" && reply !== null && (reply as { ok?: unknown }).ok === true;
-        if (ok) {
-          status.textContent = enabled ? "The layer is on for this tab." : "The layer is off for this tab.";
-          status.className = "ok";
-        } else {
-          // The most likely cause is that the layer was never mounted on this tab, and saying so is
-          // more useful than the generic "not on this page" the worker reports.
-          status.textContent = "The layer is not on this tab — press the toolbar button first.";
-          status.className = "warn";
-        }
-      })
-      .catch((error: unknown) => {
-        status.textContent = `Could not reach the page: ${String(error)}`;
-        status.className = "error";
-      });
-  });
-}
-
-wireToggle("turn-on", true);
-wireToggle("turn-off", false);
-
 /** What `extension/build.mjs` writes to `dist/build-info.js` as a build-time global. */
 interface BuildInfo {
   version: string;
@@ -374,6 +542,49 @@ function showVersion(): void {
   setVersionField("version-element", elementSha256, elementSha256);
 }
 
-void load();
-// Independent of the settings load: a missing build-info global must never block the form.
-void showVersion();
+/**
+ * Binds the page's elements and starts its two independent jobs.
+ *
+ * Guarded by the presence of `#form` — the same shape as `review.ts`'s `autoStart()` — so importing
+ * this module from the unit suite does not touch the DOM and does not throw. In the real options
+ * page the element is always there.
+ */
+function wirePage(): void {
+  form = byId<HTMLFormElement>("form");
+  status = byId<HTMLElement>("status");
+  hub = byId<HTMLElement>("hub");
+  save = byId<HTMLButtonElement>("save");
+  testConnection = byId<HTMLButtonElement>("test-connection");
+
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    // Not `void save_()`: the function is synchronous through the permission request, so the
+    // browser still counts the submit as the gesture that authorises asking Chrome for the origin.
+    save_();
+  });
+
+  testConnection.addEventListener("click", () => {
+    void testConnection_();
+  });
+
+  byId<HTMLSelectElement>("store").addEventListener("change", (event) => {
+    showSidecar((event.target as HTMLSelectElement).value);
+  });
+
+  // Refresh the `contains` answer when the URL changes, so an origin granted earlier needs no
+  // prompt on the next Save. A fast Save can still precede this probe; `saveInGesture` then asks
+  // (and `requestPattern` answers a granted origin without prompting).
+  byId<HTMLInputElement>("endpoint").addEventListener("change", () => {
+    void observePermission(byId<HTMLInputElement>("endpoint").value);
+  });
+
+  byId<HTMLSelectElement>("auth").addEventListener("change", () => {
+    describeCredential(normalizeSettings(readForm()));
+  });
+
+  void load();
+  // Independent of the settings load: a missing build-info global must never block the form.
+  void showVersion();
+}
+
+if (document.getElementById("form") !== null) wirePage();

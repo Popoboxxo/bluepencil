@@ -24,6 +24,8 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
+import { oneLine } from "./text";
+
 /** What happened to a note. Kept small on purpose — the note itself is the record. */
 export type JournalOp = "create" | "update" | "message" | "bulk-delete" | "import";
 
@@ -79,8 +81,8 @@ export interface Journal {
 }
 
 /** Environment fallbacks for the git identity: a deployment pins them once instead of repeating flags. */
-export const JOURNAL_AUTHOR_ENV = "BLUEPENCIL_JOURNAL_AUTHOR";
-export const JOURNAL_SUBJECT_ENV = "BLUEPENCIL_JOURNAL_SUBJECT";
+const JOURNAL_AUTHOR_ENV = "BLUEPENCIL_JOURNAL_AUTHOR";
+const JOURNAL_SUBJECT_ENV = "BLUEPENCIL_JOURNAL_SUBJECT";
 
 /** Trimmed environment value; `undefined` when unset or blank (`…=""` is not an identity). */
 function envValue(name: string): string | undefined {
@@ -135,12 +137,8 @@ const defaultRun: CommandRunner = (command, args, options) => {
   };
 };
 
-function oneLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
 /** Commit-body trailer naming who asked for the change (`Actor: <name>`). */
-export const ACTOR_TRAILER = "Actor";
+const ACTOR_TRAILER = "Actor";
 
 /**
  * The single actor of a coalesced batch, or `undefined` when nobody named one or the batch holds

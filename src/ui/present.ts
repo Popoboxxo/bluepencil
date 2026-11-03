@@ -138,6 +138,10 @@ export function createPresentation(options: PresentationOptions, doc: Document):
   let clockEl: HTMLElement | null = null;
   let modeEl: HTMLButtonElement | null = null;
   let listEl: HTMLElement | null = null;
+  /** The talk plan as last rendered; the tick path reads it instead of rebuilding it. */
+  let cues: Cue[] = [];
+  /** Note id currently carrying `aria-current`, so a tick can tell whether the marker moved. */
+  let activeCueId: string | null = null;
   let ticker: number | null = null;
   let elapsed = 0;
   let lastTick = 0;
@@ -201,12 +205,13 @@ export function createPresentation(options: PresentationOptions, doc: Document):
     elapsed += (now - lastTick) / 1000;
     lastTick = now;
     renderClock();
+    syncCurrentCue();
     send({ kind: "time", elapsed, running });
   }
 
   function renderClock(): void {
     if (!clockEl) return;
-    const planned = totalDuration(readCues(notes, options.routeOf));
+    const planned = totalDuration(cues);
     // Past the plan the clock goes red: overrunning is the one thing a speaker must notice.
     clockEl.textContent = `${formatCue(elapsed)} / ${formatCue(planned)}`;
     clockEl.classList.toggle("bp-is-over", planned > 0 && elapsed > planned);
@@ -220,8 +225,9 @@ export function createPresentation(options: PresentationOptions, doc: Document):
 
   function renderPanel(): void {
     if (!root || !listEl) return;
-    const cues = readCues(notes, options.routeOf);
+    cues = readCues(notes, options.routeOf);
     const active = currentCue(cues, elapsed);
+    activeCueId = active?.note.id ?? null;
     listEl.textContent = "";
 
     let lastRoute: string | undefined;
@@ -269,6 +275,24 @@ export function createPresentation(options: PresentationOptions, doc: Document):
       modeEl.setAttribute("aria-pressed", String(mode === "edit"));
     }
     renderClock();
+  }
+
+  /**
+   * Moves the "due now" marker while the clock runs (FR-20.3). The list is not rebuilt — the tick
+   * path only re-evaluates the cached talk plan and touches the two items whose marker state
+   * actually changes, and does nothing at all while the same cue stays due.
+   */
+  function syncCurrentCue(): void {
+    if (!listEl) return;
+    const nextId = currentCue(cues, elapsed)?.note.id ?? null;
+    if (nextId === activeCueId) return;
+    for (const item of listEl.querySelectorAll<HTMLElement>(".bp-present-item")) {
+      const isCurrent = item.getAttribute("data-bp-note-id") === nextId;
+      item.classList.toggle("is-current", isCurrent);
+      if (isCurrent) item.setAttribute("aria-current", "true");
+      else item.removeAttribute("aria-current");
+    }
+    activeCueId = nextId;
   }
 
   function ensurePanel(): void {

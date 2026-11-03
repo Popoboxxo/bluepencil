@@ -81,7 +81,7 @@ legs or jobs that must be exercised for that change. Job and script names are th
 
 | Changed paths | Legs / jobs that must pass |
 |---|---|
-| `src/**`, `src/element/**` | `build`, `build:ext`, `verify:sync`, `size`; every browser/behaviour smoke — `smoke:pack`, `smoke:install`, `smoke:embed`, `smoke:e2e`, `smoke:parity`, `smoke:ext`, `smoke:webstore`, `smoke:round-trip`, `smoke:federation`, `smoke:auth`, `smoke:hermes`, `smoke:voice`; `smoke:components` (the matrix); `image` |
+| `src/**`, `src/element/**` | `build`, `build:ext`, `verify:sync`, `size`; every browser/behaviour smoke — `smoke:pack`, `smoke:install`, `smoke:embed`, `smoke:e2e`, `smoke:parity`, `smoke:ext`, `smoke:webstore`, `smoke:round-trip`, `smoke:federation`, `smoke:auth`, `smoke:hermes`; `smoke:components` (the matrix); `image` |
 | `extension/src/**`, `extension/manifest.json`, `extension/options.html` | `build`, `build:ext`, `verify:sync`; `smoke:ext`, `parity`, `smoke:webstore` |
 | `server/**` | `build` (`server` entry → `dist/server.js`, `federator` entry → `dist/federator.js`); `smoke:cli`, `smoke:mcp`, `smoke:federation`, `smoke:embed`, `smoke:round-trip` (all drive the hub); `image` (Docker build + run, both wrapper bins) |
 | `src/federation/**` | `build` (`federator` job → `dist/federator.js`, `bluepencil-federator` bin); `smoke:federation`, `smoke:mcp`, `smoke:cli`; `image` (both wrapper bins start) |
@@ -97,8 +97,8 @@ not name as something to think about, not as license to skip a leg.
 
 ### Version bumps and the federator
 
-`package.json` and `extension/manifest.json` carry the release version (currently `0.10.3`), and the
-matching `## [<version>]` section in `CHANGELOG.md` has to agree. The federator bin is **not** an
+`package.json` and `extension/manifest.json` carry the release version, and the matching
+`## [<version>]` section in `CHANGELOG.md` has to agree. The federator bin is **not** an
 element bundle: `scripts/build.mjs` has a separate `federator` job that emits `dist/federator.js`
 from `server/federator.ts`, declared as `"bluepencil-federator"` in `package.json`. `verify:sync` stays element-focused — it pins the element
 IIFE and the extension, not the federator — so do not add `dist/federator.js` to its hash.

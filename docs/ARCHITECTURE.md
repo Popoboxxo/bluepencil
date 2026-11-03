@@ -1,79 +1,113 @@
 # Architecture — bluepencil
 
-> Planned structure for M1–M3. Requirement references: [REQUIREMENTS.md](REQUIREMENTS.md).
+> **Purpose:** describe the structure of the shipped library and its side surfaces (CLI, MCP,
+> reference hub/federator, MV3 extension) as they exist in the repository.
+> **Scope:** current tree and decisions; no aspirational modules (see the roadmap note in §1).
+> **Data source:** the `src/`, `server/`, `extension/`, `examples/`, `tests/` and `scripts/`
+> directories as read on 2026-11-03. Requirement references: [REQUIREMENTS.md](REQUIREMENTS.md).
 > Rationale: [CONCEPT.md](CONCEPT.md).
 
 ---
 
-## 1. Repository layout (planned)
+## 1. Repository layout
+
+The tree below is the current checkout. Unbuilt ideas live in the roadmap note at the end of
+this section, not in the tree.
 
 ```
 bluepencil/
-├─ src/
-│  ├─ core/
-│  │  ├─ model.ts          # Note, Message, Anchor, Context, enums, schema version
-│  │  ├─ store.ts          # in-memory store + change events (single source of truth)
-│  │  ├─ anchor.ts         # resolve/derive anchors (hook → css path → quote)
-│  │  ├─ capture.ts        # context capture (computed styles subset, box, theme, viewport)
-│  │  ├─ export/
-│  │  │  ├─ markdown.ts    # agent-facing export, deterministic ordering
-│  │  │  └─ json.ts        # schema-versioned full export/import
-│  │  └─ protocol.ts       # intent/status/thread rules (agent collaboration)
-│  ├─ data/                # HEADLESS (no DOM): schema, validate, merge, canonicalise,
-│  │  │                    # migrate, bundle read/write — used by UI, server, CLI, MCP
-│  │  ├─ schema.ts         #   types + JSON schema + migration table
-│  │  ├─ bundle.ts         #   export/import a portable bundle (FR-14.2)
-│  │  ├─ merge.ts          #   merge/upsert/replace-session + conflict report (FR-14.3/14.4)
-│  │  └─ canonical.ts      #   deterministic serialization (NFR-17)
-│  ├─ cli/                 # `bluepencil inspect|validate|merge|export|import` (FR-15.2)
-│  ├─ mcp/                 # MCP tool layer over a transport-neutral backend (backend.ts)
-│  ├─ federation/          # agent-side multi-hub layer (FR-16.10–16.15)
-│  │  ├─ registry.ts       #   registry shape, validation, resolution (file, mode 0600)
-│  │  ├─ ids.ts            #   qualified ids (`instance/noteId`), reserved names
-│  │  ├─ net-policy.ts     #   base-URL + SSRF policy (`--allow-insecure`, link-local always blocked)
-│  │  ├─ client.ts         #   one instance over HTTP (no redirects, timeout, redaction)
-│  │  ├─ aggregate.ts      #   read fan-out, per-instance failures, deterministic order
-│  │  ├─ backend.ts        #   `McpBackend` over N instances; routing + the two write locks
-│  │  ├─ errors.ts         #   one error taxonomy → MCP result, exit code, log line
-│  │  └─ index.ts          #   internal module barrel, bundled into the bins (no package export)
-│  ├─ adapters/
-│  │  ├─ memory.ts         # ephemeral
-│  │  ├─ local-storage.ts  # survives reload, bookmarklet default
-│  │  ├─ file.ts           # import/export a JSON file
-│  │  └─ http.ts           # REST client against the documented contract
-│  ├─ ui/
-│  │  ├─ layer.ts          # mount/unmount, bar, handle, settings popover
-│  │  ├─ modes.ts          # the single capture-preset table (FR-1.13/1.14)
-│  │  ├─ composer.ts       # note input (mode, checkbox "feedback only")
-│  │  ├─ panel.ts          # list, filters, thread, reply, orphan markers
-│  │  ├─ legend.ts         # shortcut overlay
-│  │  ├─ voice.ts          # dictation adapter: browser Web Speech API or a host engine (FR-21)
-│  │  └─ styles.ts         # token-driven CSS string (prefix .bp-, no global resets)
-│  ├─ i18n/                # en.ts, de.ts (strings only)
-│  ├─ react/               # optional wrapper (peer dependency)
-│  ├─ element/             # custom-element build (<bluepencil-notes>) for hosts w/o a bundler
-│  └─ index.ts             # public API: init(), mount(), createBlueprint(), registerAdapter() + Blueprint handle
-├─ server/                 # reference hosts: hub.ts (HTTP) + federator.ts (stdio), thin over src/
-├─ bookmarklet/            # loader generator + usage docs
+├─ src/                      # library source (no runtime dependencies, NFR-4)
+│  ├─ core/                  # DOM-free model, store and protocol
+│  │  ├─ model.ts            # Note, Message, Anchor, Context, enums, SCHEMA_VERSION
+│  │  ├─ store.ts            # in-memory store + change events (single source of truth)
+│  │  ├─ anchor.ts           # resolve/derive anchors (hook → css path → quote)
+│  │  ├─ capture.ts          # context capture (computed styles subset, box, theme, viewport)
+│  │  ├─ origin.ts           # one origin normaliser (currentOrigin, originOf)
+│  │  ├─ adapter.ts          # Adapter contract + cloneNote/timing/matchesFilter
+│  │  ├─ protocol.ts         # intent/status/thread rules (agent collaboration)
+│  │  ├─ protocol-headers.ts # the one auth-header constant and header helpers
+│  │  ├─ text.ts             # shared text helpers (errorText, oneLine)
+│  │  └─ export/
+│  │     ├─ markdown.ts      # agent-facing export, deterministic ordering, escaping
+│  │     └─ json.ts          # schema-versioned full export/import
+│  ├─ data/                  # HEADLESS (no DOM): schema, validate, merge, canonicalise,
+│  │  │                      # migrate, bundle read/write — used by UI, server, CLI, MCP
+│  │  ├─ schema.ts           #   types + validators + migration table
+│  │  ├─ canonical.ts        #   deterministic serialization + bundle hash (NFR-17)
+│  │  ├─ bundle.ts           #   portable bundle I/O and summary (FR-14.2)
+│  │  ├─ merge.ts            #   merge/upsert/replace-session + conflict report (FR-14.3/14.4)
+│  │  ├─ migrate.ts          #   0.11 → 0.12 note/bundle migration
+│  │  ├─ order.ts            #   the one review comparator (priority-first)
+│  │  ├─ origin.ts           #   storage-key layout: legacy, per-origin v2, assign sidecar
+│  │  ├─ note-set.ts         #   note-set codec (serializeNoteSet/parseNoteSet)
+│  │  ├─ legacy-assign.ts    #   copy-only assign and provenance-based undo plans
+│  │  ├─ sessions.ts         #   deriveSessions — the one session projection
+│  │  └─ index.ts            #   public `bluepencil/data` surface
+│  ├─ cli/                   # `bluepencil inspect|validate|merge|export|import|instances|mcp`
+│  ├─ mcp/                   # MCP server, tools, protocol, stdio, backend, options
+│  ├─ federation/            # agent-side multi-hub layer (FR-16.10–16.15)
+│  │  ├─ registry.ts         #   registry shape, validation, resolution (file, mode 0600)
+│  │  ├─ ids.ts              #   qualified ids (`instance/noteId`), reserved names
+│  │  ├─ net-policy.ts       #   base-URL + SSRF pre-check (`--allow-insecure`, link-local blocked)
+│  │  ├─ client.ts           #   one instance over HTTP (no redirects, timeout, redaction)
+│  │  ├─ aggregate.ts        #   read fan-out, per-instance failures, deterministic order
+│  │  ├─ backend.ts          #   `McpBackend` over N instances; routing + the two write locks
+│  │  ├─ errors.ts           #   one error taxonomy → MCP result, exit code, log line
+│  │  └─ index.ts            #   internal module barrel, bundled into the bins (no package export)
+│  ├─ adapters/              # memory, local-storage, chrome-storage, file, http
+│  │  └─ transport.ts        #   additive transport seam (registerHttpTransport)
+│  ├─ ui/                    # the layer and its parts
+│  │  ├─ layer.ts            #   mount/unmount, bar, handle, settings popover
+│  │  ├─ modes.ts            #   the single capture-preset table (FR-1.13/1.14)
+│  │  ├─ composer.ts         #   note input (mode, checkbox "feedback only")
+│  │  ├─ panel.ts            #   list, filters, thread, reply, orphan markers
+│  │  ├─ legend.ts           #   shortcut overlay
+│  │  ├─ present.ts          #   presentation mode (cue timing)
+│  │  ├─ keymap.ts           #   keyboard shortcut definitions
+│  │  └─ styles.ts           #   token-driven CSS string (prefix .bp-, no global resets)
+│  ├─ i18n/                  # en.ts, de.ts (strings only)
+│  ├─ embed/                 # one-tag loader: attach.ts, attributes.ts, version.ts
+│  ├─ element/               # <bluepencil-notes> custom element
+│  ├─ version.ts             # version read from package.json at build time
+│  ├─ argv.ts                # shared argv helpers
+│  └─ index.ts               # public API: init(), mount(), enable(), disable(), destroy()
+├─ server/                   # reference hosts: hub.ts (HTTP + /mcp) + federator.ts (stdio)
+├─ extension/                # MV3 Chromium extension (page → bridge → service worker)
+│  ├─ manifest.json          #   MV3 manifest (optional host permissions)
+│  ├─ build.mjs              #   extension build (data.js, element, worker, pages)
+│  ├─ src/                   #   sw, bridge, page-relay, storage-relay, hub-fetch, handoff,
+│  │                         #   settings, connection, mount, tab-binding, review, options
+│  ├─ options.html           #   options page
+│  └─ review.html            #   per-origin review page (read-only legacy view)
+├─ docker/                   # entrypoint.sh + bin wrappers for the container image
 ├─ examples/
-│  ├─ vanilla/             # plain HTML fixture app (all FR groups)
-│  ├─ react/               # React fixture
-│  ├─ home-assistant/      # custom card/panel loading the element build as a resource (FR-12.5/12.7)
-│  └─ round-trip/          # dev → bundle → live → bundle → dev exchange (FR-14.5/14.8)
+│  ├─ vanilla/               # plain HTML fixture app (all FR groups)
+│  ├─ attach/                # one-tag loader fixture
+│  ├─ parity/                # embed vs extension parity fixture (one document, two strands)
+│  ├─ presentation/          # read-only presentation mode
+│  ├─ round-trip/            # dev → bundle → live → bundle → dev exchange (FR-14.5/14.8)
+│  └─ federation/            # hub-of-hubs compose file + registry example
+├─ scripts/                  # build, dev, verify-sync, size guard, smoke runners
 ├─ tests/
-│  ├─ unit/                # model, anchor, adapters, export (vitest)
-│  └─ e2e/                 # the fixture app in a real browser (CDP harness, NFR-11)
-└─ docs/
-   ├─ CONCEPT.md  REQUIREMENTS.md  ARCHITECTURE.md
-   ├─ PROTOCOL.md          # agent collaboration protocol (implement/feedback/decision)
-   └─ INTEGRATION.md       # host guide incl. admin debug mode
+│  ├─ unit/                  # model, data, adapters, server, extension (vitest)
+│  ├─ e2e/                   # fixture apps in a real browser (CDP harness, NFR-11)
+│  └─ fixtures/              # pinned 0.11 bundle + hash
+├─ spec/                     # GENERATED reqmd spec from docs/REQUIREMENTS.md (do not edit)
+└─ docs/                     # CONCEPT, REQUIREMENTS, ARCHITECTURE, PROTOCOL, EMBED, ...
 ```
 
-Build outputs: **ESM** (`import { init } from "bluepencil"`), **IIFE** (`window.bluepencil`),
-and the **bookmarklet** loader. Subpath exports for adapters so tree-shaking keeps the core
-small (`bluepencil/adapters/http`). The Node entry points are built separately: `dist/server.js`
-(hub), `dist/federator.js` (stdio federator), `dist/cli.js` and `dist/mcp.js`; `server.js` and
-`federator.js` are also the `bluepencil-hub` / `bluepencil-federator` bins.
+**Roadmap note — not built, not in the tree.** A React wrapper
+(`src/react/`, `examples/react/`) and a Home-Assistant example
+(`examples/home-assistant/`) were once sketched in this section and in the release plan. Neither
+exists in the repository; the custom element plus the one-tag loader are the supported host paths
+(§6c). Treat those names as a backlog item, never as a shipped entry point.
+
+Build outputs: **ESM** (`import { init } from "bluepencil"`), **IIFE** (`window.bluepencil`, also
+used by a bookmarklet), and the **one-tag loader** (`dist/attach.js`). Subpath exports for
+adapters keep the core small (`bluepencil/adapters/http`). The Node entry points are built
+separately: `dist/server.js` (hub), `dist/federator.js` (stdio federator), `dist/cli.js` and
+`dist/mcp.js`; `server.js` and `federator.js` are also the `bluepencil-hub` /
+`bluepencil-federator` bins.
 
 ## 2. Public API (sketch)
 
@@ -111,18 +145,34 @@ session and take it away again without reloading, and repeated cycles must leave
 ### Headless use (dev tooling, CI, agents) — FR-13.2, FR-15.x
 
 ```ts
-import { createStore, createNote, toMarkdown, mergeBundles } from "bluepencil/data";
+import {
+  bundleToJson,
+  createBundle,
+  inspectBundle,
+  mergeNotes,
+  parseBundle,
+  serializeCanonical,
+} from "bluepencil/data";
 
-// A test runner or build script writes a note into the same store the UI reads:
-const store = createStore({ adapter: "localStorage" });     // or createHttpAdapter / memory
-await store.create(createNote({
-  type: "text",
-  body: "Test `checkout.spec.ts` failed at this element",
-  source: "tool:test-runner",
-  anchor: { hook: "checkout-submit" },
-  debug: { test: "checkout.spec.ts", stack: "…", commit: "abc1234" },
-}));
+// A build script or an agent reads a bundle and merges another one into it with the same
+// functions the CLI, the hub and the MCP tools use — one implementation, no UI (FR-15.3).
+const live = createBundle([], { exportedBy: "dev", environment: "dev" });
+const incoming = parseBundle(
+  bundleToJson(createBundle([], { exportedBy: "review-bot", environment: "dev" })),
+);
+
+const merged = mergeNotes(live.notes, incoming.notes, {
+  mode: "upsert",
+  onConflict: "keep-existing",
+});
+
+console.log(inspectBundle(createBundle(merged.notes, { environment: "dev" })));
+console.log(serializeCanonical(merged.notes));   // deterministic, diffable output
 ```
+
+`createNote`, `createStore` and the adapters are not part of `bluepencil/data`; they live in
+the core entry (`bluepencil`) and its adapter subpaths. The parser, the merge and the canonical
+serializer above are the headless surface — the same ones the CLI and the hub call.
 
 ```bash
 # CLI: file-based exchange and inspection without any UI (FR-15.2).
@@ -425,7 +475,7 @@ Assistant) put the annotatable elements inside shadow roots. Therefore:
 
 | Consumer | Artifact | Notes |
 |---|---|---|
-| App with a bundler | ESM `bluepencil` (+ `bluepencil/react`) | tree-shaken, adapters as subpaths |
+| App with a bundler | ESM `bluepencil` | tree-shaken, adapters and `bluepencil/data` as subpaths |
 | Host without a build step (Home Assistant resource, static page, CMS) | single-file ES module (`bluepencil.element.js`) registering `<bluepencil-notes>` | attributes map to config, events out: `bp-note-created`, `bp-export`, `bp-enabled` |
 | Third-party page, no deploy | IIFE + bookmarklet | `localStorage` adapter, export to file |
 | Own backend | reference server package | serves page + API, JSON store, retention off by default |
@@ -467,7 +517,7 @@ The Markdown export opens with the two exception sections (`⚠ open decisions`,
 | Adapter conformance | one suite, all adapters | vitest |
 | E2E | `examples/vanilla` fixture: annotate text/design, quote capture, filters, done-hidden default, feedback mode, decision thread, export, enable/disable cycles (bulk delete is M2 and not implemented) | dependency-free CDP harness (`scripts/lib/browser.mjs`), no test framework |
 | Functional parity | `examples/parity` fixture: one document served at the same path on two loopback ports, driven once through the one-tag embed loader (`dist/attach.js`) and once through the built MV3 extension mounting the active tab (unforced); identical observations required | dependency-free CDP harness (`scripts/lib/browser.mjs`) |
-| Host integration | React example: mount/unmount, no leaks, host-supplied theme | Playwright |
+| Host integration | one-tag loader (`examples/attach`) and the custom element on host pages: mount/unmount, no leaks | dependency-free CDP harness (`scripts/lib/browser.mjs`) |
 | Size guard | bundle budget (NFR-3) | CI check |
 | A11y | keyboard-only path, contrast of layer surfaces | Playwright + axe |
 | Manual round | annotate a real page with ~20 notes, export, work off, purge | checklist in `docs/` |
@@ -532,8 +582,8 @@ D8 **runtime activation in arbitrary products** — which is why this document n
   deterministic exports + **headless data library and CLI**, **bundle export/import with
   merge/dry-run/conflict reporting**, environment tagging, dev-system write API (FR-13.1–13.3,
   FR-14.1–14.7, FR-15.1–15.4).
-* **M3** — `0.3.0`: IIFE build, **custom-element build**, bookmarklet, React wrapper, theming
-  docs, size guard, host-variety examples (static, SPA, web-component/HA card).
+* **M3** — `0.3.0`: IIFE build, **custom-element build**, bookmarklet usage, theming
+  docs, size guard, host-variety examples (static, SPA).
 * **M4** — `0.4.0`: MCP tool group (thin wrapper over `bluepencil/data`) + protocol doc +
   retention option.
 * **M5** — `0.5.0`: product integration guide (RBAC, audit, purge) with a worked example.

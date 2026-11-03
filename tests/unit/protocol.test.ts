@@ -1,6 +1,15 @@
 /**
  * Unit tests for the protocol helpers (docs/PROTOCOL.md §2/§3/§4/§6, FR-5.1/5.4/5.5).
+ *
+ * The last block covers the wire-protocol header names (CQ-02, AC-H04). Those live in
+ * `src/core/protocol-headers.ts` and nothing else in `src/`/`server/` may spell the literal:
+ * a rename on one side would otherwise fail at runtime only. The extension keeps its own copies
+ * on purpose (separate bundle, no `src/` import), so the scan is limited to the two halves that
+ * share the module.
  */
+
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
@@ -14,6 +23,11 @@ import type {
   NoteType,
 } from "../../src/core/model";
 import { BluepencilValidationError, createNote, isExceptionNote, isImplementable } from "../../src/core/model";
+import {
+  ADMIN_HEADER,
+  AUTH_HEADER_SECRET,
+  AUTH_HEADER_TOKEN,
+} from "../../src/core/protocol-headers";
 import {
   answerDecision,
   completeNote,
@@ -326,5 +340,57 @@ describe("summarize", () => {
     const label = summarize(note);
     expect(label.startsWith("[design/implement/open] — xxx")).toBe(true);
     expect(label.length).toBeLessThanOrEqual(112);
+  });
+});
+
+describe("protocol headers (CQ-02, AC-H04)", () => {
+  const ROOT = process.cwd();
+  const HEADERS_MODULE = "src/core/protocol-headers.ts";
+
+  /** Every `.ts` file below `directory`, relative to the repo root. */
+  function tsFiles(directory: string): string[] {
+    return readdirSync(join(ROOT, directory), { withFileTypes: true }).flatMap((entry): string[] => {
+      const relative = `${directory}/${entry.name}`;
+      if (entry.isDirectory()) return tsFiles(relative);
+      return entry.name.endsWith(".ts") ? [relative] : [];
+    });
+  }
+
+  /** The files in `src/` and `server/` that assign one of `headers` to a string literal. */
+  function definitionsOf(headers: string[]): string[] {
+    const pattern = new RegExp(`=\\s*"(${headers.join("|")})"`, "u");
+    return [...tsFiles("src"), ...tsFiles("server")].filter((file) =>
+      pattern.test(readFileSync(join(ROOT, file), "utf8")),
+    );
+  }
+
+  it("names the wire headers exactly once, in the shared module", () => {
+    expect(AUTH_HEADER_SECRET).toBe("x-bluepencil-auth");
+    expect(AUTH_HEADER_TOKEN).toBe("authorization");
+    expect(ADMIN_HEADER).toBe("x-bluepencil-admin");
+  });
+
+  it("defines each literal in exactly one place (src/ and server/)", () => {
+    expect(definitionsOf([AUTH_HEADER_SECRET, AUTH_HEADER_TOKEN, ADMIN_HEADER])).toEqual([
+      HEADERS_MODULE,
+    ]);
+  });
+
+  it("keeps the admin header separate from the client credentials", () => {
+    // The admin secret guards the operator surface; it is never a client credential.
+    expect(ADMIN_HEADER).not.toBe(AUTH_HEADER_SECRET);
+    expect(ADMIN_HEADER).not.toBe(AUTH_HEADER_TOKEN);
+  });
+
+  it("is imported by the hub handler and the federation client", () => {
+    const handler = readFileSync(join(ROOT, "server/handler.ts"), "utf8");
+    const client = readFileSync(join(ROOT, "src/federation/client.ts"), "utf8");
+
+    expect(handler).toContain('from "../src/core/protocol-headers"');
+    expect(handler).toContain("AUTH_HEADER_SECRET");
+    expect(handler).toContain("AUTH_HEADER_TOKEN");
+    expect(client).toContain('from "../core/protocol-headers"');
+    expect(client).toContain("AUTH_HEADER_SECRET");
+    expect(client).toContain("AUTH_HEADER_TOKEN");
   });
 });

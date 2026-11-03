@@ -22,7 +22,6 @@ import type { Environment } from "../src/core/model";
 import type { Store } from "../src/core/store";
 import { createStore } from "../src/core/store";
 import type { McpBackend } from "../src/mcp/backend";
-import { VERSION } from "../src/version";
 import { createStoreBackend } from "../src/mcp/backend";
 import {
   createStorePersistence,
@@ -32,7 +31,6 @@ import {
   type ToolContext,
 } from "../src/mcp/tools";
 import {
-  PARSE_ERROR,
   PROTOCOL_VERSION,
   handleRpcExchange,
   isNotificationId,
@@ -43,6 +41,7 @@ import {
   JSON_CONTENT_TYPE,
   authorize,
   corsHeaders,
+  hostRefusal,
   normalizeBase,
   preflightResponse,
   requestPath,
@@ -169,6 +168,14 @@ export async function handleMcpRoute(
     return null;
   }
 
+  // The Host gate (SEC-02) is asked before the preflight and before the credential check: the door
+  // is reachable by an agent without a child process, which makes it exactly as interesting to a
+  // rebound page as the notes API. Same helper as the router — there is no MCP-specific bypass.
+  const refusedHost = hostRefusal(request, context);
+  if (refusedHost !== null) {
+    return refusedHost;
+  }
+
   // The browser preflight (#102) comes before the method gate: OPTIONS is not an attempt to use the
   // door, it is the question "may I?" — and it cannot carry a credential yet. The shared helper is
   // the same one the notes routes use, so the header list cannot drift between the two doors.
@@ -243,11 +250,14 @@ export async function handleMcpRoute(
     }
   }
 
+  // The parse result names its own JSON-RPC code: unparsable text is -32700, valid JSON that is
+  // not a request object (`null`, an array, a bare value) is -32600. `needsWrite`/`claimsInitialize`
+  // above already asked the same function, so neither of them ever dereferences a non-object.
   const parsed = parseRpcPayload(body);
   if (!parsed.ok) {
     return answer(
       400,
-      { jsonrpc: "2.0", id: null, error: { code: PARSE_ERROR, message: parsed.message } },
+      { jsonrpc: "2.0", id: null, error: { code: parsed.code, message: parsed.message } },
       context,
     );
   }
@@ -319,7 +329,3 @@ export async function handleMcpRoute(
   }
   return answer(200, response, context);
 }
-
-/** The revision this hub speaks, as a client would have to send it. */
-export const MCP_PROTOCOL_VERSION = PROTOCOL_VERSION;
-export const HUB_VERSION = VERSION;

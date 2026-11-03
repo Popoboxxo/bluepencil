@@ -507,7 +507,7 @@ function elementById(el: Element, id: string): Element | null {
  * platform vocabulary (native `dialog`/`popover`, ARIA roles), so a host does not have to learn a
  * bluepencil-specific convention to be supported.
  */
-export function containerKind(el: Element): RevealContainer | undefined {
+function containerKind(el: Element): RevealContainer | undefined {
   if (!isElementLike(el)) return undefined;
   const role = (attributeOf(el, "role") ?? "").toLowerCase();
   if (selectorTag(el) === "dialog" || role === "dialog" || attributeOf(el, "aria-modal") === "true") {

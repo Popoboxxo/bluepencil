@@ -75,13 +75,17 @@ preference. Chrome 151 was asked each question directly:
 | `import()` inside the service worker | *"import() is disallowed on ServiceWorkerGlobalScope"* |
 | `new Function(source)` in the page, by any channel | *"Evaluating a string as JavaScript violates the following Content Security Policy directive because 'unsafe-eval' is not an allowed source of script: script-src 'self'"* |
 
-So the only channel that works is a content script **registered** with `world: "MAIN"`: Chrome loads a
-packaged file into the page's own world even when the page's CSP forbids everything else. The element
-bundle is therefore compiled *into* `src/bootstrap.ts` and ships as one static classic script — no
-`eval`, no `new Function`, no dynamic `import()`, no network fetch, at build time or at runtime.
+So the only channel that works is a packaged file injected with `world: "MAIN"` through
+`chrome.scripting`: Chrome loads it into the page's own world even when the page's CSP forbids
+everything else. There is **no persistent content-script registration** — the mount sequence is the
+isolated-world bridge, the MAIN-world bootstrap and then the configuration, each injected as a file
+after the user's gesture. The element bundle is compiled *into* `src/bootstrap.ts` and ships as one
+static classic script — no `eval`, no `new Function`, no dynamic `import()`, no network fetch, at
+build time or at runtime.
 
 What crosses the boundary at runtime is data: the worker places the settings as a plain object, and
-the bootstrap reads them.
+the bootstrap reads them. The credential is not part of that object: it stays in the worker, which
+attaches the auth header itself.
 
 ## An extension does not bypass a CSP
 
@@ -92,10 +96,13 @@ runs against a strict-CSP host on purpose: it is the case that used to break.
 One part is different since 0.11.6: **hub traffic leaves through the extension's service worker**
 (#116). The layer's `fetch` still runs in the page, but it is routed page → isolated-world bridge →
 service worker, and the worker is outside the document's CSP. A page with `default-src 'self'` and
-no `connect-src` therefore no longer blocks note sync.
+no `connect-src` therefore no longer blocks note sync. Since 0.12 the credential is **worker-only**:
+the page settings object carries no `auth` and no token, the page never holds or sends one, and the
+worker appends `Authorization: Bearer …` or `x-bluepencil-auth: …` itself. A page that tries to send
+either header in a relay request is refused with `disallowed_header`.
 
 The relay covers the hub's HTTP requests and nothing else. When the page uses the attach loader, its
-own manifest (`latest.json`) and asset/SRI fetches still run as page `fetch()` calls and still need
+own manifest (`latest.json`) and element bytes for the digest check still run as page `fetch()` calls and still need
 `connect-src`; the element script itself stays under `script-src`. A page **without** the extension —
 a plain embed, a bookmarklet, an IIFE build — never gets this path and always needs `connect-src`
 for the hub origin. So `script-src` alone is still not enough for such a page. A blocked request
@@ -107,7 +114,7 @@ Refused to connect to 'https://hub.example/api/v1/bluepencil/notes' because it v
 
 (`"default-src …"` appears instead when the page declares no `connect-src`, which is the fallback
 directive.) Allow the origin in `connect-src`, or route the request through the extension. The full
-recipe, including the loader's manifest and SRI fetches, is in
+recipe, including the loader's manifest and digest fetches, is in
 [EMBED.md — CSP: `script-src` and `connect-src`](EMBED.md#csp-script-src-and-connect-src).
 
 The overlay's own CSS remains subject to `style-src`.
@@ -203,10 +210,11 @@ means replace it, and `403 insufficient_scope` for a valid token that may not do
 
 ### Switching the layer on and off
 
-The layer follows the toolbar button, and the options page has *Turn on here* / *Turn off here* for
-the tab you are currently looking at. Turning it off sets the element's `enabled` attribute rather
-than removing it, so your open notes survive and the layer can be brought back without a second
-injection. A page can do the same:
+The layer follows the toolbar button and the Alt+Shift+B keyboard shortcut. The options page no
+longer carries *Turn on here* / *Turn off here* buttons; it links the **review page** instead, and
+mounting is done from the toolbar or the shortcut on the tab you are looking at. Toggling off sets
+the element's `enabled` attribute rather than removing it, so your open notes survive and the layer
+can be brought back without a second injection. A page can ask for the same toggle over the bridge:
 
 ```js
 window.postMessage({ source: "bluepencil-page", kind: "toggle", enabled: false, requestId: "1" },
@@ -225,18 +233,20 @@ it. See *Known gaps* in [CHANGELOG.md](../CHANGELOG.md) for the current list.
 ### Page-side storage relay
 
 The layer's default store lives in `chrome.storage.local`, which the page's own world cannot reach;
-the isolated-world bridge performs that call on its behalf. The channel is reachable by any page
-script, so the bridge applies one write rule: **a page may only write the layer's own store blob**
-(`bluepencil:<instance>:v1`). `bluepencil:settings` — the hub endpoint and the credential — is out
-of reach, and so is anything else outside that namespace. This matters for the hub path above: a
-page that could rewrite the settings could repoint the relay at any origin and use the worker as a
-CSP-bypassing egress path.
+the isolated-world bridge performs that call on its behalf. Storage is partitioned per origin since
+0.12: the single key is `bluepencil:v2:<origin>`, derived by the bridge from its own
+`window.location` and never from a field the page supplies. The channel is reachable by any page
+script, so the bridge accepts exactly that one derived key — for reads, writes and removes alike.
+`bluepencil:settings` (the hub endpoint and the credential), the legacy shared blob
+`bluepencil:default:v1`, `bluepencil:ui:*` and the assign sidecar `bluepencil:assign:<origin>` are
+all refused as `foreign_key` before any storage call happens. A page cannot select another origin's
+store by spoofing a key, and an opaque origin (`file:`, a sandboxed frame) has no bucket at all
+(`opaque_origin`), so the store degrades to memory there.
 
-Reads are deliberately broader: a page can read the store blob and the settings object. That
-exposure predates the write rule, the layer needs its store back, and a read cannot repoint
-anything — but it is named here instead of being left implicit. The annotated page's own world is
-the wrong trust boundary to defend a credential on: a page that must not learn the token cannot be
-annotated by an extension that runs the layer there.
+This matters for the hub path above: a page that could rewrite the settings could repoint the relay
+at any origin and use the worker as a CSP-bypassing egress path. The credential is no longer in the
+page's settings object at all (worker-only), and the settings key is out of the page's reach, so the
+page world is no longer where a credential could be read or written.
 
 ### Residual behaviour to know about
 
@@ -258,16 +268,64 @@ annotated by an extension that runs the layer there.
 | `activeTab` | inject only into the tab you clicked on |
 | `scripting` | inject the layer and the bridge |
 | `storage` | `chrome.storage.local` |
-| `http://*/*`, `https://*/*` | host access, granted up front |
+| `optional_host_permissions: http://*/*, https://*/*` | optional host access, granted per hub origin |
 
-Host access is a deliberate, conservative **pre-grant**. Injection itself is on demand: the overlay only
-enters a page after an explicit user gesture (toolbar click, Alt+Shift+B, the options *Turn on here*, or
-the page's own `request-mount`), into the tab the user is looking at. The up-front grant is broader than
-that on-demand injection strictly needs, but it is what lets the overlay be available the moment the
-user asks for it on any site, without a second prompt. It also keeps the headless round trip testable —
-a real benefit, though not the reason the permission is in the manifest.
+Host access is **optional**, never install-time: the manifest declares no `host_permissions`. The
+options page asks for a hub's origin the first time an HTTP endpoint is saved, inside the click that
+pressed Save, because `chrome.permissions.request` only answers while the user gesture is live. The
+grant is per origin (`scheme://host/*`; Chrome patterns have no port), a second hub asks for its own
+origin, and a granted origin is not prompted again. Injection itself is on demand under `activeTab`:
+the overlay enters a page only after an explicit gesture (toolbar click or Alt+Shift+B).
 
 The overlay does **not** survive a navigation in this release: a fresh document has no
 `<bluepencil-notes>` until the user invokes the extension again. `file:///*` is deliberately **not**
 requested — it buys nothing a web user needs, and it is the permission a store reviewer objects to
 first. `<all_urls>` is not used.
+
+## Release checklist RC-1…RC-3
+
+The real grant cannot be produced headlessly — `chrome.permissions.request` needs a live gesture — so
+three steps are manual and every release depends on them:
+
+- **RC-1 — hub origin in the options save.** Save an `https://` hub endpoint and confirm the browser
+  asks for that origin and accepts the save.
+- **RC-2 — toolbar mount on a real profile page.** Click the toolbar button on an ordinary page and
+  confirm the overlay mounts.
+- **RC-3 — Alt+Shift+B.** Press the shortcut on the same page and confirm the overlay toggles.
+
+The `release` job is bound to the protected GitHub `release` environment; that environment is
+approved only after RC-1…RC-3 are confirmed, and the approval confirms the steps rather than proving
+them. This grant path is not checked automatically. The same list, with the environment binding, is
+in [RELEASING.md — Release checklist RC-1…RC-3](RELEASING.md#release-checklist-rc1rc3).
+
+## Upgrading from 0.11
+
+Read this before pointing an existing profile at 0.12. Several changes are visible and one of them
+is a confidentiality regression if you downgrade.
+
+- **Legacy notes are read-only on the review page.** Notes in the old shared blob still exist — the
+  data is not deleted — but they no longer appear in the page overlay after the upgrade. They are
+  visible only on the review page (`review.html`), read-only, where each legacy note can be copied
+  into an origin with an explicit confirm. Undo removes only the copy; the legacy note stays.
+- **The default key is per origin.** A host that relied on the shared default must pass
+  `key: chromeStorageKey()` explicitly; the productive adapter otherwise writes
+  `bluepencil:v2:<origin>` and never `bluepencil:default:v1`.
+- **Downgrading is not supported.** 0.11 reads every key, so a `v2` note set looks like nothing to it
+  and a downgrade reopens the shared-bucket problem. Clear extension storage before downgrading;
+  keeping `v2` data across a downgrade is a confidentiality regression.
+- **Every bundle hash changes.** `origin: null` is emitted for every note, so the canonical hash of
+  each bundle changes; there is no new migration step.
+- **The `token`, `token-header` and `token-scheme` attributes are gone.** The credential is
+  worker-only; a page that still sets one of them gets an `issues` entry pointing at the extension
+  instead of a silently unauthenticated request.
+- **The options buttons are gone.** *Turn on here* / *Turn off here* no longer exist; use the toolbar
+  button or Alt+Shift+B, and open the review page from the options page.
+- **The route the extension writes is path-only.** The hand-off writes `route="url"`, so a note
+  stores `location.pathname` and never the query; the extension offers no query opt-in in 0.12.0
+  and never writes `url-with-query`.
+- **`file://` is memory-only.** There is no persistent bucket for an opaque origin; the store degrades
+  to memory and the tab reports it. Use the local adapter (or a hub) when notes on `file://` pages
+  must survive a reload.
+
+The full end-state list, including the route and digest changes, is in
+[CHANGELOG.md](../CHANGELOG.md) under `[Unreleased]`.

@@ -62,9 +62,16 @@ declare module "*/dist/adapters/chrome-storage.js" {
    * The `chrome.storage` adapter, built around an injectable area. The extension passes an area
    * that relays over the bridge instead of reading the global `chrome`, because the layer runs in the
    * page's world where that global has no `storage`.
+   *
+   * Without an explicit `key` the adapter derives one from `globalThis.location`
+   * (`bluepencil:v2:<origin>`); an opaque origin has no bucket and degrades to memory. Both
+   * fallbacks already exist at runtime — `onFallback` reports the reason once, `writeFailure`
+   * decides whether a failed write rejects or degrades (B.1). The declaration only catches up.
    */
   export function createChromeStorageAdapter(options?: {
     key?: string;
     area?: ChromeStorageArea | null;
+    onFallback?: (reason: unknown) => void;
+    writeFailure?: "reject" | "degrade";
   }): unknown;
 }

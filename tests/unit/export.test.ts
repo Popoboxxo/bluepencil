@@ -5,6 +5,9 @@
  * which own the bundle format and its validation.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -14,15 +17,18 @@ import type {
   Note,
   NoteDraft,
   NoteIntent,
+  NoteOrigin,
   NoteSeverity,
   NoteStatus,
+  NoteTiming,
   NoteType,
 } from "../../src/core/model";
 import { BluepencilValidationError, createNote } from "../../src/core/model";
 import { excludeDone, filterNotes } from "../../src/core/adapter";
 import { noteToMarkdown, toMarkdown } from "../../src/core/export/markdown";
 import { fromJson, toJson } from "../../src/core/export/json";
-import { parseBundle } from "../../src/data/bundle";
+import { createBundle, inspectBundle, parseBundle } from "../../src/data/bundle";
+import { compareCodeUnits } from "../../src/data/order";
 
 const T0 = "2026-01-01T00:00:00.000Z";
 const T1 = "2026-01-01T00:10:00.000Z";
@@ -45,6 +51,8 @@ interface NoteSpec {
   debug?: DebugContext;
   messages?: Message[];
   source?: NoteDraft["source"];
+  origin?: NoteOrigin;
+  timing?: NoteTiming;
 }
 
 function makeNote(spec: NoteSpec): Note {
@@ -78,6 +86,8 @@ function makeNote(spec: NoteSpec): Note {
     context: spec.context ?? null,
     debug: spec.debug,
     messages: spec.messages,
+    origin: spec.origin,
+    timing: spec.timing,
   });
 }
 
@@ -93,6 +103,11 @@ function recanonicalise(note: Note): Note {
     clone.context.styles = reversed;
   }
   return clone;
+}
+
+/** Drop fenced blocks — the one place raw user text is allowed to survive (SEC-17). */
+function stripFences(markdown: string): string {
+  return markdown.replace(/`{3,}[\s\S]*?`{3,}/g, "");
 }
 
 const captured: CapturedContext = {
@@ -266,7 +281,7 @@ describe("toMarkdown note rendering", () => {
     expect(md).toContain("  - viewport: 1280×720");
     expect(md).toContain("  - box: 120×32 at 10,20");
     expect(md).toContain("  - build: `build-7`");
-    expect(md).toContain("  - style.color: rgb(0, 0, 0)");
+    expect(md).toContain("  - style.color: rgb\\(0, 0, 0)");
     expect(md).toContain("  - style.display: inline-flex");
     expect(md).toContain("  - style.font-size: 14px");
     expect(md).not.toMatch(/<[a-z]+[^>]*>/i);
@@ -318,8 +333,8 @@ describe("toMarkdown safety and language", () => {
     });
     const md = toMarkdown([evil]);
 
-    expect(md).toContain("#### n-&lt;script&gt;alert('id')&lt;/script&gt;");
-    expect(md).toContain("- Author: \\**bold\\** &lt;img src=x onerror=alert('a')&gt; (human)");
+    expect(md).toContain("#### n-&lt;script&gt;alert\\('id')&lt;/script&gt;");
+    expect(md).toContain("- Author: \\**bold\\** &lt;img src=x onerror=alert\\('a')&gt; (human)");
     expect(md).toContain("  - style.color: &lt;/script&gt;&lt;script&gt;");
     // Every field that is NOT a fenced code block must be free of raw angle brackets. The two
     // places raw text survives on purpose are the fenced body (a code block renders as text) and
@@ -377,6 +392,79 @@ describe("toMarkdown safety and language", () => {
     expect(md).toContain("_Notizen: 2 · offene Entscheidungen: 1 · nur Feedback: 0 · erledigt: 0_");
     expect(md).toContain("### Route: `/a`");
     expect(md.startsWith("# bluepencil Review-Notizen\n")).toBe(true);
+  });
+});
+
+describe("toMarkdown origin (FR-2.2, AC-A13)", () => {
+  it("prints the canonical origin as a bullet and marks unassigned notes explicitly", () => {
+    const assigned = makeNote({ id: "n-assigned", origin: "https://a.example" });
+    const unassigned = makeNote({ id: "n-unassigned", origin: null });
+    const md = toMarkdown([assigned, unassigned]);
+
+    expect(md).toContain("- Origin: https://a.example");
+    expect(md).toContain("- Origin: (unassigned)");
+    expect(md.indexOf("- Origin: https://a.example")).toBeGreaterThan(md.indexOf("n-assigned"));
+    expect(md.indexOf("- Origin: (unassigned)")).toBeGreaterThan(md.indexOf("n-unassigned"));
+    // the bullet belongs to the note context and follows the recording source
+    expect(md.indexOf("- Source:")).toBeLessThan(md.indexOf("- Origin: https://a.example"));
+    // deterministic: same notes, same bytes
+    expect(toMarkdown([assigned, unassigned])).toBe(md);
+  });
+
+  it("invents no bullet for a note object that carries no origin field", () => {
+    const legacy = { ...makeNote({ id: "n-legacy" }) };
+    delete legacy.origin;
+    expect(noteToMarkdown(legacy)).not.toContain("- Origin:");
+  });
+
+  it("translates the unassigned marker", () => {
+    expect(noteToMarkdown(makeNote({ id: "n-de" }), { language: "de" })).toContain("- Origin: (nicht zugeordnet)");
+  });
+});
+
+describe("toMarkdown link and image escaping (SEC-17, AC-A20)", () => {
+  const image = "![x](https://e.example/leak?a=1)";
+  const link = "[click](javascript:alert(1))";
+  const escapedImage = "\\!\\[x\\]\\(https://e.example/leak?a=1)";
+  const escapedLink = "\\[click\\]\\(javascript:alert\\(1))";
+
+  function secNote(): Note {
+    return makeNote({
+      id: "n-sec17",
+      author: link,
+      body: `inline body stays in a fence: ${image}`,
+      timing: { at: 12, label: image },
+      context: { ...captured, styles: { background: image, color: link } },
+      messages: [{ id: "m-1", ts: T0, author: image, authorType: "agent", kind: "note", text: link }],
+    });
+  }
+
+  it("escapes [ ] ! and ( in every inline field", () => {
+    const md = toMarkdown([secNote()], { title: link });
+
+    expect(md).toContain(`# ${escapedLink}`);
+    expect(md).toContain(`- Author: ${escapedLink} (human)`);
+    expect(md).toContain(`- Cue: 0:12 — ${escapedImage}`);
+    expect(md).toContain(`  - style.background: ${escapedImage}`);
+    expect(md).toContain(`  - style.color: ${escapedLink}`);
+    expect(md).toContain(`  1. ${escapedImage} (agent) · note · ${T0}`);
+  });
+
+  it("leaves nothing outside a fence that a renderer could turn into a link or image", () => {
+    const outside = stripFences(toMarkdown([secNote()], { title: link }));
+
+    expect(outside).not.toContain("![");
+    expect(outside).not.toContain("](");
+    // the payload is still readable, just inert
+    expect(outside).toContain(escapedImage);
+    expect(outside).toContain(escapedLink);
+  });
+
+  it("leaves note bodies and message texts inside their fences untouched", () => {
+    const md = toMarkdown([secNote()]);
+
+    expect(md).toContain(`inline body stays in a fence: ${image}`);
+    expect(md).toContain(`     ${link}`);
   });
 });
 
@@ -529,5 +617,44 @@ describe("json export", () => {
   it("writes a bundle the data library reads back", () => {
     const bundle = parseBundle(toJson(notes, { now: T0 }));
     expect(bundle.notes).toHaveLength(2);
+  });
+});
+
+/*
+ * One comparator source (BP-07, AC-H03): the bundle summary and the Markdown route headings must
+ * sort by the shared `compareCodeUnits` from `src/data/order.ts`, never a local copy or the
+ * locale. The mixed-case route set puts that to the test — `localeCompare` would order `ä`/`Ä`
+ * next to `a`, code units keep uppercase binary-first.
+ */
+describe("shared comparator (BP-07, AC-H03)", () => {
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const read = (path: string): string => readFileSync(join(ROOT, path), "utf8");
+
+  it("imports compareCodeUnits from order.ts and keeps no local comparator copy", () => {
+    const bundleSource = read("src/data/bundle.ts");
+    const markdownSource = read("src/core/export/markdown.ts");
+
+    expect(bundleSource).toContain('import { compareCodeUnits } from "./order";');
+    expect(markdownSource).toContain('import { compareCodeUnits } from "../../data/order";');
+
+    expect(bundleSource).not.toMatch(/function\s+compareStrings\b/);
+    expect(markdownSource).not.toMatch(/function\s+compareText\b/);
+    expect(bundleSource).not.toMatch(/localeCompare/);
+    expect(markdownSource).not.toMatch(/localeCompare/);
+  });
+
+  it("sorts bundle routes and markdown route headings identically, in code-unit order", () => {
+    const routes = ["a", "Ä", "B"];
+    const notes = routes.map((route, index) =>
+      makeNote({ id: `n-route-${String(index)}`, route, now: T0 }),
+    );
+    const expected = [...routes].sort(compareCodeUnits);
+    expect(expected).toEqual(["B", "a", "Ä"]);
+
+    expect(inspectBundle(createBundle(notes)).routes).toEqual(expected);
+
+    const md = toMarkdown(notes);
+    const headings = [...md.matchAll(/^### Route: `(.+)`$/gm)].map((match) => match[1]);
+    expect(headings).toEqual(expected);
   });
 });

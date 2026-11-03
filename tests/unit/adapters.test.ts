@@ -22,7 +22,7 @@ import {
   type NoteStatus,
   type Session,
 } from "../../src/core/model";
-import { createJsonAdapter, createMemoryAdapter, type JsonAdapterIo } from "../../src/adapters/memory";
+import { createJsonAdapter, createMemoryAdapter, parseNoteSet, type JsonAdapterIo } from "../../src/adapters/memory";
 import { createLocalStorageAdapter, localStorageKey } from "../../src/adapters/local-storage";
 import { createFileAdapter, type FileAdapterIo } from "../../src/adapters/file";
 import { HttpAdapterError, createHttpAdapter } from "../../src/adapters/http";
@@ -144,6 +144,9 @@ function createFakeServer(): FakeServer {
     const filter: NoteFilter = {};
     const route = query.get("route");
     if (route !== null) filter.route = route;
+    // 0.12 hub filter: `origin=null` is the unassigned bucket (FR-2.2, AC-A18).
+    const origin = query.get("origin");
+    if (origin !== null) filter.origin = origin === "null" ? null : origin;
     const intent = query.get("intent");
     if (intent !== null) filter.intent = intent as NoteFilter["intent"];
     const type = query.get("type");
@@ -1053,5 +1056,133 @@ describe("severity in the shared note rules (FR-3.6)", () => {
     // a filter without a severity is uninfluenced by it
     expect(matchesFilter(plainBug, { type: "bug" })).toBe(true);
     expect(matchesFilter(blocker)).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * origin in the shared transport rules (FR-2.2, G5; AC-A16, AC-A18, AC-A19)
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("origin in the shared transport rules (AC-A16, AC-A18, AC-A19)", () => {
+  it("coerceNote canonicalises a stored origin and maps unusable values to null (AC-A16)", () => {
+    const base = createNote(draft());
+    const absent: Record<string, unknown> = { ...base };
+    delete absent.origin;
+
+    // a non-canonical stored origin is normalised on the way in
+    expect(coerceNote({ ...base, origin: "https://A.example:443" })?.origin).toBe("https://a.example");
+    // an unusable value degrades to "unassigned" instead of rejecting the whole document
+    expect(coerceNote({ ...base, origin: 42 })?.origin).toBeNull();
+    // a blob written before the field existed reads as unassigned too
+    expect(coerceNote(absent)?.origin).toBeNull();
+  });
+
+  it("parseNoteSet keeps every field while normalising origin on the round trip (AC-A16)", () => {
+    const base = createNote(draft({ body: "keep me" }));
+    const absent: Record<string, unknown> = { ...base };
+    delete absent.origin;
+    const stored = JSON.stringify({
+      version: 1,
+      notes: [
+        { ...base, id: "n-a", origin: "https://A.example:443" },
+        { ...base, id: "n-b", origin: 42 },
+        { ...absent, id: "n-c" },
+      ],
+    });
+
+    const notes = parseNoteSet(stored);
+
+    expect(notes.map((note) => note.origin)).toEqual(["https://a.example", null, null]);
+    // no field is lost: the untouched note round-trips byte-identically through the canonical form
+    expect(notes[0]?.body).toBe("keep me");
+    expect(notes[0]?.anchor).toEqual(base.anchor);
+    expect(notes[0]?.messages).toEqual(base.messages);
+    expect(notes[2]).toEqual({ ...base, id: "n-c", origin: null });
+  });
+
+  it("matchesFilter honours the origin filter, with null meaning unassigned (AC-A16)", () => {
+    const assigned = createNote(draft({ origin: "https://a.example" }));
+    const other = createNote(draft({ origin: "https://b.example" }));
+    const unassigned = createNote(draft());
+
+    expect(matchesFilter(assigned, { origin: "https://a.example" })).toBe(true);
+    expect(matchesFilter(other, { origin: "https://a.example" })).toBe(false);
+    expect(matchesFilter(unassigned, { origin: "https://a.example" })).toBe(false);
+    expect(matchesFilter(unassigned, { origin: null })).toBe(true);
+    expect(matchesFilter(assigned, { origin: null })).toBe(false);
+    // an absent field is "no filter", not "unassigned"
+    expect(matchesFilter(assigned, {})).toBe(true);
+    expect(matchesFilter(assigned)).toBe(true);
+  });
+
+  it("forwards origin on create and list without any field shaping (AC-A18)", async () => {
+    const server = createFakeServer();
+    const adapter = createHttpAdapter({ endpoint: HTTP_BASE, fetchImpl: server.fetch });
+
+    const created = await adapter.create(draft({ origin: "https://a.example" }));
+    expect(created.origin).toBe("https://a.example");
+    const createCall = server.calls.find(
+      (call) => call.method === "POST" && call.path === `${HTTP_PATH}/notes`,
+    );
+    expect((createCall?.body as NoteDraft).origin).toBe("https://a.example");
+
+    const assigned = await adapter.list({ origin: "https://a.example" });
+    const unassigned = await adapter.list({ origin: null });
+    await adapter.list();
+
+    const listCalls = server.calls.filter(
+      (call) => call.method === "GET" && call.path === `${HTTP_PATH}/notes`,
+    );
+    // exact query strings: verbatim string, literal `null`, and no parameter at all
+    expect(listCalls.map((call) => call.query.toString())).toEqual([
+      "origin=https%3A%2F%2Fa.example",
+      "origin=null",
+      "",
+    ]);
+    expect(assigned.map((note) => note.origin)).toEqual(["https://a.example"]);
+    expect(unassigned).toEqual([]);
+  });
+
+  it("passes a 0.11 hub's unknown_field refusal through without retrying (AC-A19)", async () => {
+    const calls: { method: string; path: string; query: string; body: unknown }[] = [];
+    const headers = { "content-type": "application/json" };
+    const stubFetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const url = new URL(raw);
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push({
+        method,
+        path: url.pathname,
+        query: url.searchParams.toString(),
+        body: typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined,
+      });
+      if (url.pathname === `${HTTP_PATH}/notes` && method === "POST") {
+        // 0.11 hub: `origin` is an unknown field and the whole create is refused
+        return new Response(JSON.stringify({ error: { code: "unknown_field" } }), {
+          status: 400,
+          headers,
+        });
+      }
+      // 0.11 hub: `origin` is an unknown query parameter and is ignored
+      return new Response(JSON.stringify({ ok: true, notes: [] }), { status: 200, headers });
+    }) as unknown as typeof fetch;
+    const adapter = createHttpAdapter({ endpoint: HTTP_BASE, fetchImpl: stubFetch });
+
+    const error = (await adapter
+      .create(draft({ origin: "https://a.example" }))
+      .catch((reason: unknown) => reason)) as HttpAdapterError;
+
+    expect(error).toBeInstanceOf(HttpAdapterError);
+    expect(error.status).toBe(400);
+    expect(error.body).toContain("unknown_field");
+    // exactly one create request, body still carrying origin — no retry without it
+    const createCalls = calls.filter((call) => call.method === "POST");
+    expect(createCalls).toHaveLength(1);
+    expect((createCalls[0]?.body as NoteDraft).origin).toBe("https://a.example");
+
+    await adapter.list({ origin: "https://a.example" });
+    const listCalls = calls.filter((call) => call.method === "GET");
+    expect(listCalls).toHaveLength(1);
+    expect(listCalls[0]?.query).toBe("origin=https%3A%2F%2Fa.example");
   });
 });

@@ -15,8 +15,10 @@
  * an ephemeral port (health, a write, the static `index.html` fallback) and closes it again.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as nodeRequest } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createNote, type Environment, type Note, type NoteDraft } from "../../src/core/model";
@@ -38,6 +40,7 @@ import {
 import {
   DEFAULT_HOST,
   DEFAULT_PORT,
+  MAX_BODY_BYTES,
   StoreFileError,
   createFileStore,
   loadNotes,
@@ -46,6 +49,27 @@ import {
   startServer,
   type ServerOptions,
 } from "../../server/index";
+
+/**
+ * SEC-09 (AC-D10): the static door's read failure must not echo the path. The failure is injected at
+ * the fs seam rather than via `chmod 000`, because a root test runner reads a 000 file anyway. Every
+ * call that is not armed goes straight to the real implementation.
+ */
+const fsReadFailure = vi.hoisted(() => ({
+  armed: false,
+  message: "EACCES: permission denied, open '/var/lib/bluepencil/secret/public/index.html'",
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    readFileSync: ((...args: unknown[]) => {
+      if (fsReadFailure.armed) throw new Error(fsReadFailure.message);
+      return (actual.readFileSync as (...inner: unknown[]) => unknown)(...args);
+    }) as typeof actual.readFileSync,
+  };
+});
 
 type Json = Record<string, any>;
 
@@ -195,6 +219,7 @@ describe("hub handler — the documented endpoints", () => {
         "schemaVersion",
         "createdAt",
         "updatedAt",
+        "origin",
         "sessionRef",
         "type",
         "intent",
@@ -376,6 +401,111 @@ describe("hub handler — the documented endpoints", () => {
       expect(response.status).toBe(200);
       expect(jsonOf(response).note.severity).toBeUndefined();
       expect(harness.state.notes[0]?.severity).toBeUndefined();
+    });
+  });
+
+  describe("origin scope (FR-2.2)", () => {
+    /** Two notes assigned to different sites and one unassigned (`origin: null`). */
+    function originNotes(): Note[] {
+      return [
+        note("n1", "2026-09-15T09:00:01.000Z", { origin: "https://a.example" }),
+        note("n2", "2026-09-15T09:00:02.000Z", { origin: "https://b.example" }),
+        note("n3", "2026-09-15T09:00:03.000Z"),
+      ];
+    }
+
+    it("stores a create body's origin in canonical form (AC-A10)", () => {
+      const harness = createHarness();
+      const response = harness.call(
+        request("POST", "/notes", { body: draft({ origin: "https://A.example:443/x" }) }),
+      );
+      expect(response.status).toBe(200);
+      expect(jsonOf(response).note.origin).toBe("https://a.example");
+      expect(harness.state.notes[0]?.origin).toBe("https://a.example");
+    });
+
+    it("normalises a case variant on create (AC-A10)", () => {
+      const harness = createHarness();
+      const response = harness.call(request("POST", "/notes", { body: draft({ origin: "HTTPS://A.EXAMPLE" }) }));
+      expect(response.status).toBe(200);
+      expect(jsonOf(response).note.origin).toBe("https://a.example");
+    });
+
+    it("refuses an unusable create origin with 400 invalid_origin and stores nothing (AC-A10)", () => {
+      const harness = createHarness();
+      for (const origin of ["file:///x", "42", "data:text/html,x", "   ", {}]) {
+        const response = harness.call(request("POST", "/notes", { body: { ...draft(), origin } }));
+        expect(response.status).toBe(400);
+        expect(jsonOf(response).error.code).toBe("invalid_origin");
+      }
+      expect(harness.state.notes).toEqual([]);
+      expect(harness.saves()).toBe(0);
+    });
+
+    it("stores '', 'null', null and an absent origin as unassigned (AC-A10)", () => {
+      for (const body of [draft({ origin: "" }), draft({ origin: "null" }), draft({ origin: null }), draft()]) {
+        const harness = createHarness();
+        const response = harness.call(request("POST", "/notes", { body }));
+        expect(response.status).toBe(200);
+        expect(jsonOf(response).note.origin).toBeNull();
+        expect(harness.state.notes[0]?.origin).toBeNull();
+      }
+    });
+
+    it("filters by one origin and by the unassigned set (AC-A11)", () => {
+      const harness = createHarness({ notes: originNotes() });
+      expect(idsOf(harness.call(request("GET", "/notes?origin=https://a.example")))).toEqual(["n1"]);
+      // Both spellings of "unassigned" select only the origin-less note; a canonical origin is
+      // compared after normalisation, so a case/port variant still finds the stored value.
+      expect(idsOf(harness.call(request("GET", "/notes?origin=")))).toEqual(["n3"]);
+      expect(idsOf(harness.call(request("GET", "/notes?origin=null")))).toEqual(["n3"]);
+      expect(idsOf(harness.call(request("GET", "/notes?origin=https://A.example:443")))).toEqual(["n1"]);
+      expect(harness.call(request("GET", "/notes")).body).toContain('"n1"');
+      expect(idsOf(harness.call(request("GET", "/notes")))).toHaveLength(3);
+    });
+
+    it("refuses an unusable origin filter with 400 invalid_origin (AC-A11)", () => {
+      const harness = createHarness({ notes: originNotes() });
+      for (const query of ["origin=file:///x", "origin=42"]) {
+        const response = harness.call(request("GET", `/notes?${query}`));
+        expect(response.status).toBe(400);
+        expect(jsonOf(response).error.code).toBe("invalid_origin");
+      }
+    });
+
+    it("scopes a bulk-delete filter by origin, including the unassigned set (FR-2.2)", () => {
+      const harness = createHarness({ notes: originNotes() });
+      const refused = harness.call(
+        request("POST", "/notes/bulk-delete", { body: { confirm: true, filter: { origin: "file:///x" } } }),
+      );
+      expect(refused.status).toBe(400);
+      expect(jsonOf(refused).error.code).toBe("invalid_origin");
+      expect(harness.saves()).toBe(0);
+
+      const response = harness.call(
+        request("POST", "/notes/bulk-delete", { body: { confirm: true, filter: { origin: null } } }),
+      );
+      expect(response.status).toBe(200);
+      expect(jsonOf(response).removed).toBe(1);
+      expect(harness.state.notes.map((entry) => entry.id).sort()).toEqual(["n1", "n2"]);
+    });
+
+    it("refuses a patch that names origin and leaves the note untouched (AC-A09)", () => {
+      const harness = createHarness({
+        notes: [note("n1", "2026-09-15T09:00:01.000Z", { origin: "https://a.example" })],
+      });
+      const before = harness.state.notes[0];
+      // The refusal is the unknown-field path, not a value check: `origin` is not in PATCH_FIELDS,
+      // and a patch that also carries a valid field must not apply that field either.
+      const response = harness.call(
+        request("PATCH", "/notes/n1", { body: { status: "done", origin: "https://b.example" } }),
+      );
+      expect(response.status).toBe(400);
+      expect(jsonOf(response).error.code).toBe("invalid_payload");
+      expect(jsonOf(response).error.message).toContain("unknown patch field(s) origin");
+      expect(harness.state.notes[0]).toEqual(before);
+      expect(harness.state.notes[0]?.status).toBe("open");
+      expect(harness.saves()).toBe(0);
     });
   });
 
@@ -759,18 +889,31 @@ describe("hub handler — the documented endpoints", () => {
   });
 
   describe("persistence failure", () => {
-    it("answers 500 store_write_failed and rolls the mutation back", () => {
+    it("answers a generic 500, rolls the mutation back and keeps the fs detail on stderr (AC-D10)", () => {
+      // A path is the part SEC-09 is about: Node's fs error names the absolute store path, and the
+      // answer used to echo it. The body must never carry it — the stderr line must.
+      const storePath = "/var/lib/bluepencil/secret/notes.bluepencil.json";
+      const stderr: string[] = [];
+      const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+        stderr.push(String(chunk));
+        return true;
+      });
       const harness = createHarness({
         notes: [note("n1", "2026-09-15T09:00:01.000Z")],
         persist: () => {
-          throw new Error("disk full");
+          throw new Error(`ENOENT: no such file or directory, open '${storePath}'`);
         },
       });
+
       const created = harness.call(request("POST", "/notes", { body: draft({ id: "n2" }) }));
       expect(created.status).toBe(500);
-      expect(jsonOf(created).error.code).toBe("store_write_failed");
-      expect(jsonOf(created).error.message).toContain("disk full");
+      expect(jsonOf(created).error).toEqual({ code: "internal_error", message: "internal error" });
+      expect(created.body).not.toContain(storePath);
+      expect(created.body).not.toContain("ENOENT");
       expect(harness.state.notes.map((entry) => entry.id)).toEqual(["n1"]);
+
+      // The operator still gets the detail — and only the operator.
+      expect(stderr.join("")).toContain(storePath);
 
       const patched = harness.call(request("PATCH", "/notes/n1", { body: { status: "done" } }));
       expect(patched.status).toBe(500);
@@ -781,6 +924,29 @@ describe("hub handler — the documented endpoints", () => {
       );
       expect(removed.status).toBe(500);
       expect(harness.state.notes).toHaveLength(1);
+      spy.mockRestore();
+    });
+
+    it("answers the generic 500 body for any unexpected failure, without a stack or fs text (AC-D10)", () => {
+      const stderr: string[] = [];
+      const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+        stderr.push(String(chunk));
+        return true;
+      });
+      const harness = createHarness();
+      // A broken store makes the read path throw inside the router — the "unexpected failure"
+      // branch, not one of the documented refusals.
+      harness.context.store = {} as NoteStoreState;
+
+      const response = harness.call(request("GET", "/notes"));
+      expect(response.status).toBe(500);
+      expect(JSON.parse(response.body)).toEqual({
+        error: { code: "internal_error", message: "internal error" },
+      });
+      expect(response.body).not.toContain("undefined");
+      expect(response.body).not.toContain("TypeError");
+      expect(stderr.join("")).toContain("internal_error");
+      spy.mockRestore();
     });
   });
 });
@@ -972,9 +1138,19 @@ describe("hub CLI", () => {
       cors: "https://app.example",
       quiet: true,
     });
-    expect(parseServerArgs(["--store", "n.json", "--cors"])).toMatchObject({ cors: "*" });
-    // A wildcard CORS origin keeps the defaults for everything else.
-    expect(parseServerArgs(["--store", "n.json", "--cors=*"])).toMatchObject({ cors: "*" });
+    /* ADR-0.12-S1: a bare `--cors` is a usage error now, not a silent wildcard (SEC-06). */
+    expect(String(parseServerArgs(["--store", "n.json", "--cors"]))).toContain("cors_value_missing");
+    // A wildcard CORS origin keeps the defaults for everything else — but only spelled out and
+    // behind a client credential, which is the ADR-0.12-S1 rule (`--cors=*` is not a shortcut).
+    expect(
+      parseServerArgs([
+        "--store",
+        "n.json",
+        "--cors=*",
+        "--auth-secret",
+        "server-suite-shared-value-1",
+      ]),
+    ).toMatchObject({ cors: "*", port: 8787 });
   });
 
   it("reports usage errors as one line", () => {
@@ -1112,6 +1288,44 @@ describe("hub over HTTP (node:http glue)", () => {
     expect(response.headers["access-control-allow-methods"]).toBe("GET, HEAD, OPTIONS");
   });
 
+  it("answers a static read failure with a generic 500 and the fs detail only on stderr (AC-D10)", async () => {
+    // SEC-09: the static door used to echo `cannot read <absolute path>: EACCES …` — the same class
+    // of leak the glue 500 was fixed for. The body is the documented fixed pair; the path is for the
+    // operator's stderr line and nowhere else.
+    writeFileSync(join(dir, "unreadable.html"), "<h1>deck</h1>", "utf8");
+    const stderr: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+    running = await startServer({
+      storePath: join(dir, "notes.json"),
+      root: dir,
+      port: 0,
+      quiet: true,
+    });
+    fsReadFailure.armed = true;
+    try {
+      const response = await call(running.port, "GET", "/unreadable.html");
+
+      expect(response.status).toBe(500);
+      expect(JSON.parse(response.body)).toEqual({
+        error: { code: "internal_error", message: "internal error" },
+      });
+      expect(response.body).not.toContain(dir);
+      expect(response.body).not.toContain("EACCES");
+      expect(response.body).not.toContain("unreadable.html");
+
+      // The operator still gets the detail — and only the operator.
+      const logged = stderr.join("");
+      expect(logged).toContain("bluepencil server: internal_error:");
+      expect(logged).toContain("/var/lib/bluepencil/secret/public/index.html");
+    } finally {
+      fsReadFailure.armed = false;
+      spy.mockRestore();
+    }
+  });
+
   it("refuses every write over HTTP when started read-only", async () => {
     running = await startServer({
       storePath: join(dir, "notes.json"),
@@ -1129,21 +1343,189 @@ describe("hub over HTTP (node:http glue)", () => {
     expect((JSON.parse(outside.body) as Json).error.code).toBe("not_found");
   });
 
-  it("rejects a request body above the documented limit with 413", async () => {
+  it("aborts a request body above the documented limit (no 413, socket cut)", async () => {
+    // SEC-08: a body whose declared length is over the limit is destroyed, not buffered and not
+    // drained. The client therefore sees a connection error rather than an HTTP answer.
     running = await startServer({ storePath: join(dir, "notes.json"), port: 0, quiet: true });
-    const response = await call(running.port, "POST", `${BASE}/notes`, {
+    const outcome = await call(running.port, "POST", `${BASE}/notes`, {
       type: "text",
       anchor: { hook: "a" },
-      body: "x".repeat(9 * 1024 * 1024),
-    });
-    expect(response.status).toBe(413);
-    expect((JSON.parse(response.body) as Json).error.code).toBe("payload_too_large");
+      body: "x".repeat(MAX_BODY_BYTES + 1),
+    }).then(
+      () => "response",
+      () => "aborted",
+    );
+    expect(outcome).toBe("aborted");
   });
 
   it("refuses to start on a corrupt store file", async () => {
     const storePath = join(dir, "broken.json");
     writeFileSync(storePath, "}{", "utf8");
     await expect(startServer({ storePath, port: 0, quiet: true })).rejects.toThrow(StoreFileError);
+  });
+});
+
+describe("hub glue — auth before body and store (SEC-08, AC-D04)", () => {
+  let dir = "";
+  let running: Awaited<ReturnType<typeof startServer>> | null = null;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "bluepencil-server-auth-body-"));
+  });
+
+  afterEach(async () => {
+    if (running) {
+      await running.close();
+      running = null;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function fullCall(
+    port: number,
+    method: string,
+    path: string,
+    headers: Record<string, string> = {},
+    payload?: unknown,
+  ): Promise<{ status: number; body: string }> {
+    return new Promise((resolvePromise, rejectPromise) => {
+      const body = payload === undefined ? undefined : JSON.stringify(payload);
+      const requestHeaders: Record<string, string> = { ...headers };
+      if (body !== undefined) requestHeaders["content-type"] = "application/json";
+      const client = nodeRequest({ host: DEFAULT_HOST, port, path, method, headers: requestHeaders }, (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () =>
+          resolvePromise({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }),
+        );
+      });
+      client.on("error", rejectPromise);
+      if (body !== undefined) client.write(body);
+      client.end();
+    });
+  }
+
+  /**
+   * Sends the headers and a fragment of a body that the headers announce as large, and then
+   * **never finishes it**. A hub that reads the body before authenticating has to wait for the
+   * missing bytes; one that checks the credential first answers immediately. The timer is the
+   * assertion: "no answer without the body" fails rather than hangs the suite.
+   */
+  function announcedBodyFragment(port: number, declared: number): Promise<{ status: number; body: string }> {
+    return new Promise((resolvePromise, rejectPromise) => {
+      const client = nodeRequest(
+        {
+          host: DEFAULT_HOST,
+          port,
+          path: `${BASE}/notes`,
+          method: "POST",
+          headers: { "content-length": String(declared), "content-type": "application/json" },
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.on("end", () => {
+            clearTimeout(timer);
+            client.destroy();
+            resolvePromise({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") });
+          });
+        },
+      );
+      const timer = setTimeout(() => {
+        client.destroy();
+        rejectPromise(new Error("the hub waited for the announced body instead of refusing first"));
+      }, 5_000);
+      client.on("error", (error) => {
+        clearTimeout(timer);
+        rejectPromise(error);
+      });
+      client.flushHeaders();
+      client.write("{");
+    });
+  }
+
+  /**
+   * Streams more than the inbound limit in one chunked body (no `content-length`) and collects
+   * whatever arrives. The documented behaviour is a destroyed socket, not a drained request and
+   * not a 413 — so an error/close without an HTTP response is the expected outcome.
+   */
+  function streamedOverLimit(port: number): Promise<{ received: string }> {
+    return new Promise((resolvePromise) => {
+      const socket = connect(port, DEFAULT_HOST);
+      let received = "";
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        socket.destroy();
+        resolvePromise({ received });
+      };
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => {
+        received += chunk;
+      });
+      socket.on("error", finish);
+      socket.on("close", finish);
+      socket.on("connect", () => {
+        socket.write(
+          `POST ${BASE}/notes HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+            "Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n",
+        );
+        const payload = Buffer.alloc(MAX_BODY_BYTES + 1, 0x20);
+        socket.write(`${payload.length.toString(16)}\r\n`);
+        socket.write(payload);
+      });
+      timer = setTimeout(finish, 5_000);
+    });
+  }
+
+  it("answers 401 without reading the body or reloading the store (AC-D04)", async () => {
+    const storePath = join(dir, "notes.json");
+    writeFileSync(storePath, JSON.stringify({ notes: [] }), "utf8");
+    running = await startServer({
+      storePath,
+      port: 0,
+      environment: "dev",
+      quiet: false,
+      authSecret: AUTH_VALUE,
+    });
+    const port = running.port;
+
+    // The store-read spy: after start-up the file is made unreadable. Any `loadNotes` from here on
+    // surfaces as the glue's "keeping the last good note set" line, which only the body-reading
+    // path can produce.
+    writeFileSync(storePath, "}{", "utf8");
+    const stderr: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+
+    const refused = await announcedBodyFragment(port, 1_000_000);
+    expect(refused.status).toBe(401);
+    expect((JSON.parse(refused.body) as Json).error.code).toBe("unauthorized");
+    expect(stderr.join("")).not.toContain("keeping the last good note set");
+
+    // Control: with the credential the request does reach the body/store path, so the corruption
+    // is reported. Without this half, the assertion above could hold because the spy never fires.
+    const accepted = await fullCall(port, "GET", `${BASE}/notes`, { "x-bluepencil-auth": AUTH_VALUE });
+    expect(accepted.status).toBe(200);
+    expect(stderr.join("")).toContain("keeping the last good note set");
+    spy.mockRestore();
+  });
+
+  it("destroys the socket for a streamed body above the limit instead of draining it (AC-D04)", async () => {
+    running = await startServer({ storePath: join(dir, "notes.json"), port: 0, quiet: true });
+    const port = running.port;
+
+    const outcome = await streamedOverLimit(port);
+
+    // No response at all: the socket was destroyed at the limit, so there is no 413 to read and no
+    // chance the hub kept consuming the rest of the body.
+    expect(outcome.received).not.toContain("413");
+    expect(outcome.received).not.toContain("payload_too_large");
   });
 });
 
@@ -1288,5 +1670,128 @@ describe("hub handler — the journal's 'who' (FR-18)", () => {
     const quiet = createHarness({ notes: [note("n1", "2026-09-15T09:00:01.000Z")] });
     quiet.call(request("PATCH", "/notes/n1", { body: { status: "done" } }));
     expect(quiet.events()[0]?.actor).toBeUndefined();
+  });
+});
+
+/**
+ * AC-D11 (SEC-10, G1) — the journal's documented exposure.
+ *
+ * `GET {base}/journal` is public on purpose (FR-6.7): an audit trail a reader cannot fetch is not a
+ * trail. These tests pin the *contract* of that answer — the audited note, the actor and the
+ * location/author the requirement names as an accepted risk — without asserting on a credential
+ * value and without gating the route.
+ */
+describe("hub glue — the unauthenticated journal (AC-D11)", () => {
+  let dir = "";
+  let running: Awaited<ReturnType<typeof startServer>> | null = null;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "bluepencil-server-journal-"));
+  });
+
+  afterEach(async () => {
+    if (running) {
+      await running.close();
+      running = null;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** One plain request; no credential header is ever added here. */
+  function call(
+    port: number,
+    method: string,
+    path: string,
+    headers: Record<string, string> = {},
+    payload?: unknown,
+  ): Promise<{ status: number; body: string }> {
+    return new Promise((resolvePromise, rejectPromise) => {
+      const body = payload === undefined ? undefined : JSON.stringify(payload);
+      const client = nodeRequest(
+        {
+          host: DEFAULT_HOST,
+          port,
+          path,
+          method,
+          headers: body === undefined ? headers : { ...headers, "content-type": "application/json" },
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.on("end", () =>
+            resolvePromise({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }),
+          );
+        },
+      );
+      client.on("error", rejectPromise);
+      if (body !== undefined) client.write(body);
+      client.end();
+    });
+  }
+
+  it("names the audited note, the actor and the journal location without a credential", async () => {
+    // No `authSecret`/`tokenKey`: this hub has no gate at all, which is exactly the unauthenticated
+    // case the requirement documents.
+    running = await startServer({
+      storePath: join(dir, "notes.json"),
+      journal: "file",
+      journalDir: dir,
+      port: 0,
+      quiet: true,
+      environment: "dev",
+    });
+
+    const created = await call(
+      running.port,
+      "POST",
+      `${BASE}/notes`,
+      { "x-bluepencil-actor": "dduchrow" },
+      draft({ id: "journal-1" }),
+    );
+    expect(created.status).toBe(200);
+
+    const journal = await call(running.port, "GET", `${BASE}/journal`);
+    expect(journal.status).toBe(200);
+    const body = JSON.parse(journal.body) as Json;
+
+    // `location` is one of the two accepted-risk fields: an unauthenticated reader learns where the
+    // history lives. The file backend has no `author`; the git backend's status does (next test).
+    expect(body.journal.backend).toBe("file");
+    expect(body.journal.location).toBe(join(dir, "journal.jsonl"));
+
+    const entry = (body.entries as Json[]).find((candidate) => candidate.op === "create");
+    expect(entry).toMatchObject({ noteId: "journal-1", actor: "dduchrow" });
+    expect(String(entry?.summary)).toContain("journal-1");
+  });
+
+  it("reports the git journal's author identity without a credential", async () => {
+    // `author` only exists on the `git` backend; the requirement names both fields, so the second
+    // accepted-risk field gets its own observation.
+    const repo = join(dir, "repo");
+    mkdirSync(repo, { recursive: true });
+    const git = (args: string[]): void => {
+      const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+      if (result.status !== 0) throw new Error(`git ${args.join(" ")} → ${result.stderr}`);
+    };
+    git(["init", "-q"]);
+    writeFileSync(join(repo, "notes.json"), '{"notes":[]}\n', "utf8");
+
+    running = await startServer({
+      storePath: join(repo, "notes.json"),
+      journal: "git",
+      journalRepo: repo,
+      journalAuthor: "Journal Bot <journal@example.invalid>",
+      journalCoalesceMs: 0,
+      port: 0,
+      quiet: true,
+      environment: "dev",
+    });
+
+    const journal = await call(running.port, "GET", `${BASE}/journal`);
+    expect(journal.status).toBe(200);
+    const body = JSON.parse(journal.body) as Json;
+    expect(body.journal.backend).toBe("git");
+    expect(body.journal.location).toBe(repo);
+    expect(body.journal.author).toBe("Journal Bot <journal@example.invalid>");
   });
 });

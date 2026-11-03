@@ -15,13 +15,23 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { probeConnection } from "../../extension/src/connection";
+import { insecureEndpointRefusal, probeConnection } from "../../extension/src/connection";
+import { authHeadersFor, configuredCredential, credentialHeaderFor } from "../../extension/src/credential";
+import { insecureSaveRefusal } from "../../extension/src/options";
 
 const BASE = "http://127.0.0.1:8787/api/v1/bluepencil";
 const OPTIONS_SOURCE = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "../../extension/src/options.ts"),
+  "utf8",
+);
+const OPTIONS_HTML = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "../../extension/options.html"),
+  "utf8",
+);
+const CONNECTION_SOURCE = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "../../extension/src/connection.ts"),
   "utf8",
 );
 
@@ -41,6 +51,11 @@ const CONFIG = {
 interface Call {
   url: string;
   init: RequestInit;
+}
+
+/** Waits for the next macrotask, so an `async` handler that has already resolved can finish. */
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 /** A `fetch` whose calls can be inspected, and whose answers are supplied per test. */
@@ -723,5 +738,256 @@ describe("probeConnection", () => {
       expect(OPTIONS_SOURCE).not.toMatch(/\.innerHTML|\.outerHTML|insertAdjacentHTML|document\.write/);
       expect(OPTIONS_SOURCE).toMatch(/status\.textContent\s*=\s*message/);
     });
+  });
+
+  describe("the one credential mapping (FR-15.3, AC-B36)", () => {
+    it("sends exactly the headers authHeadersFor builds, for both modes", async () => {
+      const cases = [
+        { auth: "token" as const, token: "signed-token-abc" },
+        { auth: "secret" as const, token: "shared-secret-xyz" },
+      ];
+      for (const credential of cases) {
+        const { fetchImpl, calls } = stubFetch((url) =>
+          url.endsWith("/config") ? response(200, CONFIG) : response(200, { notes: [] }),
+        );
+        await probeConnection({ endpoint: BASE, credential }, { fetchImpl });
+
+        const sent = headersOf(calls[1]);
+        const expected = authHeadersFor(credential.auth, credential.token);
+        expect(sent[Object.keys(expected)[0] ?? ""], credential.auth).toBe(
+          Object.values(expected)[0],
+        );
+        // No second header path: the probe attaches the mapping and nothing else.
+        expect(Object.keys(sent).filter((name) => name !== "Accept")).toEqual(
+          Object.keys(expected),
+        );
+      }
+    });
+
+    it("sends no credential header at all for none or a blank token", async () => {
+      for (const credential of [
+        { auth: "none" as const, token: "left-over" },
+        { auth: "token" as const, token: "   " },
+      ]) {
+        const { fetchImpl, calls } = stubFetch(() => response(200, CONFIG));
+        await probeConnection({ endpoint: BASE, credential }, { fetchImpl });
+
+        // Nothing configured means `/notes` is not asked at all — not an empty header.
+        expect(calls, `${credential.auth}/${JSON.stringify(credential.token)}`).toHaveLength(1);
+        expect(headersOf(calls[0]).Authorization).toBeUndefined();
+        expect(headersOf(calls[0])["x-bluepencil-auth"]).toBeUndefined();
+      }
+    });
+
+    it("keeps the handoff re-export identical to credential.ts", () => {
+      // B.3a moved the mapping; `handoff.ts` re-exports it for the importers that have not moved
+      // yet (options.ts until B.4). A second copy here would defeat the single mapping.
+      expect(configuredCredential("  a.b.c\n")).toBe("a.b.c");
+      expect(configuredCredential("   ")).toBeNull();
+      expect(credentialHeaderFor("token")).toEqual({ header: "Authorization", scheme: "Bearer" });
+      expect(credentialHeaderFor("secret")).toEqual({ header: "x-bluepencil-auth", scheme: null });
+      expect(credentialHeaderFor("none")).toBeNull();
+    });
+
+    it("imports the mapping from credential.ts and keeps no second table", () => {
+      expect(CONNECTION_SOURCE).toMatch(/from "\.\/credential"/);
+      expect(CONNECTION_SOURCE).not.toMatch(/from "\.\/handoff"/);
+      // The header names live in credential.ts; connection.ts only consumes the built headers.
+      expect(CONNECTION_SOURCE).not.toMatch(/"x-bluepencil-auth"\s*:/);
+      expect(CONNECTION_SOURCE).toMatch(/authHeadersFor\(/);
+    });
+  });
+});
+
+/**
+ * B.8 (SEC-18, ADR-0.12-S2): a configured credential never travels over plain HTTP to anything but
+ * the machine that runs the browser. There is no "insecure" override — the save and the probe both
+ * refuse, and the refusal is the same sentence in both paths.
+ */
+describe("insecureEndpointRefusal (B.8, SEC-18)", () => {
+  it.each([
+    ["http://hub.example/api", "secret"],
+    ["http://hub.example/api/v1/bluepencil", "token"],
+    ["http://192.168.1.10:8787/api", "secret"],
+    ["HTTP://HUB.EXAMPLE/api", "token"],
+  ] as const)("refuses %s with auth:%s", (endpoint, auth) => {
+    const refusal = insecureEndpointRefusal({ endpoint, auth });
+
+    expect(refusal).not.toBeNull();
+    // The message has to name the fix, not just the rule: HTTPS or a loopback hub.
+    expect(refusal).toContain("HTTPS");
+    expect(refusal).toContain("127.0.0.1");
+    expect(refusal).toContain("[::1]");
+    // The message names the origin as the browser parsed it (lower-cased scheme and host).
+    expect(refusal).toContain(new URL(endpoint).origin);
+  });
+
+  it.each([
+    ["http://127.0.0.1:8787/api", "secret"],
+    // 127.0.0.0/8 is the loopback range ADR-0.12-S2 names, not only the .0.1 address.
+    ["http://127.0.0.2:8787/api", "token"],
+    ["http://localhost:8787/api", "secret"],
+    ["http://[::1]:8787", "secret"],
+    ["https://hub.example/api", "secret"],
+    ["https://hub.example/api", "token"],
+    ["http://hub.example/api", "none"],
+    ["https://hub.example/api", "none"],
+  ] as const)("allows %s with auth:%s", (endpoint, auth) => {
+    expect(insecureEndpointRefusal({ endpoint, auth })).toBeNull();
+  });
+
+  it("leaves values it cannot judge to the URL/invalid-origin checks", () => {
+    // These are refused elsewhere (invalid-url / invalid_origin); claiming "insecure endpoint" here
+    // would point the user at the wrong fix.
+    for (const endpoint of [
+      "",
+      "   ",
+      "not a url",
+      "ftp://hub.example/api",
+      "http://hub.example/api?x=1",
+      "http://hub.example/api#top",
+    ]) {
+      expect(insecureEndpointRefusal({ endpoint, auth: "secret" }), endpoint).toBeNull();
+    }
+  });
+
+  it("names the origin but never the userinfo of the URL it refuses", () => {
+    const refusal = insecureEndpointRefusal({
+      endpoint: "http://alice:sup3r-secret@hub.example/api",
+      auth: "secret",
+    });
+
+    expect(refusal).not.toBeNull();
+    expect(refusal).toContain("http://hub.example");
+    expect(refusal).not.toContain("alice");
+    expect(refusal).not.toContain("sup3r-secret");
+  });
+
+  it("is the one rule both the probe and the save use", () => {
+    expect(CONNECTION_SOURCE).toMatch(/export function insecureEndpointRefusal/);
+    // Two call sites in options.ts: the "Test connection" probe and the save wrapper.
+    expect(OPTIONS_SOURCE.match(/insecureEndpointRefusal\(/g) ?? []).toHaveLength(2);
+    expect(OPTIONS_SOURCE).toMatch(/insecureSaveRefusal\(\{ endpoint, auth: settings\.auth \}\)/);
+  });
+});
+
+describe("the save path (B.8, AC-B60)", () => {
+  afterEach(() => {
+    delete (globalThis as unknown as Record<string, unknown>)["chrome"];
+    document.body.innerHTML = "";
+  });
+
+  it("gives the save refusal the named code and carries the rule's message through", () => {
+    const refusal = insecureSaveRefusal({ endpoint: "http://hub.example/api", auth: "secret" });
+
+    expect(refusal).toMatchObject({ ok: false, code: "insecure_endpoint" });
+    expect(refusal?.message).toContain("HTTPS");
+    expect(insecureSaveRefusal({ endpoint: "http://127.0.0.1:8787/api", auth: "secret" })).toBeNull();
+    expect(insecureSaveRefusal({ endpoint: "https://hub.example/api", auth: "token" })).toBeNull();
+    expect(insecureSaveRefusal({ endpoint: "http://hub.example/api", auth: "none" })).toBeNull();
+  });
+
+  /**
+   * The real options page, wired to a stubbed `chrome`, driven through its own form.
+   *
+   * This is the only way the AC's "kein `set`" is an observation rather than an assumption: the
+   * submit listener runs the production `save_`, and the storage seam records whether anything was
+   * written. `chrome` is defined before the import because `wirePage()` runs `load()` immediately.
+   */
+  async function bootOptionsPage(): Promise<{
+    storageReads: number;
+    writes: Record<string, unknown>[];
+    requested: string[];
+    statusText: () => string;
+  }> {
+    document.body.innerHTML = OPTIONS_HTML;
+    // Markup inserted through innerHTML does not execute its scripts; drop them so the page under
+    // test is exactly the form the options module wires.
+    for (const script of Array.from(document.querySelectorAll("script"))) script.remove();
+
+    const writes: Record<string, unknown>[] = [];
+    const requested: string[] = [];
+    let storageReads = 0;
+    (globalThis as unknown as Record<string, unknown>)["chrome"] = {
+      storage: {
+        local: {
+          async get() {
+            storageReads += 1;
+            return {};
+          },
+          async set(items: Record<string, unknown>) {
+            writes.push(items);
+          },
+        },
+      },
+      permissions: {
+        async contains() {
+          return false;
+        },
+        async request({ origins }: { origins: string[] }) {
+          requested.push(...origins);
+          return true;
+        },
+      },
+    };
+
+    vi.resetModules();
+    await import("../../extension/src/options");
+    // `load()` resolves on a later tick; the form must be filled before the test edits it.
+    await flush();
+    await flush();
+
+    return {
+      get storageReads() {
+        return storageReads;
+      },
+      writes,
+      requested,
+      statusText: () => document.getElementById("status")?.textContent ?? "",
+    };
+  }
+
+  it("refuses a cleartext credential at save time and writes nothing", async () => {
+    const page = await bootOptionsPage();
+    expect(page.storageReads, "the page must have been wired before the save").toBeGreaterThan(0);
+
+    const store = document.getElementById("store") as HTMLSelectElement;
+    const endpoint = document.getElementById("endpoint") as HTMLInputElement;
+    const auth = document.getElementById("auth") as HTMLSelectElement;
+    store.value = "http";
+    endpoint.value = "http://hub.example/api";
+    auth.value = "secret";
+    document.getElementById("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+
+    expect(page.writes, "a refused endpoint must not be persisted").toEqual([]);
+    expect(page.requested, "and no permission may be requested for it").toEqual([]);
+    expect(page.statusText()).toContain("http://hub.example");
+    expect(page.statusText()).toContain("HTTPS");
+    expect(document.getElementById("save")!.hasAttribute("disabled")).toBe(false);
+
+    // Positive control: the *same* endpoint with auth "none" is a valid save, so the assertion above
+    // is the credential rule and not a form that never saves.
+    auth.value = "none";
+    document.getElementById("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    await flush();
+
+    expect(page.requested).toEqual(["http://hub.example/*"]);
+    expect(page.writes).toHaveLength(1);
+    expect((page.writes[0]?.["bluepencil:settings"] as { endpoint?: string }).endpoint).toBe(
+      "http://hub.example/api",
+    );
+
+    // A local store sends no credential, so a cleartext URL left in the hidden hub section must not
+    // block an unrelated save — the refusal is about what actually goes over the wire.
+    store.value = "chromeStorage";
+    auth.value = "secret";
+    document.getElementById("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    await flush();
+
+    expect(page.writes).toHaveLength(2);
+    expect(page.requested).toEqual(["http://hub.example/*"]);
   });
 });

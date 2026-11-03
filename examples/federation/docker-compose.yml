@@ -41,9 +41,9 @@
 #
 # `--allow-insecure` is required because the leaves are plain `http` on a private Docker network.
 # It admits http and RFC1918/ULA targets only; link-local (`169.254.0.0/16`, `fe80::/10`) and cloud
-# metadata targets stay blocked. The aggregator's port is published on host loopback only, so the
-# aggregate is not reachable from outside this machine unless you deliberately change that. Do not
-# put the aggregator on a public interface: it has no credential here.
+# metadata targets stay blocked. Every published port — both leaves and the aggregator — is bound to
+# host loopback, so nothing here is reachable from outside this machine unless you deliberately
+# change that. Do not put the aggregator on a public interface: it has no credential here.
 #
 # The federator is deliberately NOT a service. It is the local stdio process an MCP client starts per
 # session (Compose cannot keep it alive without an attached client; without stdin it exits at EOF).
@@ -68,8 +68,18 @@ services:
     image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.10.3}
     container_name: ${BLUEPENCIL_DEV_NAME:-bluepencil-hub-dev}
     restart: unless-stopped
+    # G11 hardening: only /data (named volume) and /tmp are writable, no capabilities are
+    # added, and the process can never gain privileges.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     ports:
-      - "${BLUEPENCIL_DEV_PORT:-8787}:8787"
+      # Host loopback by default (G11): the browser runs on this machine. Widen deliberately.
+      - "127.0.0.1:${BLUEPENCIL_DEV_PORT:-8787}:8787"
     volumes:
       - dev-data:/data
     environment:
@@ -93,8 +103,18 @@ services:
     image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.10.3}
     container_name: ${BLUEPENCIL_STAGING_NAME:-bluepencil-hub-staging}
     restart: unless-stopped
+    # G11 hardening: only /data (named volume) and /tmp are writable, no capabilities are
+    # added, and the process can never gain privileges.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     ports:
-      - "${BLUEPENCIL_STAGING_PORT:-8788}:8787"
+      # Host loopback by default (G11); widen only behind a proxy.
+      - "127.0.0.1:${BLUEPENCIL_STAGING_PORT:-8788}:8787"
     volumes:
       - staging-data:/data
     environment:
@@ -153,6 +173,15 @@ services:
       # `--allow-write` plus `mode: "write"` in the registry, so this is the second lock, not the first.
       - "--read-only"
       - "--allow-insecure"
+    # G11 hardening: only /data (named volume) and /tmp are writable, no capabilities are
+    # added, and the process can never gain privileges.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - "no-new-privileges:true"
     ports:
       # Host loopback only: the aggregate must not be exposed outside this machine.
       - "127.0.0.1:${BLUEPENCIL_AGGREGATOR_PORT:-8790}:8787"

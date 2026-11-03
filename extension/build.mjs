@@ -3,11 +3,13 @@
  *
  * What it assembles, and the one thing that is deliberately *not* assembled:
  *
- * - `sw.js`, `bridge.js`, `options.js` — this package's extension sources, bundled with esbuild.
+ * - `sw.js`, `bridge.js`, `options.js`, `review.js` — this package's extension sources, bundled
+ *   with esbuild. `review.js` bundles the *built* `dist/data.js` (not `src/data`), so the review
+ *   page parses note blobs with exactly the artefact a host gets from `bluepencil/data`.
  * - `bluepencil.element.js` — copied verbatim from the library build. It is NOT re-bundled: the
  *   layer is the same artefact the embed loader ships, so the extension and a page embedding it
  *   run identical code. Re-bundling would let the two drift apart silently.
- * - `manifest.json`, `options.html` — copied as-is.
+ * - `manifest.json`, `options.html`, `review.html` — copied as-is.
  *
  * `dist/build-info.json` records `version` (from manifest.json, the single source of truth),
  * `elementSha256` (the digest `scripts/verify-sync.mjs` checks the library artefact against) and the
@@ -34,6 +36,15 @@ const out = join(here, "dist");
 
 /** The library artefact the extension loads. Produced by `npm run build`. */
 const ELEMENT_BUNDLE = join(root, "dist", "bluepencil.element.iife.js");
+
+/**
+ * The headless data bundle the review page bundles. Also produced by `npm run build`.
+ *
+ * It is a build input, not a copied file: `review.ts` imports it, and esbuild inlines it into
+ * `review.js`. That keeps the review page on the published data surface instead of a second copy
+ * of `src/data` that could drift from `bluepencil/data`.
+ */
+const DATA_BUNDLE = join(root, "dist", "data.js");
 
 async function exists(path) {
   try {
@@ -85,6 +96,11 @@ async function main() {
       `missing ${ELEMENT_BUNDLE} — run \`npm run build\` first; the extension loads the library bundle verbatim`,
     );
   }
+  if (!(await exists(DATA_BUNDLE))) {
+    throw new Error(
+      `missing ${DATA_BUNDLE} — run \`npm run build\` first; the review page bundles the data bundle`,
+    );
+  }
   const version = await resolveVersion();
 
   await rm(out, { recursive: true, force: true });
@@ -95,6 +111,9 @@ async function main() {
       sw: join(here, "src", "sw.ts"),
       bridge: join(here, "src", "bridge.ts"),
       options: join(here, "src", "options.ts"),
+      // The per-origin review page. `review.ts` imports the built `dist/data.js`, which esbuild
+      // inlines here; the page loads exactly one script, from its own origin.
+      review: join(here, "src", "review.ts"),
       // The registered MAIN-world bootstrap. Not a module: it is injected as a classic script into
       // the page's own world, so esbuild bundles it into one self-contained file — it inlines the
       // local `./detect` import — and it must never keep a runtime import or a fetch of its own.
@@ -115,8 +134,10 @@ async function main() {
     logLevel: "warning",
   });
 
-  // The options page is static HTML with a module script, so it is copied, not generated.
+  // The options and review pages are static HTML with module scripts, so they are copied, not
+  // generated.
   await cp(join(here, "options.html"), join(out, "options.html"));
+  await cp(join(here, "review.html"), join(out, "review.html"));
   await cp(join(here, "manifest.json"), join(out, "manifest.json"));
   await cp(ELEMENT_BUNDLE, join(out, "bluepencil.element.iife.js"));
 
@@ -139,7 +160,7 @@ async function main() {
   // A build that produced no files is a broken build; catch it here rather than in a browser.
   const produced = await readdir(out);
   const required = ["manifest.json", "sw.js", "bridge.js", "bootstrap.js", "options.html", "options.js",
-    "detect.js", "bluepencil.element.iife.js", "build-info.js"];
+    "review.html", "review.js", "detect.js", "bluepencil.element.iife.js", "build-info.js"];
   const missing = required.filter((name) => !produced.includes(name));
   if (missing.length > 0) throw new Error(`build did not produce: ${missing.join(", ")}`);
 

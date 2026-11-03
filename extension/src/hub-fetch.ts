@@ -15,8 +15,10 @@
  *     explicitly (defence in depth — the admin credential header is not on the allowlist anyway).
  *   - **Methods:** `GET`, `POST`, `PATCH`. The adapter never sends `DELETE` (`remove()` uses
  *     `POST /notes/bulk-delete`), so the relay does not offer it.
- *   - **Headers:** `accept`, `content-type`, `authorization`, `x-bluepencil-auth`, and nothing else.
- *     An unknown name is an error rather than a silent drop, so a caller learns why.
+ *   - **Headers:** `accept` and `content-type`, and nothing else. The two credential headers are
+ *     **not** forwarded: the page never holds a credential (SEC-14), so `authorization` and
+ *     `x-bluepencil-auth` are refused as `disallowed_header` (AC-B14). The worker attaches the one
+ *     header the configured mode means *after* validation (AC-B13).
  *   - **No ambient credentials:** `credentials: "omit"`, `cache: "no-store"`,
  *     `referrerPolicy: "no-referrer"`. The layer authenticates with a header, never a cookie.
  *   - **No redirects:** `redirect: "manual"`. Following one would carry the credential to an origin
@@ -29,6 +31,9 @@
  * `connection.ts` / `handoff.ts`). Nothing about the note content is inspected here: it is bytes and
  * headers, in and out.
  */
+
+import { authHeadersFor, type CredentialMode } from "./credential";
+import { hubOriginPattern, permissionRefusal, permissionState } from "./permissions";
 
 /** The `kind` a page uses on the bridge channel to ask for a relayed request. */
 export const PAGE_FETCH_KIND = "fetch";
@@ -47,13 +52,13 @@ export type HubFetchMethod = (typeof HUB_FETCH_METHODS)[number];
 /**
  * Forwarded headers, lowercased. `cookie`, `origin` and `referer` are absent on purpose: the page
  * must not be able to smuggle ambient credentials or forge a provenance header through the relay.
+ *
+ * The two credential headers are absent as well (SEC-14, AC-B14): the page has no credential to
+ * send, and a page-supplied `authorization`/`x-bluepencil-auth` is answered with
+ * `disallowed_header` instead of being forwarded. The worker adds the header itself, after this
+ * validation, through {@link authHeadersFor} (AC-B13).
  */
-export const HUB_FETCH_HEADERS = [
-  "accept",
-  "content-type",
-  "authorization",
-  "x-bluepencil-auth",
-] as const;
+export const HUB_FETCH_HEADERS = ["accept", "content-type"] as const;
 
 /** One header value may not exceed this; a header blob is not a payload channel. */
 const MAX_HEADER_VALUE_BYTES = 4 * 1024;
@@ -65,6 +70,7 @@ export type HubFetchErrorCode =
   | "disallowed_method"
   | "disallowed_header"
   | "invalid_request"
+  | "permission_missing"
   | "payload_too_large"
   | "timeout"
   | "network"
@@ -111,9 +117,34 @@ export function hubFetchPolicy(endpoint: string): HubFetchPolicy {
   return { endpoint, ...HUB_FETCH_LIMITS };
 }
 
+/** The credential the worker attaches to a validated request (AC-B13, AC-B36). */
+export interface HubCredential {
+  auth: CredentialMode;
+  token: string;
+}
+
+/**
+ * The worker's optional host grant, as `chrome.permissions.contains` spells it.
+ *
+ * A missing dep is **not** "granted": {@link runHubRequest} treats it as no permission at all, so a
+ * wiring mistake fails closed with `permission_missing` instead of sending a request.
+ */
+export interface HubPermissionCheck {
+  contains(pattern: string): Promise<boolean>;
+}
+
 export interface HubFetchDeps {
   /** Injectable for tests; the worker uses the service worker's global `fetch`. */
   fetchImpl?: typeof fetch;
+  /**
+   * The endpoint as it is configured *now*. The worker passes a closure over the settings it just
+   * read, so an endpoint changed in the options page takes effect on the next request.
+   */
+  endpoint?: () => string;
+  /** `chrome.permissions.contains`; absent means "cannot be granted" (fail-closed). */
+  permissions?: HubPermissionCheck;
+  /** The credential to attach; absent means the request carries none. */
+  credential?: () => HubCredential;
 }
 
 function fail(code: HubFetchErrorCode, message: string): { ok: false; error: HubFetchError } {
@@ -122,6 +153,13 @@ function fail(code: HubFetchErrorCode, message: string): { ok: false; error: Hub
   // written plainly. See `scripts/lib/webstore-rules.mjs`.
   return { ok: false, error: { code, message } };
 }
+
+/**
+ * The fail-closed default for a caller that did not inject a permission check. "No check" must never
+ * mean "allowed": a worker whose wiring is broken would otherwise send the credential to an origin
+ * the user never granted.
+ */
+const NO_PERMISSION: HubPermissionCheck = { contains: async () => false };
 
 /** Build a refusal reply for a caller that already knows why it is refusing (used by the worker). */
 export function refuse(code: HubFetchErrorCode, message: string): HubFetchReply {
@@ -334,17 +372,44 @@ export async function runHubRequest(
   ) {
     return fail("invalid_request", "the relay request was not validated before it was performed");
   }
+  // The optional host grant is checked between validation and `fetch` (AC-B20). The editor asks for
+  // exactly the hub origin, and a request to an origin that was never granted is refused here —
+  // nothing is sent, and the message names the origin the user has to allow.
+  const endpoint = (deps.endpoint ?? (() => policy.endpoint))();
+  const pattern = hubOriginPattern(endpoint);
+  const permission = pattern === null
+    ? permissionRefusal(endpoint, "unknown")
+    : permissionRefusal(
+        endpoint,
+        permissionState({
+          contains: await (deps.permissions ?? NO_PERMISSION).contains(pattern),
+          pattern,
+          deniedPatterns: [],
+        }),
+      );
+  if (permission !== null) {
+    return { ok: false, error: permission };
+  }
+
   const fetchImpl = deps.fetchImpl ?? (globalThis as { fetch?: typeof fetch }).fetch;
   if (typeof fetchImpl !== "function") {
     return fail("network", "this runtime has no fetch()");
   }
+
+  // The one credential header, attached by the worker after validation (AC-B13). `authHeadersFor`
+  // is the single header table, so the relay cannot drift from the connection probe.
+  const credential = deps.credential?.();
+  const requestHeaders =
+    credential === undefined
+      ? request.headers
+      : { ...request.headers, ...authHeadersFor(credential.auth, credential.token) };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), policy.timeoutMs);
   try {
     const init: RequestInit = {
       method: request.method,
-      headers: request.headers,
+      headers: requestHeaders,
       credentials: "omit",
       cache: "no-store",
       redirect: "manual",

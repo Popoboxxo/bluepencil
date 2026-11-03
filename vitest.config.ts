@@ -27,5 +27,16 @@ export default defineConfig({
     // default). That is the safer default and this suite passes with it: nothing here asserts on a
     // call an earlier test recorded.
     globals: false,
+    // Coverage is informational (AC-F09): there is no threshold, no CI gate and no per-file
+    // budget. It stays off for plain `npm test` so the gate keeps its runtime; opt in with
+    // `npm run test:coverage` (`vitest run --coverage`), which flips `enabled` on the CLI.
+    // `json-summary` writes coverage/coverage-summary.json (gitignored) so a run can be read
+    // without scraping the text table.
+    coverage: {
+      enabled: false,
+      provider: "v8",
+      reporter: ["text", "json-summary"],
+      reportsDirectory: "coverage",
+    },
   },
 });

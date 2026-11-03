@@ -9,8 +9,10 @@
 #     until its operator reads a manual is not "running in Docker", it is broken. So if no credential
 #     was handed in, one is generated — and kept in the data volume, because a restart that changes
 #     the secret silently invalidates every client that already saved it.
-#   - **One line to copy.** The first start prints the address and the credential, which is the whole
-#     setup: paste it into the extension (or an MCP client) and the notes are shared.
+#   - **The credential stays out of the logs.** `docker logs` is kept, shipped and pasted into
+#     tickets, so a secret printed there outlives the container. The first start therefore names the
+#     file and the one command that reads it; `BLUEPENCIL_SHOW_SECRET_ONCE=1` opts into the old
+#     copy-paste line for a single start (SEC-12/G12).
 #
 # Everything can be overridden with environment variables (see docs/DOCKER.md); extra arguments are
 # passed straight to the hub, e.g. `docker run … bluepencil --read-only`.
@@ -32,6 +34,9 @@ PORT="${BLUEPENCIL_PORT:-8787}"
 BASE="${BLUEPENCIL_BASE:-/api/v1/bluepencil}"
 NAME="${BLUEPENCIL_NAME:-$(hostname)}"
 SECRET_FILE="${BLUEPENCIL_SECRET_FILE:-/data/.bluepencil-auth}"
+# Opt-in for the one-time secret echo (SEC-12). Anything but `1` keeps the default: the value is
+# never written to stdout, so it cannot end up in the container log that `docker logs` reproduces.
+SHOW_SECRET_ONCE="${BLUEPENCIL_SHOW_SECRET_ONCE:-}"
 # Where the bundle lives inside the image. Overridable so this script can be exercised outside a
 # container — one line, and it makes the credential logic testable without a Docker daemon.
 SERVER_JS="${BLUEPENCIL_SERVER_JS:-/app/server.js}"
@@ -80,8 +85,9 @@ fi
 echo "bluepencil hub \"${NAME}\" — store ${STORE}"
 echo "  address:    http://<host>:${PORT}${BASE}"
 echo "  mcp:        POST http://<host>:${PORT}${BASE}/mcp   (tools/list, tools/call, …)"
-# Name every accepted credential. The token key is never printed; a generated secret is printed
-# exactly once (it has to be pasted into a client), an existing one only by its source.
+# Name every accepted credential. The token key is never printed; the shared secret is identified by
+# its source. A freshly generated value is *not* echoed: the default prints the path plus the one
+# command that reads it back, and `BLUEPENCIL_SHOW_SECRET_ONCE=1` restores the single echo (SEC-12).
 if [ -n "${BLUEPENCIL_TOKEN_KEY:-}" ]; then
   echo "  credential: token (Authorization: Bearer …) — mint one with: bluepencil token --device <name>"
 fi
@@ -89,10 +95,17 @@ if [ -n "${BLUEPENCIL_AUTH_SECRET:-}" ]; then
   case "${secret_source}" in
     generated)
       echo "  credential: shared secret (x-bluepencil-auth) — generated now and kept in ${SECRET_FILE} (0600)"
-      echo "  header:     x-bluepencil-auth: ${BLUEPENCIL_AUTH_SECRET}   (shown once — copy it now)"
+      if [ "${SHOW_SECRET_ONCE}" = "1" ]; then
+        echo "  header:     x-bluepencil-auth: ${BLUEPENCIL_AUTH_SECRET}   (opt-in once — BLUEPENCIL_SHOW_SECRET_ONCE=1)"
+      else
+        echo "  retrieve:   docker exec <container> cat ${SECRET_FILE}"
+        echo "  note:       not printed, so it stays out of \`docker logs\`; rerun with"
+        echo "              BLUEPENCIL_SHOW_SECRET_ONCE=1 to echo it once instead"
+      fi
       ;;
     file)
       echo "  credential: shared secret (from ${SECRET_FILE}) — sent as x-bluepencil-auth; set BLUEPENCIL_AUTH_SECRET to override"
+      echo "  retrieve:   docker exec <container> cat ${SECRET_FILE}"
       ;;
     environment)
       echo "  credential: shared secret (from BLUEPENCIL_AUTH_SECRET) — sent as x-bluepencil-auth"

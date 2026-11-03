@@ -22,7 +22,7 @@
  */
 
 import type { Environment, Note, NoteFilter } from "../core/model";
-import { compareForReview } from "../data/order";
+import { compareCodeUnits, compareForReview } from "../data/order";
 import { FederationError, type FederationErrorCode } from "./errors";
 import { formatQualifiedId, SELF_INSTANCE } from "./ids";
 
@@ -394,8 +394,8 @@ export async function aggregateList(
   qualified.sort(
     (a, b) =>
       compareForReview(a, b) ||
-      compareText(a.instance, b.instance) ||
-      compareText(a.id, b.id),
+      compareCodeUnits(a.instance, b.instance) ||
+      compareCodeUnits(a.id, b.id),
   );
 
   const failed = outcomes.length - succeeded;
@@ -407,14 +407,6 @@ export async function aggregateList(
     truncated: qualified.length > limit,
     errors,
   };
-}
-
-/** Code-unit comparison for the deterministic instance/id tie-break (no locale). */
-function compareText(a: string, b: string): number {
-  if (a < b) {
-    return -1;
-  }
-  return a > b ? 1 : 0;
 }
 
 /** Health row for one outcome; `count` counts the raw notes, before the global limit. */

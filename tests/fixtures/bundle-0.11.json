@@ -1,0 +1,152 @@
+{
+  "kind": "bluepencil.bundle",
+  "schemaVersion": 1,
+  "exportedAt": "2026-10-28T09:15:00.000Z",
+  "exportedBy": "daniel@dev",
+  "environment": "dev",
+  "app": {
+    "name": "acme-dashboard",
+    "buildRef": "9f3c1a2"
+  },
+  "sessions": [
+    {
+      "ref": "s-1",
+      "label": "Checkout review",
+      "createdAt": "2026-10-28T08:40:00.000Z"
+    },
+    {
+      "ref": "s-2",
+      "label": "Design pass",
+      "createdAt": "2026-10-28T09:02:00.000Z"
+    }
+  ],
+  "notes": [
+    {
+      "id": "n-8f2a1c",
+      "schemaVersion": 1,
+      "createdAt": "2026-10-28T08:42:00.000Z",
+      "updatedAt": "2026-10-28T08:47:00.000Z",
+      "sessionRef": "s-1",
+      "type": "bug",
+      "severity": "blocker",
+      "intent": "implement",
+      "status": "open",
+      "body": "The apply button overlaps the total on a 1280px viewport.",
+      "author": "daniel",
+      "authorType": "human",
+      "anchor": {
+        "hook": "checkout-apply",
+        "selector": "html > body:nth-of-type(1) > main:nth-of-type(1) > button:nth-of-type(2)",
+        "quote": "Apply discount",
+        "route": "/checkout"
+      },
+      "context": {
+        "tag": "button",
+        "classes": ["button", "button--primary"],
+        "styles": {
+          "position": "absolute",
+          "z-index": "10"
+        },
+        "box": { "w": 168, "h": 40, "x": 1024, "y": 612 },
+        "scheme": "light",
+        "viewport": { "w": 1280, "h": 800 }
+      },
+      "messages": [
+        {
+          "id": "m-1",
+          "ts": "2026-10-28T08:45:00.000Z",
+          "author": "daniel",
+          "authorType": "human",
+          "kind": "note",
+          "text": "Only on the wide breakpoint; narrow viewports are fine."
+        }
+      ],
+      "source": "ui:human",
+      "environment": "dev"
+    },
+    {
+      "id": "n-2b7d4e",
+      "schemaVersion": 1,
+      "createdAt": "2026-10-28T08:51:00.000Z",
+      "updatedAt": "2026-10-28T08:51:00.000Z",
+      "sessionRef": "s-1",
+      "type": "text",
+      "intent": "implement",
+      "status": "done",
+      "body": "Call the total \"Order total\" so it matches the invoice.",
+      "author": "daniel",
+      "authorType": "human",
+      "anchor": {
+        "hook": "checkout-total-label",
+        "quote": "Total",
+        "route": "/checkout"
+      },
+      "context": null,
+      "messages": [],
+      "source": "ui:human",
+      "environment": "dev"
+    },
+    {
+      "id": "n-5c9f03",
+      "schemaVersion": 1,
+      "createdAt": "2026-10-28T09:04:00.000Z",
+      "updatedAt": "2026-10-28T09:06:00.000Z",
+      "sessionRef": "s-2",
+      "type": "design",
+      "intent": "feedback",
+      "status": "open",
+      "body": "The pricing table reads better with the annual column first.",
+      "author": "mira",
+      "authorType": "human",
+      "anchor": {
+        "selector": "html > body:nth-of-type(1) > section:nth-of-type(3)",
+        "quote": "Monthly",
+        "route": "/pricing"
+      },
+      "context": {
+        "tag": "section",
+        "classes": ["pricing"],
+        "styles": {
+          "display": "grid",
+          "grid-template-columns": "repeat(3, 1fr)"
+        },
+        "box": { "w": 1200, "h": 520, "x": 40, "y": 240 },
+        "scheme": "light",
+        "viewport": { "w": 1280, "h": 800 }
+      },
+      "messages": [
+        {
+          "id": "m-2",
+          "ts": "2026-10-28T09:06:00.000Z",
+          "author": "mira",
+          "authorType": "human",
+          "kind": "feedback",
+          "text": "Swapping the columns keeps the yearly plan in the first scan position."
+        }
+      ],
+      "source": "ui:human",
+      "environment": "dev"
+    },
+    {
+      "id": "n-a0d617",
+      "schemaVersion": 1,
+      "createdAt": "2026-10-28T09:11:00.000Z",
+      "updatedAt": "2026-10-28T09:11:00.000Z",
+      "type": "feature",
+      "priority": "high",
+      "intent": "implement",
+      "status": "needs_decision",
+      "body": "Add a per-project daily digest for open review notes.",
+      "author": "daniel",
+      "authorType": "human",
+      "anchor": {
+        "hook": "settings-notifications",
+        "route": "/settings"
+      },
+      "context": null,
+      "messages": [],
+      "source": "ui:human",
+      "environment": "dev"
+    }
+  ]
+}

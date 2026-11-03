@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { BluepencilValidationError, createNote } from "../../src/core/model";
-import type { Environment, Message, Note, NoteDraft, NoteIntent, NoteSeverity, NoteStatus, NoteType } from "../../src/core/model";
+import type { Environment, Message, Note, NoteDraft, NoteIntent, NoteOrigin, NoteSeverity, NoteStatus, NoteType } from "../../src/core/model";
 import { mergeNotes } from "../../src/data/index";
 
 const T = "2026-09-14T18:20:00.000Z";
@@ -29,6 +29,7 @@ interface NoteInput {
   severity?: NoteSeverity;
   body?: string;
   environment?: Environment;
+  origin?: NoteOrigin;
   sessionRef?: string;
   messages?: Message[];
   now?: string;
@@ -45,6 +46,7 @@ function makeNote(input: NoteInput): Note {
     intent: input.intent,
     severity: input.severity,
     environment: input.environment,
+    origin: input.origin,
     sessionRef: input.sessionRef,
     messages: input.messages,
   };
@@ -342,5 +344,68 @@ describe("severity in the merge (FR-3.6)", () => {
     expect(result.conflicts).toHaveLength(1);
     expect(at(result.conflicts, 0).reason).toContain("severity");
     expect(at(result.notes, 0).severity).toBeUndefined();
+  });
+});
+
+/* FR-14.3 (AC-A08): the origin is identity, not content. A note keeps the origin it was assigned;
+   an incoming origin only fills an empty slot, and two different assigned origins are a
+   divergence that names `origin` in the conflict reason. */
+describe("origin in the merge (FR-14.3)", () => {
+  const A = "https://a.example";
+  const B = "https://b.example";
+
+  it("keeps the assigned origin on keep-existing and names origin as diverging (AC-A08)", () => {
+    const existing = [makeNote({ id: "n-1", origin: A })];
+    const incoming = [makeNote({ id: "n-1", origin: B })];
+
+    const result = mergeNotes(existing, incoming, { mode: "upsert", onConflict: "keep-existing" });
+    expect(result).toMatchObject({ added: 0, updated: 0, skipped: 1, removed: 0 });
+    expect(result.conflicts).toHaveLength(1);
+
+    const conflict = at(result.conflicts, 0);
+    expect(conflict.id).toBe("n-1");
+    expect(conflict.reason).toContain("origin");
+
+    expect(at(result.notes, 0).origin).toBe(A);
+    expect(at(existing, 0).origin).toBe(A);
+  });
+
+  it("fills the origin of an unassigned note on keep-incoming (AC-A08)", () => {
+    const existing = [makeNote({ id: "n-1" })];
+    expect(at(existing, 0).origin).toBeNull();
+    const incoming = [makeNote({ id: "n-1", origin: A })];
+
+    const result = mergeNotes(existing, incoming, { mode: "upsert", onConflict: "keep-incoming" });
+    expect(result).toMatchObject({ added: 0, updated: 1, skipped: 0 });
+    expect(result.conflicts).toHaveLength(1);
+    expect(at(result.notes, 0).origin).toBe(A);
+    expect(at(existing, 0).origin).toBeNull();
+  });
+
+  it("never lets keep-incoming reassign an origin, however much content changes", () => {
+    const existing = [makeNote({ id: "n-1", origin: A, body: "original" })];
+    const incoming = [makeNote({ id: "n-1", origin: B, body: "rewritten", now: LATER })];
+
+    const result = mergeNotes(existing, incoming, { mode: "upsert", onConflict: "keep-incoming" });
+    expect(result).toMatchObject({ added: 0, updated: 1, skipped: 0 });
+    const merged = at(result.notes, 0);
+    expect(merged.body).toBe("rewritten");
+    expect(merged.origin).toBe(A);
+
+    // The incoming origin is still different, so the conflict keeps being reported; the note
+    // itself is already merged, hence skipped.
+    const second = mergeNotes(result.notes, incoming, { mode: "upsert", onConflict: "keep-incoming" });
+    expect(second).toMatchObject({ added: 0, updated: 0, skipped: 1 });
+    expect(at(second.notes, 0).origin).toBe(A);
+  });
+
+  it("reports an origin clash in merge mode without touching the note", () => {
+    const existing = [makeNote({ id: "n-1", origin: A })];
+    const incoming = [makeNote({ id: "n-1", origin: B })];
+
+    const result = mergeNotes(existing, incoming);
+    expect(result).toMatchObject({ added: 0, updated: 0, skipped: 1 });
+    expect(at(result.conflicts, 0).reason).toContain("origin");
+    expect(at(result.notes, 0).origin).toBe(A);
   });
 });

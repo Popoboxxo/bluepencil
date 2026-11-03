@@ -26,11 +26,11 @@ import { en, type MessageKey, type Messages } from "./en";
 export type { MessageKey, Messages };
 
 /** Languages shipped with the library. */
-export const LANGUAGES = ["en", "de"] as const;
+const LANGUAGES = ["en", "de"] as const;
 export type Language = (typeof LANGUAGES)[number];
 
 /** English is the default and the fallback for anything unknown. */
-export const DEFAULT_LANGUAGE: Language = "en";
+const DEFAULT_LANGUAGE: Language = "en";
 
 /** Complete language tables, keyed by language. */
 export const messages: Record<Language, Messages> = { en, de };
@@ -56,12 +56,12 @@ export function normalizeLanguage(input?: string | null): Language {
 }
 
 /** True when `value` is a known message key (guards hand-written attributes). */
-export function isMessageKey(value: unknown): value is MessageKey {
+function isMessageKey(value: unknown): value is MessageKey {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(en, value);
 }
 
 /** Replace `{name}` placeholders; unknown placeholders are left untouched on purpose. */
-export function interpolate(template: string, vars?: Vars): string {
+function interpolate(template: string, vars?: Vars): string {
   if (!vars) return template;
   return template.replace(/\{(\w+)\}/g, (match, name: string) => {
     if (!Object.prototype.hasOwnProperty.call(vars, name)) return match;

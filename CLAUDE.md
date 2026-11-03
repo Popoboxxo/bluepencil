@@ -3,7 +3,7 @@
 > Projektbeschreibung für Claude-Agenten. Diese Datei ist die **einzige Quelle**
 > für projektspezifischen Kontext — Agenten lesen sie, statt eigenen Kontext zu haben.
 >
-> Generiert von agent-meta v1.2.0-beta.2 — `2026-09-13`
+> Generiert von agent-meta v2.0.0-beta.6 — `2026-10-31`
 >
 > **Längenempfehlung:** 200–500 Zeilen optimal. Über 500 Zeilen → Detailwissen in
 > `docs/ARCHITECTURE.md`, `docs/API.md` o.ä. auslagern und manuell verlinken.
@@ -34,18 +34,32 @@ Hier kannst du eigene, projektspezifische Notizen eintragen. Dieser Bereich wird
 **Verzeichnisstruktur:**
 ```
 src/
-  core/       # model, store, anchor, capture, protocol, export/ (UI-unabhaengig, DOM nur in anchor/capture)
-  data/       # HEADLESS: schema, validate, canonical, bundle, merge, migrate (kein DOM)
+  core/       # model, store, anchor, capture, protocol, adapter, export/{markdown,json} (UI-unabhaengig)
+  data/       # HEADLESS: schema (inkl. Validierung), bundle, canonical, merge, migrate, order (kein DOM)
   cli/        # bluepencil inspect|validate|merge|export|import
-  adapters/   # memory, local-storage, file, http
-  ui/         # layer, composer, panel, legend, styles.css
+  adapters/   # memory, local-storage, chrome-storage, file, http + transport.ts (registerHttpTransport-Seam)
+  ui/         # layer, composer, panel, legend, modes, present, voice, keymap, styles.ts
   i18n/       # en, de
-  mcp/        # MCP-Server (thin wrapper ueber src/data)
+  element/    # <bluepencil-notes> custom element
+  embed/      # attach.js one-tag loader (attributes, version)
+  federation/ # federator: aggregate, backend, registry, client, net-policy
+  mcp/        # MCP server (server, tools, protocol, stdio, backend, options)
   index.ts    # oeffentliche API: init(), mount(), enable(), disable(), destroy()
-server/       # Referenz-Server (Sidecar-Modus)
-examples/     # vanilla, react, home-assistant, round-trip
-tests/        # unit (vitest), e2e (Playwright)
-docs/         # CONCEPT, REQUIREMENTS, ARCHITECTURE, PROTOCOL, INTEGRATION
+server/       # Referenz-Hub (HTTP + MCP door) und Federator
+              # credentials.ts (credentialMode/acceptedCredentials), cors.ts (preflightResponse),
+              # presence.ts (in-memory Presence), admin*.ts (admin surface), tokens/mint/registry/journal
+extension/    # MV3-Chromium-Extension
+  src/        # sw.ts, bridge.ts, connection.ts (Test-connection-Probe), handoff.ts, hub-fetch.ts,
+              # page-relay.ts, storage-relay.ts, bootstrap.ts, detect.ts, options.ts, settings.ts
+examples/     # vanilla, attach, parity, presentation, round-trip, voice, federation
+scripts/      # build.mjs, dev.mjs, size-guard.mjs, verify-sync.mjs, check-version-bump.mjs, *-smoke.mjs
+tests/        # unit (vitest), e2e (dependency-freier CDP-Harness, kein Playwright)
+spec/         # GENERIERTE reqmd-Spec aus docs/REQUIREMENTS.md (nicht handeditieren)
+docs/         # CONCEPT, REQUIREMENTS, ARCHITECTURE, PROTOCOL, RELEASING, DOCKER, EMBED, EXTENSION, ...
+  plans/      # Feature-Plaene (spec-plan-workflow); archive/ fuer abgeschlossene Plaene
+  specs/      # Feature-Spezifikationen (spec-plan-workflow)
+  spikes/     # Zeitbox-Erkundungen (spec-plan-workflow, Namensmuster *-spike.md)
+docker/       # entrypoint.sh + bin wrappers; Dockerfile + docker-compose.yml im Root
 
 ```
 
@@ -60,13 +74,21 @@ docs/         # CONCEPT, REQUIREMENTS, ARCHITECTURE, PROTOCOL, INTEGRATION
 - Nutzertexte immer als Text rendern, nie als HTML (FR-9.3)
 - Keine Netzwerkaufrufe ausser zum host-konfigurierten Adapter (FR-9.4, NFR-7)
 - Kanonische, stabile Serialisierung fuer diffbare Bundles (NFR-17)
+- Transport-Seam ist additiv: registerHttpTransport() ergaenzt, ersetzt aber nie den Default-fetch (src/adapters/http.ts)
+- Extension-Hub-Zugriff nur page -> bridge -> service worker; CSP connect-src braucht diese Ausnahme,
+  Reichweite strikt Endpoint-Origin+Base, Methoden GET/POST/PATCH, Header-Allowlist, {base}/admin nie
+- Credential-Paritaet: shared secret UND signed tokens sind gleichzeitig akzeptiert (server/credentials.ts);
+  /config und /health bleiben credential-frei, Notiz-Routen nie
+- Presence ist in-memory, max. 1 Update/Minute, nie persistiert und nie mit Secret
+- OPTIONS-Preflight kommt aus genau einer Implementierung (server/cors.ts preflightResponse)
+- Bundle-Budget ist knapp: IIFE 44.2/45 kB, Element 47.0/48 kB (min+gzip) - Feature-Zuwachs explizit begruenden
 
 
 ## Code-Konventionen
 
 - TypeScript strict, ESM, keine Default-Exports im Kern
 - Dateinamen snake_case-frei: kebab-case fuer Dateien, camelCase fuer Symbole
-- Oeffentliche Typen in src/core/model.ts, alles andere importiert von dort
+- Public **data-model** types live in `src/core/model.ts`; adapter, layer and store interfaces/options stay in their own modules (`core/adapter.ts`, `ui/layer.ts`, `core/store.ts`, `adapters/transport.ts`) — deliberate exceptions, not drift
 - Tests neben der Sache: tests/unit/<modul>.test.ts
 - Dokumentation und Code-Kommentare auf Englisch (externe Doku), Kommunikation auf Deutsch
 
@@ -96,6 +118,7 @@ Kategorien für `docs/REQUIREMENTS.md`:
 - UI, Filter & A11y (FR-4.x, FR-11.x)
 - Adapter, Export & Bundles (FR-6.x, FR-7.x, FR-14.x)
 - Headless/CLI/MCP (FR-13.x, FR-15.x, FR-16.x)
+- Hub-Betrieb, Auth & Extension-Relay (FR-6.7, FR-6.10-6.16, FR-10.4, CSP connect-src)
 
 
 
@@ -107,7 +130,7 @@ Kategorien für `docs/REQUIREMENTS.md`:
 
 > **AI ROUTING:** Claude -> CLAUDE.md | Opencode -> AGENTS.md
 
-Generiert von agent-meta v1.2.0-beta.2 — `2026-09-13`
+Generiert von agent-meta v2.0.0-beta.6 — `2026-10-31`
 DoD-Preset: **standard** | REQ-Traceability: false | Tests: true | Codebase-Overview: false | Security-Audit: false
 > **Einstiegspunkt:** Starte mit dem `orchestrator`-Agenten für alle Entwicklungsaufgaben — Ausnahmen siehe Abschnitt »Orchestrator — Universal Router«.
 <!-- agent-meta:managed-end -->

@@ -7,12 +7,20 @@
  *
  *   <script type="module" src="/bluepencil.element.min.js"></script>
  *   <bluepencil-notes adapter="localStorage" language="de" theme-accent="#8c3b2e"></bluepencil-notes>
- *   <bluepencil-notes endpoint="/api/v1/bluepencil" token="…" environment="dev"></bluepencil-notes>
+ *   <bluepencil-notes endpoint="/api/v1/bluepencil" environment="dev"></bluepencil-notes>
  *
  * Attributes (single source of truth: `src/embed/attributes.ts`): enabled, adapter, endpoint,
- *   headers, headers-from, token, token-header, token-scheme, language, identity, session,
- *   environment, show-done, theme, theme-accent, theme-surface, route, route-from, gate, mount,
- *   modes, voice, voice-engine.
+ *   headers, headers-from, language, identity, session, environment, show-done, theme,
+ *   theme-accent, theme-surface, route, route-from, query-allow, query-deny, gate, mount, modes.
+ *
+ * Credentials are worker-only in 0.12.0 (G6, ADR-0.12-S3): `token`, `token-header` and
+ * `token-scheme` are not part of the vocabulary any more. A host that still passes them gets an
+ * `issues` entry (and a `bp-error` event) instead of a silent unauthenticated request; the element
+ * never reads them into config and never writes a credential into the DOM.
+ *
+ * `route` defaults to the path-only mode when absent; `route="url-with-query"` is the explicit
+ * opt-in and `query-allow`/`query-deny` filter it (G8, ADR-0.12-S5). The element reads the
+ * vocabulary and forwards it to the same `routeFor` policy the loader uses — one implementation.
  * Events:  bp-enabled, bp-disabled, bp-notes-changed, bp-export, bp-error
  * API:     blueprint, issues, exportNotes(), destroy()
  *
@@ -39,13 +47,10 @@ import {
   readRoute,
   readStore,
   readTheme,
-  readVoice,
-  readVoiceEngine,
   resolveGlobalPath,
   type GlobalResolver,
 } from "../embed/attributes";
 import { createBlueprint, type Blueprint, type BlueprintConfig } from "../index";
-import { resolveVoiceEngine } from "../ui/voice";
 import { VERSION } from "../version";
 
 const OBSERVED = ALL_ATTRIBUTES;
@@ -224,8 +229,6 @@ export class BluepencilNotesElement extends HTMLElement {
     const docking = readDock(this);
     const modes = readModes(this);
     const appInfo = readAppInfo(this);
-    const voice = readVoice(this);
-    const voiceEngine = readVoiceEngine(this, resolve);
     this.#collect([
       ...headers.issues,
       ...theme.issues,
@@ -238,14 +241,7 @@ export class BluepencilNotesElement extends HTMLElement {
       ...keyboard.issues,
       ...docking.issues,
       ...modes.issues,
-      ...voice.issues,
-      ...voiceEngine.issues,
     ]);
-    // FR-21.2: an explicit `voice` the platform cannot honour is never silent — the host sees it in
-    // `element.issues` (and as a `bp-error`) instead of a mic button that does nothing.
-    if (voice.voice === true && resolveVoiceEngine(globalScope(), voiceEngine.voiceEngine) === null) {
-      this.#collect(["voice is enabled but this browser has no SpeechRecognition"]);
-    }
 
     const mountAttr = readAttribute(this, "mount");
     const root = this.getRootNode() as Document | ShadowRoot;
@@ -277,8 +273,6 @@ export class BluepencilNotesElement extends HTMLElement {
       ...(keyboard.keymap === undefined ? {} : { keymap: keyboard.keymap }),
       ...(docking.dock === undefined ? {} : { dock: docking.dock }),
       ...(modes.modes === undefined ? {} : { modes: modes.modes }),
-      ...(voice.voice === undefined ? {} : { voice: voice.voice }),
-      ...(voiceEngine.voiceEngine === undefined ? {} : { voiceEngine: voiceEngine.voiceEngine }),
       ...(appInfo.app === undefined ? {} : { app: appInfo.app }),
       ...(appInfo.app?.buildRef === undefined ? {} : { buildRef: appInfo.app.buildRef }),
       ...(appInfo.exportedBy === undefined ? {} : { exportedBy: appInfo.exportedBy }),

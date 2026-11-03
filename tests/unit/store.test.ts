@@ -6,7 +6,7 @@
  * the adapters that need host configuration), failure propagation with an injected failing adapter,
  * and the state changes behind reply/setStatus/setIntent.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Adapter, AdapterLike } from "../../src/core/adapter";
 import {
   BluepencilValidationError,
@@ -18,6 +18,10 @@ import {
 import { createStore, registerAdapter } from "../../src/core/store";
 import { createMemoryAdapter } from "../../src/adapters/memory";
 import { createFileAdapter, type FileAdapterIo } from "../../src/adapters/file";
+import {
+  createChromeStorageAdapter,
+  type ChromeStorageArea,
+} from "../../src/adapters/chrome-storage";
 
 function draft(overrides: Partial<NoteDraft> = {}): NoteDraft {
   return {
@@ -410,5 +414,53 @@ describe("store/model integration", () => {
     expect(note.authorType).toBe("human");
     expect(note.source).toBe("ui:human");
     expect(note.messages).toEqual([]);
+  });
+});
+
+/**
+ * Store half of AC-C11 (RVW-16): an opaque origin has no storage bucket.
+ *
+ * A `file:` page (or a sandboxed frame) reports `origin === "null"`; there is no per-origin key to
+ * derive, and inventing a shared bucket would merge unrelated pages. The chromeStorage adapter
+ * therefore degrades to memory and never touches `chrome.storage.local`. This block observes that
+ * contract through the **store**, not just the adapter (which is covered in chrome-storage.test.ts):
+ * the note is created and survives in the session, while the storage area sees no call at all.
+ */
+describe("store — opaque origin has no persistent bucket (AC-C11)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("degrades to memory on a file: page and never touches chrome.storage", async () => {
+    // `storageKeyForLocation` normalises the opaque scheme to `null` — no bucket, not a fallback.
+    vi.stubGlobal("location", { origin: "file:///tmp/x" });
+    const touched: string[] = [];
+    const area: ChromeStorageArea = {
+      async get(keys) {
+        touched.push(...(typeof keys === "string" ? [keys] : keys));
+        return {};
+      },
+      async set(items) {
+        touched.push(...Object.keys(items));
+      },
+      async remove(keys) {
+        touched.push(...(typeof keys === "string" ? [keys] : keys));
+      },
+    };
+    const onFallback = vi.fn();
+    const store = createStore({ adapter: createChromeStorageAdapter({ area, onFallback }) });
+
+    const note = await store.create(draft({ body: "memory only" }));
+
+    // The session keeps working: the note is visible and readable in memory …
+    expect(note.body).toBe("memory only");
+    expect(store.notes()).toHaveLength(1);
+    expect((await store.get(note.id))?.body).toBe("memory only");
+    expect(await store.list()).toHaveLength(1);
+    // … the degradation is reported once …
+    expect(onFallback).toHaveBeenCalledTimes(1);
+    expect(onFallback).toHaveBeenCalledWith({ code: "opaque_origin" });
+    // … and no bucket was read or written.
+    expect(touched).toEqual([]);
   });
 });

@@ -32,9 +32,13 @@ import { fileURLToPath } from "node:url";
 
 import { Browser, findChrome, requireBrowser } from "../scripts/lib/browser.mjs";
 import { selectWorker } from "./probe.mjs";
+import { buildTestGrant, TEST_GRANT_HOST_PERMISSIONS } from "./test-manifest.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const extDist = join(here, "dist");
+/** The only directory this suite may load: the test grant, never the production `dist` (B.7.4). */
+const extDist = join(here, "dist-test");
+/** The production build. Read for the "differs in host_permissions only" check, never loaded. */
+const prodDist = join(here, "dist");
 const HOST_PORT = 9431;
 
 /** The Authorization header the options page's connection probe sent to the fixture API (#105). */
@@ -281,15 +285,14 @@ async function checkArtefacts() {
   ok("manifest is MV3", manifest.manifest_version === 3);
   ok("asks for activeTab", (manifest.permissions ?? []).includes("activeTab"),
     `permissions=${JSON.stringify(manifest.permissions)}`);
-  // Host access is granted up front, deliberately: without it the extension can only inject after
-  // a click, which is the right *product* behaviour but makes the real round trip untestable in a
-  // headless browser (measured: "Extension manifest must request permission to access this host").
-  // The scope is http and https only. `file:///*` was dropped deliberately: it buys nothing a web
-  // user needs, and it is the permission a store reviewer objects to first. Still no <all_urls>.
+  // Host access is granted up front in the *test grant*, deliberately: without it the extension can
+  // only inject after a click, which is the right *product* behaviour but makes the real round trip
+  // untestable in a headless browser (measured: "Extension manifest must request permission to access
+  // this host"). The production manifest must not carry it (B.3b makes it optional) — that is what
+  // makes this a second build rather than the shipped one.
   const hosts = manifest.host_permissions ?? [];
-  const ALLOWED_HOSTS = new Set(["http://*/*", "https://*/*"]);
-  ok("host access is narrow and explicit",
-    hosts.length > 0 && hosts.every((h) => ALLOWED_HOSTS.has(h)) && !hosts.includes("<all_urls>"),
+  ok("the test grant carries exactly the documented host patterns",
+    JSON.stringify(hosts) === JSON.stringify(TEST_GRANT_HOST_PERMISSIONS),
     `host_permissions=${JSON.stringify(hosts)}`);
   ok("no unrelated permissions are requested",
     (manifest.permissions ?? []).every((p) =>
@@ -299,15 +302,50 @@ async function checkArtefacts() {
   ok("extension pages allow no remote code",
     csp.includes("script-src 'self'") && !/https?:/.test(csp), `csp=${csp}`);
 
+  // AC-B49 (build half): `dist-test` is a copy of `dist` with one field replaced — not a second
+  // manifest that can drift. Compare everything except the grant, canonicalised by key so bookkeeping
+  // order cannot turn an identical manifest into a red check.
+  const canonical = (value) =>
+    JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))));
+  let production = null;
+  try {
+    production = JSON.parse(await readFile(join(prodDist, "manifest.json"), "utf8"));
+  } catch {
+    /* reported below: a missing production manifest means the build is incomplete */
+  }
+  const { host_permissions: _granted, ...testRest } = manifest;
+  const { host_permissions: _productionHosts, ...productionRest } = production ?? {};
+  ok("the test grant differs from the production manifest in host_permissions only",
+    production !== null && canonical(testRest) === canonical(productionRest),
+    `production=${canonical(productionRest)} dist-test=${canonical(testRest)}`);
+
+  // The host guard (B.3b, AC-B18/AC-B56(b)): read from the **production** build, never from the
+  // loaded `dist-test` — the grant this suite needs is exactly what the shipped manifest must not
+  // carry. A missing production file is a named FAIL, not a skip and not a fallback to `src`.
+  ok("the production manifest declares no host_permissions",
+    production !== null && (production.host_permissions ?? []).length === 0,
+    `host_permissions=${JSON.stringify(production?.host_permissions ?? null)}`);
+  ok("the production manifest declares exactly the optional http/https patterns",
+    JSON.stringify(production?.optional_host_permissions ?? []) ===
+      JSON.stringify(["http://*/*", "https://*/*"]),
+    `optional_host_permissions=${JSON.stringify(production?.optional_host_permissions ?? null)}`);
+  ok("the production manifest requests no <all_urls>",
+    ![...(production?.host_permissions ?? []), ...(production?.optional_host_permissions ?? [])]
+      .includes("<all_urls>"),
+    JSON.stringify(production?.optional_host_permissions ?? null));
   const sw = await readFile(join(extDist, "sw.js"), "utf8");
   const bootstrap = await readFile(join(extDist, "bootstrap.js"), "utf8");
   ok("worker injects in the MAIN world", /world:\s*"MAIN"/.test(sw));
-  // The element code reaches the page bundled inside the registered MAIN-world script — the only
+  // The element code reaches the page bundled inside the injected MAIN-world script — the only
   // channel measured to survive a strict page CSP. A page may not import a chrome-extension:// URL
   // ("Failed to fetch dynamically imported module") and may not evaluate source text ("'unsafe-eval'
   // is not an allowed source of script"), so neither may appear in either file.
-  ok("the element code is bundled into the registered MAIN-world script",
-    /registerContentScripts/.test(sw) && /bluepencil-notes/.test(bootstrap));
+  //
+  // No persistent-registration expectation (B.4): the registration API is removed in B.3b and its
+  // absence is asserted against the source there. This suite pins what the injected bundle must
+  // contain, not which API delivered it.
+  ok("the element code is bundled into the injected MAIN-world script",
+    /bluepencil-notes/.test(bootstrap));
   ok("neither file evaluates or imports anything at runtime",
     !/new Function/.test(bootstrap) && !/\beval\s*\(/.test(bootstrap) &&
       !/import\s*\(/.test(bootstrap) && !/new Function/.test(sw));
@@ -857,10 +895,12 @@ function freePort() {
 /**
  * Start the BUILT reference hub as a child process and wait until its health endpoint answers.
  *
- * `--cors "*"` is not optional: the fixture page lives on a *different loopback port*, so every
- * request from the layer to the hub is cross-origin and the browser refuses to expose a response
- * without the header. `--journal none` keeps the smoke out of the work tree's git history, exactly
- * like the embed smoke. The caller must `stop()` it — the hub holds the store file open.
+ * CORS is not optional: the fixture page lives on a *different loopback port*, so every request
+ * from the layer to the hub is cross-origin and the browser refuses to expose a response without
+ * the header. It names the fixture origin explicitly instead of `"*"`: since ADR-0.12-S1 the
+ * wildcard needs a client credential, and this hub runs without one on purpose (the smoke proves
+ * the credential-free path). `--journal none` keeps the smoke out of the work tree's git history,
+ * exactly like the embed smoke. The caller must `stop()` it — the hub holds the store file open.
  */
 async function startHub(dir) {
   const port = await freePort();
@@ -871,7 +911,7 @@ async function startHub(dir) {
       "--store", join(dir, "notes.json"),
       "--host", "127.0.0.1",
       "--port", String(port),
-      "--cors", "*",
+      "--cors", `http://127.0.0.1:${HOST_PORT}`,
       "--journal", "none",
       "--quiet",
     ],
@@ -1174,9 +1214,10 @@ async function checkInBrowser() {
     //     than in something page-local.
     const sentinel = JSON.parse(await browser.evaluate(`(async () => {
       const origin = location.origin;
-      // The layer's own namespace (bluepencil:<instance>:v1): the bridge refuses a page write to
-      // anything else, so a sentinel outside it would prove the wrong thing (#116 / CR-116-01).
-      const key = 'bluepencil:smoke:v1';
+      // The one key the bridge derives from this page's origin (B.1, per-origin storage). Anything
+      // else — including the pre-0.12 shared blob — is refused as foreign_key before the storage call,
+      // so a sentinel outside it would prove the wrong thing (#116 / CR-116-01).
+      const key = 'bluepencil:v2:' + origin;
       const replies = new Map();
       const onReply = (event) => {
         const data = event.data;
@@ -1307,9 +1348,9 @@ async function checkInBrowser() {
     // The other half of the sentinel round trip in step 3b: the page cannot see this object, so a
     // value here is what makes that check mean "it was persisted", not "it was echoed back".
     const persisted = JSON.parse(await browser.evaluate(`(async () => {
-      // The layer's own namespace (bluepencil:<instance>:v1): the bridge refuses a page write to
-      // anything else, so a sentinel outside it would prove the wrong thing (#116 / CR-116-01).
-      const key = 'bluepencil:smoke:v1';
+      // The same per-origin key the page wrote (B.1). In the worker, location.origin is the
+      // extension itself, so the fixture origin is spelled out.
+      const key = 'bluepencil:v2:http://127.0.0.1:${HOST_PORT}';
       const stored = await chrome.storage.local.get(key);
       await chrome.storage.local.remove(key);
       return JSON.stringify({ value: stored[key] ?? null });
@@ -2417,6 +2458,9 @@ async function checkExtended(browser) {
 }
 
 try {
+  // Build the test grant first: `extDist` points at `dist-test`, so every artefact check below reads
+  // the loaded build. A missing `extension/dist/manifest.json` is a named error (AC-B49), not a skip.
+  buildTestGrant();
   await checkArtefacts();
   // Runs before (and independently of) the browser checks: it needs no Chrome, so a regression in
   // the retry bookkeeping is caught even on a machine with no usable browser.
@@ -2441,6 +2485,10 @@ try {
     } else {
       console.log(`SKIP ${reason}`);
     }
+  } else if (error?.name === "MissingExtensionBuildError" || error?.name === "TestGrantError") {
+    // The named build failure (AC-B49): one FAIL line that names the missing file and the command.
+    failed += 1;
+    console.log(`FAIL ${error.name}: ${error.message}`);
   } else {
     failed += 1;
     console.log(`FAIL unexpected — ${error?.stack ?? error}`);

@@ -20,13 +20,20 @@
 # of them fails at the worst moment. `.dockerignore` keeps node_modules, dist and the release output
 # out of it.
 
-FROM node:22-alpine AS build
+# Both stages pin the base image by *tag and digest* (SEC-25): the tag keeps the file readable, the
+# digest makes the pull reproducible. A moving `node:22-alpine` re-resolves on every build, so an
+# upstream push would change the toolchain that compiles `dist/` without a diff in this repository.
+# `.github/dependabot.yml` watches `package-ecosystem: docker` and proposes the digest bump, so the
+# pin ages by review instead of by surprise. The digest is the multi-arch index digest
+# (`docker buildx imagetools inspect node:22-alpine`), not a single-platform manifest, so
+# `--platform` still works.
+FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS build
 WORKDIR /app
 COPY . .
 RUN npm ci
 RUN npm run build
 
-FROM node:22-alpine
+FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 WORKDIR /app
 
 # The image ships the two bundles, the entrypoint and the two bin wrappers, nothing else.

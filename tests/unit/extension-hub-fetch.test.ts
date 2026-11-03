@@ -20,13 +20,23 @@ import {
   replyToResponse,
   runHubRequest,
   validateHubRequest,
+  type HubFetchDeps,
   type HubFetchPolicy,
   type HubFetchRequest,
   type HubFetchReply,
+  type HubPermissionCheck,
 } from "../../extension/src/hub-fetch";
 
 const BASE = "http://127.0.0.1:8787/api/v1/bluepencil";
 const POLICY = hubFetchPolicy(BASE);
+
+/** The optional host grant, as the worker resolves it for a granted origin. */
+const GRANTED: HubPermissionCheck = { contains: async () => true };
+
+/** `runHubRequest` deps with the host grant in place; the check is fail-closed without it. */
+function deps(overrides: Partial<HubFetchDeps> = {}): HubFetchDeps {
+  return { permissions: GRANTED, ...overrides };
+}
 
 interface Call {
   url: string;
@@ -202,27 +212,29 @@ describe("hub relay — method allowlist", () => {
  * ---------------------------------------------------------------------------------------------- */
 
 describe("hub relay — header allowlist", () => {
-  it("forwards only the allowlisted headers, lowercased", () => {
-    expect([...HUB_FETCH_HEADERS]).toEqual([
-      "accept",
-      "content-type",
-      "authorization",
-      "x-bluepencil-auth",
-    ]);
+  it("forwards only the page-safe headers, lowercased", () => {
+    // No credential names: the worker attaches the one the configured mode means (AC-B13).
+    expect([...HUB_FETCH_HEADERS]).toEqual(["accept", "content-type"]);
     const accepted = request({
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        Authorization: "Bearer t",
-        "X-Bluepencil-Auth": "s",
-      },
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
     });
     expect(accepted.headers).toEqual({
       accept: "application/json",
       "content-type": "application/json",
-      authorization: "Bearer t",
-      "x-bluepencil-auth": "s",
     });
+  });
+
+  it("refuses a page-supplied credential header, in any spelling (AC-B14)", () => {
+    for (const name of [
+      "authorization",
+      "Authorization",
+      "x-bluepencil-auth",
+      "X-Bluepencil-Auth",
+    ]) {
+      expect(
+        refusal({ method: "GET", url: `${BASE}/notes`, headers: { [name]: "Bearer page-supplied" } }),
+      ).toMatchObject({ code: "disallowed_header" });
+    }
   });
 
   it("rejects cookie, origin, referer and x-bluepencil-admin", () => {
@@ -292,14 +304,14 @@ describe("hub relay — budgets", () => {
     const { fetchImpl, calls } = stubFetch(
       () => new Response("[]", { headers: { "content-length": "99999999" } }),
     );
-    const reply = await runHubRequest(request(), { ...POLICY, maxResponseBodyBytes: 64 }, { fetchImpl });
+    const reply = await runHubRequest(request(), { ...POLICY, maxResponseBodyBytes: 64 }, { fetchImpl, permissions: GRANTED });
     expect(reply).toMatchObject({ ok: false, error: { code: "payload_too_large" } });
     expect(calls).toHaveLength(1);
   });
 
   it("rejects an oversized response body when no length was declared", async () => {
     const { fetchImpl } = stubFetch(() => new Response("x".repeat(200)));
-    const reply = await runHubRequest(request(), { ...POLICY, maxResponseBodyBytes: 64 }, { fetchImpl });
+    const reply = await runHubRequest(request(), { ...POLICY, maxResponseBodyBytes: 64 }, { fetchImpl, permissions: GRANTED });
     expect(reply).toMatchObject({ ok: false, error: { code: "payload_too_large" } });
   });
 
@@ -322,11 +334,11 @@ describe("hub relay — transport", () => {
       request({
         method: "POST",
         url: `${BASE}/notes`,
-        headers: { "content-type": "application/json", "x-bluepencil-auth": "secret-value" },
+        headers: { accept: "application/json", "content-type": "application/json" },
         body: '{"body":"hi"}',
       }),
       POLICY,
-      { fetchImpl },
+      deps({ fetchImpl }),
     );
 
     expect(reply).toMatchObject({ ok: true, status: 201, body: '{"notes":[]}' });
@@ -341,8 +353,8 @@ describe("hub relay — transport", () => {
       referrerPolicy: "no-referrer",
     });
     expect(call?.init.headers).toEqual({
+      accept: "application/json",
       "content-type": "application/json",
-      "x-bluepencil-auth": "secret-value",
     });
   });
 
@@ -357,7 +369,7 @@ describe("hub relay — transport", () => {
           });
         }),
     );
-    const reply = await runHubRequest(request(), { ...POLICY, timeoutMs: 10 }, { fetchImpl });
+    const reply = await runHubRequest(request(), { ...POLICY, timeoutMs: 10 }, { fetchImpl, permissions: GRANTED });
     expect(reply).toMatchObject({ ok: false, error: { code: "timeout" } });
   });
 
@@ -365,7 +377,7 @@ describe("hub relay — transport", () => {
     const { fetchImpl, calls } = stubFetch(
       () => new Response(null, { status: 302, headers: { location: "https://evil.example/" } }),
     );
-    const reply = await runHubRequest(request(), POLICY, { fetchImpl });
+    const reply = await runHubRequest(request(), POLICY, { fetchImpl, permissions: GRANTED });
     expect(reply).toMatchObject({ ok: false, error: { code: "redirect_not_allowed" } });
     expect(calls).toHaveLength(1);
   });
@@ -373,7 +385,7 @@ describe("hub relay — transport", () => {
   it("rejects an opaque redirect as well", async () => {
     const opaque = { status: 0, type: "opaqueredirect", headers: new Headers(), statusText: "" } as Response;
     const { fetchImpl } = stubFetch(() => opaque);
-    const reply = await runHubRequest(request(), POLICY, { fetchImpl });
+    const reply = await runHubRequest(request(), POLICY, { fetchImpl, permissions: GRANTED });
     expect(reply).toMatchObject({ ok: false, error: { code: "redirect_not_allowed" } });
   });
 
@@ -382,7 +394,7 @@ describe("hub relay — transport", () => {
       const { fetchImpl } = stubFetch(
         () => new Response(JSON.stringify({ ok: false }), { status, statusText: String(status) }),
       );
-      const reply = await runHubRequest(request(), POLICY, { fetchImpl });
+      const reply = await runHubRequest(request(), POLICY, { fetchImpl, permissions: GRANTED });
       expect(reply).toMatchObject({ ok: true, status, body: '{"ok":false}' });
     }
   });
@@ -392,7 +404,7 @@ describe("hub relay — transport", () => {
     const reply = await runHubRequest(
       { method: "GET" } as unknown as HubFetchRequest,
       POLICY,
-      { fetchImpl },
+      deps({ fetchImpl }),
     );
     expect(reply).toMatchObject({ ok: false, error: { code: "invalid_request" } });
     expect(calls).toHaveLength(0);
@@ -402,7 +414,7 @@ describe("hub relay — transport", () => {
     const { fetchImpl } = stubFetch(() => {
       throw new TypeError("fetch failed");
     });
-    const reply = await runHubRequest(request(), POLICY, { fetchImpl });
+    const reply = await runHubRequest(request(), POLICY, { fetchImpl, permissions: GRANTED });
     expect(reply).toMatchObject({ ok: false, error: { code: "network" } });
     expect(reply.ok).toBe(false);
   });
@@ -413,14 +425,99 @@ describe("hub relay — transport", () => {
       throw new TypeError(`failed: http://127.0.0.1:8787/api/v1/bluepencil/notes?token=${credentialValue} (${credentialValue})`);
     });
     const reply = await runHubRequest(
-      request({ headers: { authorization: `Bearer ${credentialValue}` }, url: `${BASE}/notes?token=${credentialValue}` }),
+      request({ headers: { accept: "application/json" }, url: `${BASE}/notes?token=${credentialValue}` }),
       POLICY,
-      { fetchImpl },
+      deps({ fetchImpl }),
     );
     const serialised = JSON.stringify(reply);
     // Only the error *name* is relayed; neither the message nor the request echo may carry a value.
     expect(serialised).not.toContain(credentialValue);
     expect(reply).toMatchObject({ ok: false, error: { code: "network" } });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * The credential is the worker's: attached after validation, never page-supplied (AC-B13, AC-B36)
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("hub relay — the worker attaches the credential", () => {
+  it("sends x-bluepencil-auth for a shared secret", async () => {
+    const { fetchImpl, calls } = stubFetch(() => new Response("{}"));
+    const reply = await runHubRequest(
+      request({ headers: { accept: "application/json" } }),
+      POLICY,
+      deps({ fetchImpl, credential: () => ({ auth: "secret", token: "s3cret" }) }),
+    );
+
+    expect(reply.ok).toBe(true);
+    expect(calls[0]?.init.headers).toEqual({
+      accept: "application/json",
+      "x-bluepencil-auth": "s3cret",
+    });
+  });
+
+  it("sends Authorization: Bearer for a signed token", async () => {
+    const { fetchImpl, calls } = stubFetch(() => new Response("{}"));
+    await runHubRequest(
+      request(),
+      POLICY,
+      deps({ fetchImpl, credential: () => ({ auth: "token", token: "a.b.c" }) }),
+    );
+    // Canonical spelling; `fetch` matches header names case-insensitively.
+    expect(calls[0]?.init.headers).toEqual({ Authorization: "Bearer a.b.c" });
+  });
+
+  it("adds no header for auth none or a whitespace-only token", async () => {
+    for (const credential of [
+      { auth: "none" as const, token: "left-over" },
+      { auth: "token" as const, token: "   " },
+    ]) {
+      const { fetchImpl, calls } = stubFetch(() => new Response("{}"));
+      await runHubRequest(request(), POLICY, deps({ fetchImpl, credential: () => credential }));
+      expect(calls[0]?.init.headers).toEqual({});
+    }
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * The optional host grant, checked between validation and fetch (AC-B20)
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("hub relay — the permission gate", () => {
+  it("checks the pattern hubOriginPattern derives from the configured endpoint", async () => {
+    const patterns: string[] = [];
+    await runHubRequest(request(), POLICY, {
+      fetchImpl: (async () => new Response("{}")) as typeof fetch,
+      endpoint: () => BASE,
+      permissions: {
+        contains: async (pattern) => {
+          patterns.push(pattern);
+          return true;
+        },
+      },
+    });
+    expect(patterns).toEqual(["http://127.0.0.1/*"]);
+  });
+
+  it("refuses with permission_missing and never calls fetch", async () => {
+    const { fetchImpl, calls } = stubFetch(() => new Response("{}"));
+    const reply = await runHubRequest(
+      request(),
+      POLICY,
+      deps({ fetchImpl, endpoint: () => BASE, permissions: { contains: async () => false } }),
+    );
+
+    expect(reply).toMatchObject({ ok: false, error: { code: "permission_missing" } });
+    // The message names the origin the user has to grant.
+    expect(reply.ok === false ? reply.error.message : "").toContain("http://127.0.0.1/*");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("fails closed when no permission check was injected at all", async () => {
+    const { fetchImpl, calls } = stubFetch(() => new Response("{}"));
+    const reply = await runHubRequest(request(), POLICY, { fetchImpl });
+    expect(reply).toMatchObject({ ok: false, error: { code: "permission_missing" } });
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -468,9 +565,11 @@ describe("hub relay — page protocol", () => {
   });
 
   it("returns a HubFetchReply the bridge can post back verbatim", async () => {
-    const reply: HubFetchReply = await runHubRequest(request(), POLICY, {
-      fetchImpl: (async () => new Response("{}")) as typeof fetch,
-    });
+    const reply: HubFetchReply = await runHubRequest(
+      request(),
+      POLICY,
+      deps({ fetchImpl: (async () => new Response("{}")) as typeof fetch }),
+    );
     expect(reply.ok).toBe(true);
   });
 });

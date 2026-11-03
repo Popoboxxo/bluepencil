@@ -105,7 +105,7 @@ export interface PanelFilters {
   priority: NotePriority | "none" | "all";
 }
 
-export const DEFAULT_FILTERS: PanelFilters = {
+const DEFAULT_FILTERS: PanelFilters = {
   type: "all",
   intent: "all",
   status: "all",

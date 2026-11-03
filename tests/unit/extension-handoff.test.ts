@@ -12,19 +12,22 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { elementAttributesFor } from "../../extension/src/handoff";
-import { DEFAULT_SETTINGS, normalizeSettings } from "../../extension/src/settings";
+import {
+  elementAttributesFor,
+  pageSettingsFor,
+  type ExtensionAttributeSource,
+} from "../../extension/src/handoff";
+import { planMount } from "../../extension/src/mount-plan";
+import { DEFAULT_SETTINGS, normalizeSettings, type ExtensionSettings } from "../../extension/src/settings";
 
-const base = {
+const base: ExtensionAttributeSource = {
   ...DEFAULT_SETTINGS,
-  environment: "dev" as const,
+  environment: "dev",
   appName: "",
-  language: "en" as const,
-  identity: "prompt" as const,
-  store: "chromeStorage" as const,
+  language: "en",
+  identity: "prompt",
+  store: "chromeStorage",
   endpoint: "",
-  auth: "none" as const,
-  token: "",
 };
 
 describe("elementAttributesFor", () => {
@@ -55,6 +58,21 @@ describe("elementAttributesFor", () => {
     expect(elementAttributesFor(base, "en").route).toBe("url");
   });
 
+  it("writes the path-only route and never the query opt-in (AC-C04)", () => {
+    // Every store mode, including the hub: the route sentence does not depend on where notes go.
+    for (const store of ["chromeStorage", "localStorage", "http"] as const) {
+      const attributes = elementAttributesFor(
+        { ...base, store, endpoint: store === "http" ? "http://127.0.0.1:8787/api" : "" },
+        "en",
+      );
+      expect(attributes.route).toBe("url");
+      expect(attributes.route).not.toBe("url-with-query");
+      // No implicit opt-in: without `query-allow` the element cannot keep a query parameter.
+      expect(attributes["query-allow"]).toBeUndefined();
+      expect(attributes["query-deny"]).toBeUndefined();
+    }
+  });
+
   it("selects the HTTP adapter by its endpoint, never by an adapter name alone", () => {
     const attributes = elementAttributesFor(
       { ...base, store: "http", endpoint: "http://127.0.0.1:8787/api/v1/bluepencil" },
@@ -65,57 +83,69 @@ describe("elementAttributesFor", () => {
     expect(attributes.adapter).toBeUndefined();
   });
 
-  it("sends each credential under the header its mode means", () => {
-    const shared = elementAttributesFor(
-      { ...base, store: "http", endpoint: "http://x.test", auth: "secret", token: "s3cret" },
-      "en",
-    );
-    expect(shared.token).toBe("s3cret");
-    expect(shared["token-header"]).toBe("x-bluepencil-auth");
-    expect(shared["token-scheme"]).toBeUndefined();
+  it("writes no token attribute at all, whatever credential the settings hold (AC-B15, AC-B36)", () => {
+    // The page never sees a credential: the worker attaches the header per relayed request. Every
+    // mode/token combination therefore has to leave the element's attribute set free of `token*`
+    // and of `auth` — there is no value a page script could read back.
+    for (const auth of ["none", "secret", "token"] as const) {
+      for (const token of ["", "s3cret", "  a.b.c\n", "   "]) {
+        const settings: ExtensionSettings = {
+          ...DEFAULT_SETTINGS,
+          store: "http",
+          endpoint: "http://x.test",
+          auth,
+          token,
+        };
+        const attributes = elementAttributesFor(settings, "en");
+        expect(Object.keys(attributes).filter((name) => name.startsWith("token"))).toEqual([]);
+        expect(attributes.auth).toBeUndefined();
+        // What the element does need is still there: the endpoint selects the HTTP adapter.
+        expect(attributes.endpoint).toBe("http://x.test");
+      }
+    }
+  });
+});
 
-    const signed = elementAttributesFor(
-      { ...base, store: "http", endpoint: "http://x.test", auth: "token", token: "a.b.c" },
-      "en",
-    );
-    expect(signed.token).toBe("a.b.c");
-    expect(signed["token-header"]).toBe("authorization");
-    expect(signed["token-scheme"]).toBe("Bearer");
+describe("pageSettingsFor — the credential never crosses into the page (AC-B15)", () => {
+  const settings: ExtensionSettings = {
+    ...DEFAULT_SETTINGS,
+    environment: "staging",
+    appName: "ReqogniLoom",
+    store: "http",
+    endpoint: "http://127.0.0.1:8787/api/v1/bluepencil",
+    auth: "token",
+    token: "a.b.c",
+    tokenExpiresAt: "2030-01-01T00:00:00.000Z",
+    deviceName: "reviewer-laptop",
+  };
+
+  it("strips token, tokenExpiresAt and deviceName at runtime", () => {
+    const page = pageSettingsFor(settings);
+    expect("token" in page).toBe(false);
+    expect("tokenExpiresAt" in page).toBe(false);
+    expect("deviceName" in page).toBe(false);
+    expect(JSON.stringify(page)).not.toContain("a.b.c");
+    expect(JSON.stringify(page)).not.toContain("reviewer-laptop");
   });
 
-  it("writes no credential at all when the hub has none", () => {
-    const attributes = elementAttributesFor(
-      { ...base, store: "http", endpoint: "http://x.test", auth: "none", token: "" },
-      "en",
-    );
-    expect(attributes.token).toBeUndefined();
-    expect(attributes["token-header"]).toBeUndefined();
+  it("keeps every page-facing field", () => {
+    expect(pageSettingsFor(settings)).toEqual({
+      environment: "staging",
+      appName: "ReqogniLoom",
+      language: "auto",
+      identity: "prompt",
+      store: "http",
+      endpoint: "http://127.0.0.1:8787/api/v1/bluepencil",
+      auth: "token",
+      mountAlongsideHost: false,
+    });
   });
 
-  it("lets the none mode win over a stale token, exactly as the probe does", () => {
-    const attributes = elementAttributesFor(
-      { ...base, store: "http", endpoint: "http://x.test", auth: "none", token: "left-over" },
-      "en",
-    );
-    expect(attributes.token).toBeUndefined();
-    expect(attributes["token-header"]).toBeUndefined();
-  });
-
-  it("trims a pasted credential and treats whitespace-only as not configured", () => {
-    const trimmed = elementAttributesFor(
-      { ...base, store: "http", endpoint: "http://x.test", auth: "token", token: "  a.b.c\n" },
-      "en",
-    );
-    expect(trimmed.token).toBe("a.b.c");
-    expect(trimmed["token-header"]).toBe("authorization");
-
-    const blank = elementAttributesFor(
-      { ...base, store: "http", endpoint: "http://x.test", auth: "token", token: "   " },
-      "en",
-    );
-    expect(blank.token).toBeUndefined();
-    expect(blank["token-header"]).toBeUndefined();
-    expect(blank["token-scheme"]).toBeUndefined();
+  it("leaves no credential in __bluepencilConfig__", () => {
+    const plan = planMount({ settings, tabUrl: "https://a.example/x", force: false });
+    expect(JSON.stringify(plan.config)).not.toContain("a.b.c");
+    expect(plan.config.settings).not.toHaveProperty("token");
+    expect(plan.config.settings).not.toHaveProperty("tokenExpiresAt");
   });
 });
 

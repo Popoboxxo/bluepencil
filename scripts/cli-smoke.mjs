@@ -40,6 +40,9 @@ function note(id, body, status, environment, extra = {}) {
     schemaVersion: 1,
     createdAt: ISO,
     updatedAt: ISO,
+    // Canonical key position (after `updatedAt`, before `sessionRef`) and always emitted, so a
+    // fixture note and the canonical note the CLI writes are byte-comparable (FR-2.2, NFR-17).
+    origin: null,
     type: "text",
     intent: "implement",
     status,

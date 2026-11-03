@@ -11,15 +11,15 @@
  * (`options.ts`), and this module is unit-tested with an injected `fetch`. It never writes storage,
  * never reads a token from storage, and never puts the credential into a message, a result field or
  * a log. The only place the credential appears is the request header — the same header the layer's
- * HTTP adapter would send (`credentialHeaderFor` in `handoff.ts`): `Authorization: Bearer <token>`
- * for a signed token, `x-bluepencil-auth: <secret>` for a shared secret.
+ * HTTP adapter would send, built by `authHeadersFor` in `credential.ts`: `Authorization: Bearer
+ * <token>` for a signed token, `x-bluepencil-auth: <secret>` for a shared secret.
  *
  * The credential check on `GET /notes` is **status-only**: it cancels the response body instead of
  * buffering it. `/notes` answers with the whole note corpus and the hub applies no limit, so reading
  * the body would let a large or slow corpus exhaust the budget and turn an accepted credential into
  * a "timed out" message — the misdiagnosis #105 exists to remove.
  */
-import { configuredCredential, credentialHeaderFor } from "./handoff";
+import { authHeadersFor, configuredCredential, type CredentialMode } from "./credential";
 
 /** The credential mode and value the options page would hand to the layer. */
 export interface ConnectionCredential {
@@ -210,10 +210,11 @@ export async function probeConnection(
   }
 
   const notesUrl = `${base}/notes`;
-  const spec = credentialHeaderFor(credential.auth);
+  // The same construction the worker uses, so the probe cannot accept a credential the layer would
+  // then send under a different header (FR-15.3).
   const headers: Record<string, string> = {
     Accept: "application/json",
-    [spec.header]: spec.scheme === null ? credential.value : `${spec.scheme} ${credential.value}`,
+    ...authHeadersFor(credential.auth, credential.value),
   };
   // Status only — see the module header. The body is the note corpus; the probe only needs to know
   // whether the hub accepted the credential, not what is in it.
@@ -320,6 +321,19 @@ function configuredCredentialOf(
 
 /** The endpoint as a base URL, or `null` when it is not one the HTTP adapter could use. */
 function baseOf(endpoint: string): string | null {
+  const url = endpointUrl(endpoint);
+  if (url === null) return null;
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
+/**
+ * The endpoint as a `URL`, or `null` when it is not a base URL the HTTP adapter could use.
+ *
+ * Shared by `baseOf` and `insecureEndpointRefusal` so the probe and the save-time check agree on
+ * what counts as a hub URL. A query or fragment on a base URL would be dropped silently by
+ * `${url.origin}${path}`; refusing it here is clearer than probing a URL the user did not type.
+ */
+function endpointUrl(endpoint: string): URL | null {
   const raw = endpoint.trim();
   if (raw.length === 0) return null;
   let url: URL;
@@ -329,10 +343,54 @@ function baseOf(endpoint: string): string | null {
     return null;
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  // A query or fragment on a base URL would be dropped silently by `${url.origin}${path}`; refusing
-  // it here is clearer than probing a URL the user did not type.
   if (url.search.length > 0 || url.hash.length > 0) return null;
-  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  return url;
+}
+
+/**
+ * `127.0.0.0/8` — the IPv4 loopback range, as ADR-0.12-S2 names it.
+ *
+ * `URL` has already validated and normalised the address, so the shape check is enough here.
+ */
+const IPV4_LOOPBACK = /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+
+/**
+ * Whether a parsed hostname names the machine that runs the browser.
+ *
+ * `URL` lower-cases hostnames and renders IPv6 in brackets and compressed form, so `localhost`,
+ * `[::1]` and any `127.0.0.0/8` address are the whole set. Everything else — a LAN address, a
+ * hostname, a public IP — is *not* loopback, however private it looks.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "localhost" || host === "[::1]" || IPV4_LOOPBACK.test(host);
+}
+
+/**
+ * Why a credential must not be sent to this endpoint over cleartext, or `null` when it may.
+ *
+ * ADR-0.12-S2 / SEC-18: when a credential is configured (`auth !== "none"`), plain `http:` is only
+ * accepted for loopback hosts. `https:` is accepted for every host, and `auth: "none"` may still use
+ * `http:` — an unauthenticated hub sends nothing secret, and the pre-0.12 default must keep working.
+ * There is deliberately no "insecure" override: a downgrade would be silent, and this exists to stop
+ * exactly that.
+ *
+ * Pure, and shared by the options page's save path and its connection probe: both refuse before a
+ * request is made or a setting is written, so the check cannot be skipped by testing instead of
+ * saving. A message is returned rather than a boolean because the page renders it verbatim.
+ */
+export function insecureEndpointRefusal(input: {
+  endpoint: string;
+  auth: CredentialMode;
+}): string | null {
+  if (input.auth === "none") return null;
+
+  const url = endpointUrl(input.endpoint);
+  // Not a URL this check can judge: `baseOf`/`decideSave` reject it with their own, more precise
+  // message ("not a hub URL", "invalid_origin") rather than this one pretending to know.
+  if (url === null || url.protocol !== "http:" || isLoopbackHost(url.hostname)) return null;
+
+  return `A credential will not be sent to ${url.origin} over plain HTTP. Bluepencil sends a credential over HTTPS, or over plain HTTP only to this machine (127.0.0.1, localhost or [::1]). Use an HTTPS address, or set Authentication to None if the hub has no credential.`;
 }
 
 type TransportAnswer =
