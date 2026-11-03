@@ -45,13 +45,15 @@ import { createServer as createNetServer } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Browser, findChrome } from "../../scripts/lib/browser.mjs";
+import { buildTestGrant } from "../../extension/test-manifest.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const EMBED_PAGE = join(root, "examples/round-trip/embed.html");
 const EXT_PAGE = join(root, "examples/round-trip/extension.html");
 const ELEMENT = join(root, "dist/bluepencil.element.min.js");
 const ATTACH = join(root, "dist/attach.js");
-const EXT_DIST = join(root, "extension/dist");
+/** The test grant `buildTestGrant()` produces — the only build this suite loads (AC-B55). */
+const EXT_DIST = join(root, "extension/dist-test");
 const SERVER_ENTRY = join(root, "dist/server.js");
 const WORKSPACE = join(root, ".tmp/round-trip");
 const PROFILE_EMBED = join(WORKSPACE, "chrome-embed");
@@ -515,8 +517,13 @@ async function main() {
       process.exit(1);
     }
   }
-  if (!existsSync(join(EXT_DIST, "manifest.json"))) {
-    console.error(`[round-trip] missing extension build ${EXT_DIST} — run "npm run build:ext" first`);
+  // The test grant is built immediately before loading (contract B.7.4). This suite assumes
+  // `npm run build:ext` has run — it does not rebuild the extension itself — and reports a missing
+  // production build as a named failure instead of an opaque ENOENT.
+  try {
+    buildTestGrant();
+  } catch (error) {
+    console.error(`[round-trip] ${error.name ?? "Error"}: ${error.message ?? error}`);
     process.exit(1);
   }
 

@@ -23,6 +23,7 @@
  *   boundary: any page script can post the envelope, so the worker validates it (`hub-fetch.ts`).
  */
 import { relayHubRequest } from "./bridge-fetch";
+import { checkPageEnvelope } from "./bridge-messages";
 import { PAGE_FETCH_KIND } from "./hub-fetch";
 import { relayPageStorage } from "./storage-relay";
 
@@ -84,90 +85,6 @@ type Envelope = {
   items?: unknown;
 };
 
-/** Message kinds a page may post on the bridge channel. */
-const PAGE_MESSAGE_KINDS: readonly string[] = ["request-mount", "toggle", "storage", PAGE_FETCH_KIND];
-
-/** The operations the page storage relay understands. */
-const STORAGE_OPS: readonly string[] = ["get", "set", "remove"];
-
-export type PageMessageKind = "request-mount" | "toggle" | "storage" | typeof PAGE_FETCH_KIND;
-
-/** The storage branch's two named refusals; the worker branch keeps its own codes. */
-export type PageEnvelopeCheck =
-  | { ok: true; kind: PageMessageKind }
-  | { ok: false; code: "invalid_envelope" | "foreign_field"; error: string };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
- * Validate the page-facing message envelope before anything is relayed (B.1/B.6).
- *
- * The rules are deliberately asymmetric:
- * - the source tag and the kind are required, every other branch tolerates its own optional fields
- *   (`requestId`, `force`, `enabled`, `request`);
- * - the **storage** branch is strict: `origin` and `key` are not fields of this message (the key
- *   comes from the bridge's own location, SEC-13), and `op`/`keys`/`items` must have the shape the
- *   relay will use. A page that sends the removed fields gets a named `foreign_field`, never a
- *   silent strip;
- * - the fetch branch deliberately ignores unknown fields — the worker is its trust boundary
- *   (`hub-fetch.ts`), so this hop has nothing to decide about them.
- */
-export function checkPageEnvelope(message: unknown): PageEnvelopeCheck {
-  if (!isRecord(message)) {
-    return { ok: false, code: "invalid_envelope", error: "a page message must be an object" };
-  }
-  if (message.source !== "bluepencil-page") {
-    return {
-      ok: false,
-      code: "invalid_envelope",
-      error: "a page message must carry the bluepencil-page source tag",
-    };
-  }
-  const kind = message.kind;
-  if (typeof kind !== "string" || !PAGE_MESSAGE_KINDS.includes(kind)) {
-    return { ok: false, code: "invalid_envelope", error: "unknown page message kind" };
-  }
-  if (kind !== "storage") {
-    return { ok: true, kind: kind as PageMessageKind };
-  }
-  if ("origin" in message || "key" in message) {
-    return {
-      ok: false,
-      code: "foreign_field",
-      error: "a page storage message may not carry origin or key",
-    };
-  }
-  const op = message.op;
-  if (typeof op !== "string" || !STORAGE_OPS.includes(op)) {
-    return {
-      ok: false,
-      code: "invalid_envelope",
-      error: "a page storage message needs the operation get, set or remove",
-    };
-  }
-  if (op === "set") {
-    if (!isRecord(message.items)) {
-      return {
-        ok: false,
-        code: "invalid_envelope",
-        error: "a storage write needs an items object",
-      };
-    }
-  } else if (
-    typeof message.keys !== "string" &&
-    !(Array.isArray(message.keys) && message.keys.every((key) => typeof key === "string"))
-  ) {
-    return {
-      ok: false,
-      code: "invalid_envelope",
-      error: "a storage read or remove needs a key or a list of keys",
-    };
-  }
-  return { ok: true, kind: "storage" };
-}
-
 /**
  * Relays a worker's answer back to the page that asked.
  *
@@ -205,18 +122,19 @@ window.addEventListener("message", (event: MessageEvent) => {
     // `answerPage` carries no kind and is never answered — otherwise the two directions would
     // answer each other forever.
     if (data.source === "bluepencil-page" && typeof data.kind === "string") {
-      answerPage(data, { ok: false, code: checked.code, error: checked.error });
+      answerPage(data, { ok: false, code: checked.code, error: checked.message });
     }
     return;
   }
+  const envelope = checked.envelope;
 
   // The hub relay (#116). The page's own `fetch` is governed by the document's CSP, and a strict
   // `connect-src` blocks every hub call; the service worker is outside that policy. This hop carries
   // the envelope verbatim — validation lives in the worker, deliberately (see `hub-fetch.ts`). Only
   // the correlation id and the request are forwarded, never the whole envelope.
-  if (checked.kind === PAGE_FETCH_KIND) {
-    const requestId = data.requestId;
-    if (typeof requestId !== "string" || requestId === "") {
+  if (envelope.kind === PAGE_FETCH_KIND) {
+    const requestId = envelope.requestId;
+    if (requestId === undefined || requestId === "") {
       answerPage(data, {
         ok: false,
         error: { code: "invalid_request", message: "the relay request needs a requestId" },
@@ -227,7 +145,7 @@ window.addEventListener("message", (event: MessageEvent) => {
     // can return nothing at all. Both are answered instead of thrown: an exception here would be
     // swallowed by the event listener and the page would wait out its whole 35 s budget
     // (`bridge-fetch.ts`).
-    relayHubRequest(chrome.runtime, { requestId, request: data.request }, (reply) =>
+    relayHubRequest(chrome.runtime, { requestId, request: envelope.request }, (reply) =>
       answerPage(data, reply),
     );
     return;
@@ -237,9 +155,9 @@ window.addEventListener("message", (event: MessageEvent) => {
   // one that has `chrome.storage`. Only `op`/`keys`/`items` are forwarded — a page-supplied
   // `origin`/`key` was already refused above, and the permitted key is derived here from
   // `window.location`, never from the message (SEC-13).
-  if (checked.kind === "storage") {
-    const envelope = { op: data.op, keys: data.keys, items: data.items };
-    void relayPageStorage(chrome.storage?.local, envelope, window.location)
+  if (envelope.kind === "storage") {
+    const relayed = { op: envelope.op, keys: envelope.keys, items: envelope.items };
+    void relayPageStorage(chrome.storage?.local, relayed, window.location)
       .then((reply) => answerPage(data, reply))
       .catch((error: unknown) =>
         answerPage(data, {
@@ -256,17 +174,17 @@ window.addEventListener("message", (event: MessageEvent) => {
   // works; the page just gets an untagged reply it can recognise by shape.
   void chrome.runtime
     .sendMessage(
-      data.kind === "toggle"
+      envelope.kind === "toggle"
         ? {
             type: "bluepencil:toggle",
-            ...(typeof data.enabled === "boolean" ? { enabled: data.enabled } : {}),
+            ...(typeof envelope.enabled === "boolean" ? { enabled: envelope.enabled } : {}),
           }
         : {
             type: "bluepencil:mount",
             // The documented per-call override (#70) has to survive this hop: without it a page's
             // `request-mount { force: true }` arrives at the worker as a plain mount and the default
             // step-aside wins. Only a real boolean is forwarded, never a truthy string.
-            ...(typeof data.force === "boolean" ? { force: data.force } : {}),
+            ...(typeof envelope.force === "boolean" ? { force: envelope.force } : {}),
           },
     )
     .then((reply: unknown) => answerPage(data, reply))

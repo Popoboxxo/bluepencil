@@ -232,6 +232,16 @@ jobs:
           BP_REQUIRE_BROWSER: "1"
         run: npm run smoke:ext
 
+      - name: Review-page smoke (review.html from the test-grant build)
+        env:
+          # `review.js` inlines the built `dist/data.js`, so only a real page load proves the review
+          # surface still resolves after a build. The step belongs to B.4/T-B10 (AC-B57): it needs
+          # `extension/dist-test`, which `buildTestGrant()` creates — the previous step built it, and
+          # the suite rebuilds it itself (idempotent) so it also runs standalone. Missing Chrome is a
+          # failure here, like every other real-browser leg.
+          BP_REQUIRE_BROWSER: "1"
+        run: npm run smoke:ext:review
+
       - name: Round-trip smoke (browser → hub → MCP agent → browser, both strands)
         env:
           # Drives the whole loop in a real browser for BOTH arrival paths (one-tag embed loader and

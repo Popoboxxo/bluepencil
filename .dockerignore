@@ -14,3 +14,6 @@ reviews
 spec
 *.log
 *.tgz
+# the test-grant build (B.7.5) is a host-granted copy of extension/dist; it must never
+# travel into an image, and no Docker target needs it.
+extension/dist-test

@@ -99,11 +99,17 @@ type BpGlobal = typeof globalThis & {
 
 const g = globalThis as BpGlobal;
 
-// A registered script runs on every matching document, whether or not the user asked for the layer.
-// Doing nothing until the configuration arrives is what keeps that cheap and unobtrusive. The hook
-// lets the worker wake it on an already-open tab, where the registration has not taken effect yet —
-// and it forwards the worker's options, so an explicit force is not lost between the two calls.
-g.__bluepencilTryMount = mount;
+// The hook is published *before* the configuration exists, because of the binding mount order
+// (`planMount` = bridge → bootstrap → config): this file is injected first, the worker writes the
+// configuration a moment later and wakes the hook with it. Without a configuration the hook simply
+// stays dormant here — and it is removed as soon as a mount succeeds, so a document the extension
+// never mounted never keeps a live entry point (#G9, AC-B39). A host-embed stand-aside (#70) and a
+// failed mount both keep it, because both are states a later, explicit activation may still leave.
+//
+// The hook forwards the worker's options, so an explicit `force` is not lost between the two calls.
+if (g[MOUNTED_KEY] !== true) {
+  g.__bluepencilTryMount = mount;
+}
 
 if (g[MOUNTED_KEY] !== true && g[CONFIG_KEY] !== undefined) {
   mount();
@@ -133,9 +139,18 @@ function mount(options?: MountOptions): void {
   try {
     // Registered *before* the element is defined: the store consults the registry when it loads its
     // adapter, and the built-in `chromeStorage` would find no `chrome.storage` in this world.
+    //
+    // The fallback is wired through `onFallback` rather than guessed here: the adapter is the one
+    // place that knows *why* a bucket is missing (an opaque `file:` origin reports
+    // `{ code: "opaque_origin" }`), and its report is the only surface the user sees for it
+    // (RVW-16). Without this, the store would degrade silently to memory and a reload would lose
+    // the notes with nothing saying so.
     if (config.settings.store === "chromeStorage") {
       registerAdapter("chromeStorage", () =>
-        createChromeStorageAdapter({ area: createBridgedStorageArea() }),
+        createChromeStorageAdapter({
+          area: createBridgedStorageArea(),
+          onFallback: reportStorageFallback,
+        }),
       );
     }
 
@@ -159,6 +174,11 @@ function mount(options?: MountOptions): void {
     (document.body ?? document.documentElement).append(el);
 
     report(true, "");
+
+    // A mounted document is final: the worker's wake hook has done its job, so it must not outlive
+    // the mount (AC-B39). The two paths above that return early — a host-embed stand-aside (#70) and
+    // a caught failure — deliberately keep it, because both leave the document mountable later.
+    delete g.__bluepencilTryMount;
   } catch (error) {
     g[MOUNTED_KEY] = false;
     report(false, error instanceof Error ? error.message : String(error));
@@ -283,4 +303,48 @@ function reportHostEmbed(host: HostEmbedSource): void {
     { source: "bluepencil-extension", kind: "host-embed-detected", host },
     window.location.origin === "null" ? "*" : window.location.origin,
   );
+}
+
+/** Prefix the worker's `badgeForReport` recognises as the memory-only degrade (B.6). */
+const MEMORY_ONLY_PREFIX = "memory-only";
+
+/**
+ * The one place that knows an opaque page origin has no persistent note store.
+ *
+ * `file://` and sandboxed frames have an origin of `"null"`, so the adapter never touches
+ * `chrome.storage.local` and degrades to memory (B.1). That degrade must be *visible*: the note will
+ * not survive a reload, and the user has to learn it from the toolbar badge rather than from a lost
+ * note (RVW-16). The report reuses the existing `mounted` channel — `ok:false` with the
+ * `memory-only:` prefix is exactly what `badgeForReport` maps to `{ text: "mem", title }`. A
+ * non-opaque fallback (a missing bridge, a full quota) is a plain failure, not a memory-only state,
+ * so it is reported by its own message and gets no badge.
+ */
+function reportStorageFallback(reason: unknown): void {
+  if (isOpaqueOrigin(reason)) {
+    report(
+      false,
+      `${MEMORY_ONLY_PREFIX}: this page has an opaque origin, so notes live only in this tab and are lost on reload; use the local adapter or a hub to persist them`,
+    );
+    return;
+  }
+  report(false, fallbackReasonText(reason));
+}
+
+function isOpaqueOrigin(reason: unknown): boolean {
+  return (
+    typeof reason === "object" &&
+    reason !== null &&
+    (reason as { code?: unknown }).code === "opaque_origin"
+  );
+}
+
+/** A readable cause for a fallback that is not the documented opaque-origin case. */
+function fallbackReasonText(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
+  if (typeof reason === "string") return reason;
+  if (typeof reason === "object" && reason !== null) {
+    const code = (reason as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  return String(reason);
 }

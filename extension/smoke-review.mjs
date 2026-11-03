@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 
 import { Browser, findChrome, requireBrowser } from "../scripts/lib/browser.mjs";
 import { selectWorker } from "./probe.mjs";
+import { buildTestGrant } from "./test-manifest.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -57,6 +58,25 @@ function ok(name, condition, detail = "") {
   } else {
     failed += 1;
     console.log(`FAIL ${name}${detail ? ` — ${detail}` : ""}`);
+  }
+}
+
+/**
+ * Build the test grant in place, so this suite is runnable on its own (AC-B57, B.4).
+ *
+ * Idempotent on purpose: `npm run smoke:ext` already built `dist-test` a moment earlier, and CI runs
+ * this step right after it. Rebuilding costs one directory copy and removes the ordering dependency
+ * between the two suites. A missing production build is reported as this suite's own **named** FAIL
+ * — never a skip, because a review page that never loaded must not report green.
+ */
+function ensureTestGrant() {
+  try {
+    buildTestGrant();
+    return true;
+  } catch (error) {
+    failed += 1;
+    console.log(`FAIL ${error.name ?? "Error"}: ${error.message ?? error}`);
+    return false;
   }
 }
 
@@ -357,12 +377,16 @@ async function main() {
 }
 
 try {
-  const missing = missingArtefacts();
-  if (missing.length > 0) {
-    reportMissing(missing);
+  if (!ensureTestGrant()) {
+    // The failure is already reported above; nothing may run against a grant that was not built.
   } else {
-    requireBrowser({ browser: findChrome() });
-    await main();
+    const missing = missingArtefacts();
+    if (missing.length > 0) {
+      reportMissing(missing);
+    } else {
+      requireBrowser({ browser: findChrome() });
+      await main();
+    }
   }
 } catch (error) {
   if (error?.constructor?.name === "Skipped") {

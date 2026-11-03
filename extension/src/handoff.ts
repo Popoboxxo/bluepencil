@@ -12,7 +12,36 @@
  * This module is the one place that translation happens, and it is pure: settings + the browser's
  * language in, attributes out. It is unit-tested without a browser, which the wiring never was.
  */
+import { configuredCredential, credentialHeaderFor } from "./credential";
 import type { ExtensionSettings } from "./settings";
+
+/**
+ * The credential mapping moved to `credential.ts` (FR-15.3); these re-exports keep the existing
+ * importers working until B.3b removes them. `options.ts` still imports `configuredCredential` from
+ * here in this step and moves to `./credential` with the options rework.
+ */
+export { authHeadersFor, configuredCredential, credentialHeaderFor } from "./credential";
+export type { CredentialHeader, CredentialMode } from "./credential";
+
+/**
+ * The settings that may cross into a page, and the type is final as of B.3a (CSR-17).
+ *
+ * A credential, its expiry and a device name belong to the extension only. They are omitted here at
+ * the *type* level already; the runtime of {@link pageSettingsFor} still forwards them in this step
+ * (behaviour-neutral) and strips them in B.3b. Keeping the type ahead of the runtime makes the
+ * intermediate state explicit instead of a silent contract change.
+ */
+export type PageSettings = Omit<ExtensionSettings, "token" | "tokenExpiresAt" | "deviceName">;
+
+/**
+ * The page-facing projection of the settings.
+ *
+ * B.3a forwards `token`/`tokenExpiresAt`/`deviceName` at runtime even though {@link PageSettings}
+ * does not name them; the caller sees the final type, and B.3b turns the forwarding into stripping.
+ */
+export function pageSettingsFor(settings: ExtensionSettings): PageSettings {
+  return { ...settings };
+}
 
 /** The subset of settings that decides the element's attributes. */
 export type AttributeSource = Pick<
@@ -68,13 +97,15 @@ export function elementAttributesFor(
     // settings would not use that value, so handing it to the element would invent a credential.
     const credential = configuredCredential(settings.token);
     if (credential !== null && settings.auth !== "none") {
-      attributes.token = credential;
       const spec = credentialHeaderFor(settings.auth);
-      // The element's attribute vocabulary spells header names lower case.
-      attributes["token-header"] = spec.header.toLowerCase();
-      if (spec.scheme !== null) {
-        // A bare token has to be turned into `Bearer <token>` by the element's own contract.
-        attributes["token-scheme"] = spec.scheme;
+      if (spec !== null) {
+        attributes.token = credential;
+        // The element's attribute vocabulary spells header names lower case.
+        attributes["token-header"] = spec.header.toLowerCase();
+        if (spec.scheme !== null) {
+          // A bare token has to be turned into `Bearer <token>` by the element's own contract.
+          attributes["token-scheme"] = spec.scheme;
+        }
       }
     }
     return attributes;
@@ -87,38 +118,4 @@ export function elementAttributesFor(
 /** `auto` follows the browser, which is where this code runs. Anything but German is the default. */
 function autoLanguage(browserLanguage: string): "en" | "de" {
   return browserLanguage.toLowerCase().startsWith("de") ? "de" : "en";
-}
-
-/**
- * The header a credential mode means — the single mapping the layer and the connection probe share.
- *
- * Two headers, because they are two different credentials: a shared secret every client holds, and a
- * per-device signed token. Choosing the wrong one produces a `401` that reads like a dead server, so
- * the mapping lives in one place rather than being spelled out once per caller.
- */
-export interface CredentialHeader {
-  /** Canonical header name; the element's `token-header` attribute wants the lower-case form. */
-  header: "Authorization" | "x-bluepencil-auth";
-  /** `Bearer` for a signed token, `null` for a shared secret. */
-  scheme: string | null;
-}
-
-/** The header for `secret` or `token`. Callers handle `none` themselves; there is no header for it. */
-export function credentialHeaderFor(auth: "secret" | "token"): CredentialHeader {
-  return auth === "token"
-    ? { header: "Authorization", scheme: "Bearer" }
-    : { header: "x-bluepencil-auth", scheme: null };
-}
-
-/**
- * The credential as it should be carried, or `null` when none is configured.
- *
- * Whitespace-only is *not* configured: sending it would turn a harmless probe into a guaranteed 401
- * and hand the element a header value no hub can match. The value is trimmed, so a token pasted with
- * a trailing newline travels without it. Both the layer and the probe read this one rule, so the URL
- * the options page tests is the URL the layer would actually use (#105).
- */
-export function configuredCredential(token: string): string | null {
-  const value = token.trim();
-  return value.length === 0 ? null : value;
 }

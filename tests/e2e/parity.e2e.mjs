@@ -34,13 +34,15 @@ import { createServer as createNetServer } from "node:net";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Browser, findChrome } from "../../scripts/lib/browser.mjs";
+import { buildTestGrant } from "../../extension/test-manifest.mjs";
 import { CASES, normalize } from "./parity-cases.mjs";
 
 const root = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const PAGE = join(root, "examples/parity/page.html");
 const ELEMENT = join(root, "dist/bluepencil.element.min.js");
 const ATTACH = join(root, "dist/attach.js");
-const EXT_DIST = join(root, "extension/dist");
+/** The test grant `buildTestGrant()` produces — the only build this suite loads (AC-B55). */
+const EXT_DIST = join(root, "extension/dist-test");
 const WORKSPACE = join(root, ".tmp/parity");
 const PROFILE_EMBED = join(WORKSPACE, "chrome-embed");
 const PROFILE_EXT = join(WORKSPACE, "chrome-extension");
@@ -246,6 +248,14 @@ async function main() {
   const build = spawnSync("node", [join(root, "extension/build.mjs")], { cwd: root, encoding: "utf8" });
   if (build.status !== 0) {
     console.error(`[parity] extension build failed:\n${build.stdout}${build.stderr}`);
+    process.exit(1);
+  }
+  // …and the grant is built **after** that rebuild (contract B.7.4): the copy must reflect the build
+  // this run just produced, never the one from before it.
+  try {
+    buildTestGrant();
+  } catch (error) {
+    console.error(`[parity] ${error.name ?? "Error"}: ${error.message ?? error}`);
     process.exit(1);
   }
 
