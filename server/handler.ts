@@ -64,10 +64,12 @@ import {
   type Note,
   type NoteDraft,
   type NoteFilter,
+  type NoteOrigin,
   type NotePatch,
   type NoteStatus,
 } from "../src/core/model";
 import { applyPatch, filterNotes, isRecord } from "../src/core/adapter";
+import { parseOriginInput } from "../src/core/origin";
 import { sortForReview } from "../src/core/protocol";
 import { VERSION } from "../src/version";
 import { canonicalNote } from "../src/data/canonical";
@@ -106,6 +108,10 @@ export const JSON_CONTENT_TYPE = "application/json; charset=utf-8";
 export const ERROR_CODES = [
   "invalid_json",
   "invalid_payload",
+  // A create/filter value that is not a canonical http(s) origin (or `null`/empty for "unassigned").
+  // It is not folded into `invalid_payload`: a client has to tell "the note body is wrong" from "the
+  // site origin is not usable", exactly like `environment_mismatch` names its own rule (FR-2.2).
+  "invalid_origin",
   "invalid_query",
   "environment_mismatch",
   "duplicate_id",
@@ -358,6 +364,27 @@ class HttpError extends Error {
 /** Throws the documented refusal — only ever caught by `applyMutation`/`handleRequest`. */
 function refuse(status: number, code: ServerErrorCode, message: string): never {
   throw new HttpError(status, code, message);
+}
+
+/**
+ * The hub's one entry point into `parseOriginInput` (FR-2.2, FR-15.3).
+ *
+ * The strict parser is the single implementation of "what is a usable origin"; this helper only
+ * maps its refusal onto the hub's wire contract (`400 invalid_origin`). `null`, `""` and the
+ * literal `"null"` mean "unassigned" and are accepted, everything else that is not a canonical
+ * http(s) origin is refused rather than silently stored as `null` — a typo must not look like
+ * "this note belongs to no site".
+ */
+function originField(value: unknown): NoteOrigin {
+  const parsed = parseOriginInput(value);
+  if (!parsed.ok) {
+    refuse(
+      400,
+      "invalid_origin",
+      `origin must be a canonical http(s) origin, "null" or empty for unassigned (got ${JSON.stringify(value)})`,
+    );
+  }
+  return parsed.origin;
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -740,6 +767,11 @@ function filterFromQuery(query: URLSearchParams): NoteFilter {
   if (source !== null) filter.source = source;
   const since = query.get("since");
   if (since !== null) filter.since = since;
+  // FR-2.2: `?origin=` and `?origin=null` both mean "only unassigned"; a canonical origin filters
+  // exactly that site. An unusable value is a 400 rather than a filter that silently matches
+  // nothing (which a caller would read as "there are no notes").
+  const origin = query.get("origin");
+  if (origin !== null) filter.origin = originField(origin);
 
   const intent = query.get("intent");
   if (intent !== null) {
@@ -807,6 +839,9 @@ const FILTER_KEYS = new Set([
   "intent",
   "type",
   "environment",
+  // FR-2.2: the origin filter is part of the body form too, because bulk-delete takes the same
+  // fields as the query and must be able to scope a removal to one site (or to the unassigned set).
+  "origin",
 ]);
 
 /** The same field checks for the `filter` object of a bulk-delete body. */
@@ -831,6 +866,13 @@ function filterFromBody(value: unknown): NoteFilter {
   const query = new URLSearchParams();
   for (const key of Object.keys(value)) {
     const entry = value[key];
+    // `origin: null` is a real filter ("only unassigned"), unlike every other nullable body field,
+    // so it has to be encoded before the generic "null means absent" skip below.
+    if (key === "origin") {
+      if (entry === undefined) continue;
+      query.set("origin", originField(entry) ?? "null");
+      continue;
+    }
     if (entry === undefined || entry === null) continue;
     if (key === "status") {
       for (const status of Array.isArray(entry) ? entry : [entry]) {
@@ -886,6 +928,8 @@ const NOTE_DRAFT_FIELDS = new Set([
   "source",
   "environment",
   "ticketRef",
+  // The site the note was taken on (FR-2.2); normalised through `parseOriginInput` below.
+  "origin",
   "debug",
   "now",
   "id",
@@ -1061,11 +1105,16 @@ function createNoteFromBody(request: ServerRequest, context: HandlerContext): Se
       `environment must be one of ${ENVIRONMENTS.join(", ")} (got ${JSON.stringify(requested)})`,
     );
   }
+  // FR-2.2: an absent field keeps the model default (`null`, "unassigned"); a present one has to be
+  // a usable origin, so `"file:///x"` is a 400 instead of a note that silently belongs to no site.
+  const origin = payload.origin === undefined ? undefined : originField(payload.origin);
   let created = "";
   return applyMutation(context, () => {
     if (requested !== undefined) assertEnvironment(requested, context);
     const draft: NoteDraft = {
       ...(payload as unknown as NoteDraft),
+      // The raw `origin` above is the caller's text; the parsed value is the canonical one.
+      ...(origin !== undefined ? { origin } : {}),
       // A note is always born in the hub's environment (see `assertEnvironment`).
       environment: context.environment,
     };

@@ -19,6 +19,7 @@ import {
   systemClock,
 } from "../core/model";
 import type { Bundle, Environment, Note, Session } from "../core/model";
+import { originOf } from "../core/origin";
 import { canonicalBundle, serializeCanonical } from "./canonical";
 import { assertBundle, assertNote } from "./schema";
 
@@ -40,6 +41,10 @@ export interface BundleSummary {
   byIntent: Record<string, number>;
   byType: Record<string, number>;
   routes: string[];
+  /** Distinct canonical origins in this bundle, sorted (FR-2.2, AC-A15). */
+  origins: string[];
+  /** Notes without an origin (`null`/absent) — "unassigned" in every surface (FR-2.2). */
+  unassigned: number;
   app?: { name: string; buildRef?: string };
 }
 
@@ -156,6 +161,8 @@ export function inspectBundle(bundle: Bundle): BundleSummary {
   const byIntent = zeroCounts(NOTE_INTENTS);
   const byType = zeroCounts(NOTE_TYPES);
   const routes = new Set<string>();
+  const origins = new Set<string>();
+  let unassigned = 0;
 
   for (const note of value.notes) {
     increment(byStatus, note.status);
@@ -163,6 +170,9 @@ export function inspectBundle(bundle: Bundle): BundleSummary {
     increment(byType, note.type);
     const route = note.anchor.route;
     if (route !== undefined && route !== "") routes.add(route);
+    const origin = originOf(note);
+    if (origin === null) unassigned += 1;
+    else origins.add(origin);
   }
 
   return {
@@ -173,6 +183,8 @@ export function inspectBundle(bundle: Bundle): BundleSummary {
     byIntent,
     byType,
     routes: [...routes].sort(compareStrings),
+    origins: [...origins].sort(compareStrings),
+    unassigned,
     app: {
       name: value.app.name,
       ...(value.app.buildRef !== undefined ? { buildRef: value.app.buildRef } : {}),

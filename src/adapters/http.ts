@@ -330,6 +330,11 @@ function toQuery(filter?: NoteFilter): URLSearchParams {
   if (filter.route !== undefined) {
     query.set("route", filter.route);
   }
+  // FR-2.2: `undefined` sends no parameter at all; `null` is the literal `origin=null` (the
+  // unassigned bucket); a string travels verbatim. No shaping for older hubs (RVW-15).
+  if (filter.origin !== undefined) {
+    query.set("origin", filter.origin === null ? "null" : filter.origin);
+  }
   if (filter.intent !== undefined) {
     query.set("intent", filter.intent);
   }

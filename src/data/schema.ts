@@ -23,6 +23,7 @@ import {
   SCHEMA_VERSION,
 } from "../core/model";
 import type { Bundle, Note } from "../core/model";
+import { normaliseOrigin } from "../core/origin";
 
 /** Loose view of unknown JSON input while validating. */
 type JsonObject = Record<string, unknown>;
@@ -210,6 +211,13 @@ function noteIssues(note: JsonObject, path: string): string[] {
   if (!isIsoTimestamp(note.updatedAt)) issues.push(`${path}.updatedAt must be an ISO 8601 timestamp`);
   if (note.sessionRef !== undefined && !isNonEmptyString(note.sessionRef)) {
     issues.push(`${path}.sessionRef must be a non-empty string`);
+  }
+  // FR-2.2: absent and `null` mean "unassigned"; a string has to already be the canonical form
+  // (`normaliseOrigin(v) === v`), so an uppercase host or a default port is a defect, not input.
+  if (note.origin !== undefined && note.origin !== null) {
+    if (typeof note.origin !== "string" || normaliseOrigin(note.origin) !== note.origin) {
+      issues.push(`${path}.origin must be a canonical origin or null`);
+    }
   }
   issues.push(...enumIssues(`${path}.type`, note.type, NOTE_TYPES));
   // FR-3.6: severity is optional; when present it must be a known value AND the note is a bug

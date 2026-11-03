@@ -36,6 +36,7 @@ import type {
   RevealHint,
   Session,
 } from "../core/model";
+import { normaliseOrigin } from "../core/origin";
 import { assertBundle, assertNote } from "./schema";
 
 /** Loose view of unknown JSON input while migrating. */
@@ -254,6 +255,8 @@ function upgradeNote(value: unknown, defaults: NoteDefaults, path: string): Note
     schemaVersion: SCHEMA_VERSION,
     createdAt,
     updatedAt: toIso(doc.updatedAt, createdAt),
+    // FR-2.2: an absent or unusable origin degrades to `null` — same rule as `createNote`.
+    origin: normaliseOrigin(doc.origin),
     ...(sessionRef !== undefined ? { sessionRef } : {}),
     type,
     ...(severity !== undefined ? { severity } : {}),

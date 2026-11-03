@@ -31,6 +31,7 @@ import {
   type NotePriority,
   type NoteTiming,
 } from "./model";
+import { normaliseOrigin, originOf } from "./origin";
 
 export interface Adapter {
   readonly name: string;
@@ -115,6 +116,11 @@ export function matchesFilter(note: Note, filter?: NoteFilter): boolean {
     return true;
   }
   if (filter.route !== undefined && note.anchor.route !== filter.route) {
+    return false;
+  }
+  // FR-2.2: `null` selects the unassigned notes, a string the exact canonical origin; an absent
+  // field means "no filter". Compared through `originOf` so a missing key and `null` never differ.
+  if (filter.origin !== undefined && originOf(note) !== filter.origin) {
     return false;
   }
   if (filter.type !== undefined && note.type !== filter.type) {
@@ -298,6 +304,10 @@ export function coerceNote(value: unknown): Note | null {
     schemaVersion: typeof value.schemaVersion === "number" ? value.schemaVersion : 1,
     createdAt,
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : createdAt,
+    // FR-2.2: a stored origin is canonicalised again so a blob written by an older or buggy
+    // writer cannot smuggle a non-canonical value into the in-memory set; anything unusable
+    // degrades to `null` (unassigned), never to a throw.
+    origin: normaliseOrigin(value.origin),
     type,
     // FR-3.6: an unknown severity degrades to absent (mirrors the unknown-type fallback to `text`),
     // and a severity on a non-bug note is dropped rather than kept as a dangling value.

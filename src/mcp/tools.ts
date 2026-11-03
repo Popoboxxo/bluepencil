@@ -30,6 +30,7 @@ import { canonicalBundle, canonicalNote, serializeCanonical } from "../data/cano
 import { createBundle, inspectBundle, parseBundle, type BundleSummary } from "../data/bundle";
 import { validateNote } from "../data/schema";
 import { excludeDone, isRecord, type Adapter } from "../core/adapter";
+import { parseOriginInput } from "../core/origin";
 import { createFileAdapter, type FileAdapterIo } from "../adapters/file";
 import { parseNoteSet, serializeNoteSet } from "../adapters/memory";
 import { summarize } from "../core/protocol";
@@ -54,6 +55,7 @@ import {
   type Note,
   type NoteFilter,
   type NoteIntent,
+  type NoteOrigin,
   type NoteStatus,
 } from "../core/model";
 
@@ -197,6 +199,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         priority: { type: "string", enum: [...NOTE_PRIORITIES] },
         route: { type: "string" },
         session: { type: "string" },
+        origin: {
+          type: ["string", "null"],
+          description:
+            "Site provenance (FR-2.2): a canonical http(s) origin returns exactly that origin, " +
+            "null returns the unassigned notes; omit the field to leave the filter unchanged.",
+        },
         include_done: { type: "boolean", default: false },
         format: { type: "string", enum: [...FORMATS], default: "json" },
         instance: { type: "string" },
@@ -248,6 +256,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         quote: { type: "string" },
         route: { type: "string" },
         session: { type: "string" },
+        origin: {
+          type: ["string", "null"],
+          description:
+            "Site provenance (FR-2.2) — normalised to a canonical http(s) origin; absent or null " +
+            "stores the note as unassigned.",
+        },
         ticket_ref: { type: "string" },
         instance: { type: "string" },
       },
@@ -458,6 +472,30 @@ function readLimitArgument(value: unknown): { value?: number; issue?: string } {
 }
 
 /**
+ * The optional `origin` argument of `create_note` and `list_notes` (FR-16.1).
+ *
+ * `absent` means the caller said nothing: `create_note` then stores `null` and `list_notes` adds no
+ * origin filter. Everything the caller did send goes through the same strict `parseOriginInput` the
+ * hub and the CLI use — `null`, `""` and `"null"` are the unassigned bucket, a canonical origin is
+ * taken verbatim and any other value is the named `invalid_origin` refusal. The filter is passed to
+ * the shared adapter unchanged; this layer never widens or drops it (AC-A12, FR-15.3).
+ */
+type OriginArgument = { present: true; origin: NoteOrigin } | { present: false } | { issue: string };
+
+function readOriginArgument(value: unknown): OriginArgument {
+  if (value === undefined) return { present: false };
+  const parsed = parseOriginInput(value);
+  if (!parsed.ok) {
+    return {
+      issue:
+        "origin must be a canonical http(s) origin or null " +
+        `(invalid_origin; got ${JSON.stringify(value)})`,
+    };
+  }
+  return { present: true, origin: parsed.origin };
+}
+
+/**
  * A note as the tool returns it. A single-store session keeps the exact 0.8 canonical note; an
  * aggregate adds the labels the federation promised and never writes them into the note itself.
  */
@@ -559,6 +597,8 @@ function toFilter(context: ToolContext, args: Record<string, unknown>): { filter
   if (type.issue) return { issue: type.issue };
   const priority = readEnumArgument(args.priority, NOTE_PRIORITIES, "priority");
   if (priority.issue) return { issue: priority.issue };
+  const origin = readOriginArgument(args.origin);
+  if ("issue" in origin) return { issue: origin.issue };
 
   let environment: Environment | undefined;
   if (args.environment !== undefined) {
@@ -592,6 +632,7 @@ function toFilter(context: ToolContext, args: Record<string, unknown>): { filter
       ...(priority.value !== undefined ? { priority: priority.value } : {}),
       ...(typeof args.route === "string" ? { route: args.route } : {}),
       ...(typeof args.session === "string" ? { session: args.session } : {}),
+      ...(origin.present ? { origin: origin.origin } : {}),
     },
   };
 }
@@ -958,6 +999,13 @@ async function dispatchTool(
       if (priority.issue) {
         return errorResponse(priority.issue);
       }
+      // FR-16.1: an incoming origin is normalised at the boundary, never trusted verbatim. An
+      // absent field stores `null` (createNote does that); an invalid one is refused before the
+      // first write, so a bad argument cannot leave a half-created note behind.
+      const origin = readOriginArgument(args.origin);
+      if ("issue" in origin) {
+        return errorResponse(origin.issue);
+      }
       const body = String(args.body ?? "").trim();
       if (body === "") {
         return errorResponse("body must not be empty");
@@ -991,6 +1039,7 @@ async function dispatchTool(
             source: "agent",
             // The note is born in the target's environment, never in another one (FR-16.3).
             ...(environment === undefined ? {} : { environment }),
+            ...(origin.present ? { origin: origin.origin } : {}),
             ...(typeof args.session === "string" ? { sessionRef: args.session } : {}),
             ...(typeof args.ticket_ref === "string" ? { ticketRef: args.ticket_ref } : {}),
           },

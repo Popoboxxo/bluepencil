@@ -3,10 +3,10 @@
  *
  * Plain Markdown only: no HTML is generated, no entity escaping is applied, every piece of
  * user text stays literal. User text is never placed where it could break the document
- * structure or turn into markup — inline fields have backticks and pipes escaped, multi-line
- * text is wrapped in a fenced block whose fence is always longer than the longest backtick
- * run inside it (so the text can never close the block and never reaches a Markdown viewer as
- * HTML).
+ * structure or turn into markup — inline fields escape backticks, pipes, HTML and link/image
+ * syntax (SEC-17), multi-line text is wrapped in a fenced block whose fence is always longer
+ * than the longest backtick run inside it (so the text can never close the block and never
+ * reaches a Markdown viewer as HTML).
  *
  * Layout:
  *   1. `## ⚠ open decisions` and `## 💬 feedback only` — the exception sections an agent has to
@@ -60,6 +60,10 @@ interface ExportStrings {
   readonly intent: string;
   readonly status: string;
   readonly source: string;
+  /** Site provenance bullet (FR-2.2); the label is always emitted when the note carries one. */
+  readonly origin: string;
+  /** Value shown for `origin === null` — an explicit "unassigned", never an empty bullet. */
+  readonly originUnassigned: string;
   readonly author: string;
   readonly created: string;
   readonly updated: string;
@@ -103,6 +107,8 @@ const STRINGS: Record<Language, ExportStrings> = {
     intent: "Intent",
     status: "Status",
     source: "Source",
+    origin: "Origin",
+    originUnassigned: "(unassigned)",
     author: "Author",
     created: "Created",
     updated: "Updated",
@@ -141,6 +147,8 @@ const STRINGS: Record<Language, ExportStrings> = {
     intent: "Absicht",
     status: "Status",
     source: "Quelle",
+    origin: "Origin",
+    originUnassigned: "(nicht zugeordnet)",
     author: "Autor",
     created: "Erstellt",
     updated: "Geändert",
@@ -183,8 +191,8 @@ export function formatCue(seconds: number): string {
 
 /**
  * Literal inline text for the fields that are NOT code spans (note id in the heading, author,
- * captured style key/value, document title). Three classes have to be neutralised (FR-9.3), and
- * before this only the first was handled:
+ * captured style key/value, timing label, document title). Four classes have to be neutralised
+ * (FR-9.3), the last one added by SEC-17:
  *
  *  - **HTML** — `&`, `<` and `>` become entities, so a note id, an author or a style value can
  *    never turn into a live element when the export is rendered. A rendered test with mistune
@@ -195,6 +203,10 @@ export function formatCue(seconds: number): string {
  *    construct keeps the value readable and inert.
  *  - **Pipes** — no table is emitted today, but a pipe stays literal so a downstream consumer
  *    that embeds a value in a table does not get a column break.
+ *  - **Link and image syntax (SEC-17)** — `[`, `]`, `!` and `(` are escaped, so a value such as
+ *    `![x](https://e.example/leak?a=1)` or `[click](javascript:alert(1))` renders as text instead
+ *    of becoming a live image or link: neither an automatic beacon nor a clickable `javascript:`
+ *    URL can leave the export. Fenced blocks (note bodies, stacks, logs) are untouched by design.
  */
 function inline(value: string): string {
   return flatten(value)
@@ -204,7 +216,11 @@ function inline(value: string): string {
     .replace(/`/g, "\\`")
     .replace(/\|/g, "\\|")
     .replace(/(^|[^\\])([*_~])/g, "$1\\$2")
-    .replace(/(^|\s)([#>+-])/g, "$1\\$2");
+    .replace(/(^|\s)([#>+-])/g, "$1\\$2")
+    .replace(/!/g, "\\!")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    .replace(/\(/g, "\\(");
 }
 
 /**
@@ -295,6 +311,11 @@ function renderNote(note: Note, s: ExportStrings, headingLevel: number): string[
   lines.push(bullet(s.intent, note.intent));
   lines.push(bullet(s.status, note.status));
   lines.push(bullet(s.source, code(note.source)));
+  // FR-2.2: the site provenance travels with the note. `undefined` means the field is absent
+  // (a pre-0.12 object literal), so no bullet is invented; `null` is the explicit "unassigned".
+  if (note.origin !== undefined) {
+    lines.push(bullet(s.origin, note.origin === null ? s.originUnassigned : inline(note.origin)));
+  }
   lines.push(bullet(s.author, `${inline(note.author)} (${note.authorType})`));
   lines.push(bullet(s.created, inline(note.createdAt)));
   lines.push(bullet(s.updated, inline(note.updatedAt)));

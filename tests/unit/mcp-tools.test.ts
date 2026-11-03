@@ -7,7 +7,7 @@
  * (`createStorePersistence` + `callTool`), only the medium is a string.
  */
 import { describe, expect, it } from "vitest";
-import { createStorePersistence, callTool, compareNoteSets, validateStoredNoteSet, type McpPersistence, type ToolContext } from "../../src/mcp/tools";
+import { createStorePersistence, callTool, compareNoteSets, validateStoredNoteSet, TOOL_DEFINITIONS, type McpPersistence, type ToolContext } from "../../src/mcp/tools";
 import { handleRpcExchange } from "../../src/mcp/protocol";
 import { createStoreBackend } from "../../src/mcp/backend";
 import { createStore, type Store } from "../../src/core/store";
@@ -48,6 +48,7 @@ function makeNote(input: {
   status?: NoteStatus;
   sessionRef?: string;
   ticketRef?: string;
+  origin?: string | null;
   debug?: DebugContext;
   messages?: Message[];
 }): Note {
@@ -68,6 +69,7 @@ function makeNote(input: {
     source: "ui:human",
     environment: input.environment,
     now: createdAt,
+    ...(input.origin !== undefined ? { origin: input.origin } : {}),
     ...(input.sessionRef !== undefined ? { sessionRef: input.sessionRef } : {}),
     ...(input.ticketRef !== undefined ? { ticketRef: input.ticketRef } : {}),
     ...(input.debug !== undefined ? { debug: input.debug } : {}),
@@ -331,6 +333,106 @@ describe("feature type and priority (FR-3.2/FR-3.7, FR-16.1)", () => {
     expect(compareNoteSets([expected], [persisted])).toEqual([
       "note n-f was persisted differently (priority)",
     ]);
+  });
+});
+
+describe("origin (FR-16.1/AC-A12)", () => {
+  type CallResult = Awaited<ReturnType<typeof call>>;
+
+  function ids(result: CallResult): string[] {
+    return result.value<{ notes: Array<{ id: string }> }>().notes.map((note) => note.id);
+  }
+
+  const onA = makeNote({ id: "n-a", body: "taken on a", environment: "dev", origin: "https://a.example" });
+  const onB = makeNote({ id: "n-b", body: "taken on b", environment: "dev", origin: "https://b.example" });
+  const unassigned = makeNote({ id: "n-none", body: "no origin", environment: "dev" });
+
+  it("advertises origin on create_note and list_notes", () => {
+    for (const name of ["create_note", "list_notes"]) {
+      const tool = TOOL_DEFINITIONS.find((candidate) => candidate.name === name);
+      const schema = tool?.inputSchema as { properties?: Record<string, unknown> } | undefined;
+      expect(schema?.properties?.origin, name).toBeDefined();
+    }
+  });
+
+  it("leaves the list unchanged when no origin is given", async () => {
+    const session = await openSession({ seed: [onA, onB, unassigned] });
+    const listed = await call(session.context, "list_notes", { include_done: true });
+    expect(listed.isError).toBe(false);
+    expect(new Set(ids(listed))).toEqual(new Set(["n-a", "n-b", "n-none"]));
+  });
+
+  it("filters list_notes by exactly that origin", async () => {
+    const session = await openSession({ seed: [onA, onB, unassigned] });
+    const listed = await call(session.context, "list_notes", {
+      origin: "https://a.example",
+      include_done: true,
+    });
+    expect(listed.isError).toBe(false);
+    expect(ids(listed)).toEqual(["n-a"]);
+  });
+
+  it("normalises the list filter instead of comparing the literal input", async () => {
+    const session = await openSession({ seed: [onA, onB, unassigned] });
+    const listed = await call(session.context, "list_notes", {
+      origin: "https://A.example:443/app?x=1",
+      include_done: true,
+    });
+    expect(listed.isError).toBe(false);
+    expect(ids(listed)).toEqual(["n-a"]);
+  });
+
+  it("selects exactly the unassigned notes with origin null", async () => {
+    const session = await openSession({ seed: [onA, onB, unassigned] });
+    for (const origin of [null, "null", ""]) {
+      const listed = await call(session.context, "list_notes", { origin, include_done: true });
+      expect(listed.isError, JSON.stringify(origin)).toBe(false);
+      // Not ignored, not widened: both assigned notes are excluded.
+      expect(ids(listed), JSON.stringify(origin)).toEqual(["n-none"]);
+    }
+  });
+
+  it("refuses a list origin that is not a canonical origin (invalid_origin)", async () => {
+    const session = await openSession({ seed: [onA, onB, unassigned] });
+    for (const origin of ["file:///x", "42", 42, "   ", "data:text/html,x"]) {
+      const listed = await call(session.context, "list_notes", { origin });
+      expect(listed.isError, JSON.stringify(origin)).toBe(true);
+      expect(listed.text, JSON.stringify(origin)).toContain("invalid_origin");
+    }
+  });
+
+  it("creates a note with the canonical origin and persists it", async () => {
+    const session = await openSession();
+    const created = await call(session.context, "create_note", {
+      body: "taken on a",
+      hook: "cta",
+      origin: "https://A.example:443/app?x=1",
+    });
+    expect(created.isError).toBe(false);
+    const note = created.value<{ created: Note }>().created;
+    expect(note.origin).toBe("https://a.example");
+    expect(persistedNotes(session)[0]?.origin).toBe("https://a.example");
+  });
+
+  it("stores null when create_note carries no origin", async () => {
+    const session = await openSession();
+    const created = await call(session.context, "create_note", { body: "nowhere", hook: "cta" });
+    expect(created.isError).toBe(false);
+    const note = created.value<{ created: Note }>().created;
+    expect(note.origin).toBeNull();
+    expect(persistedNotes(session)[0]?.origin).toBeNull();
+  });
+
+  it("refuses an invalid create origin before anything is written", async () => {
+    const session = await openSession();
+    const refused = await call(session.context, "create_note", {
+      body: "x",
+      hook: "cta",
+      origin: "file:///x",
+    });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("invalid_origin");
+    expect(session.file.text).toBeNull();
   });
 });
 

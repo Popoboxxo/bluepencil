@@ -195,6 +195,7 @@ describe("hub handler — the documented endpoints", () => {
         "schemaVersion",
         "createdAt",
         "updatedAt",
+        "origin",
         "sessionRef",
         "type",
         "intent",
@@ -376,6 +377,111 @@ describe("hub handler — the documented endpoints", () => {
       expect(response.status).toBe(200);
       expect(jsonOf(response).note.severity).toBeUndefined();
       expect(harness.state.notes[0]?.severity).toBeUndefined();
+    });
+  });
+
+  describe("origin scope (FR-2.2)", () => {
+    /** Two notes assigned to different sites and one unassigned (`origin: null`). */
+    function originNotes(): Note[] {
+      return [
+        note("n1", "2026-09-15T09:00:01.000Z", { origin: "https://a.example" }),
+        note("n2", "2026-09-15T09:00:02.000Z", { origin: "https://b.example" }),
+        note("n3", "2026-09-15T09:00:03.000Z"),
+      ];
+    }
+
+    it("stores a create body's origin in canonical form (AC-A10)", () => {
+      const harness = createHarness();
+      const response = harness.call(
+        request("POST", "/notes", { body: draft({ origin: "https://A.example:443/x" }) }),
+      );
+      expect(response.status).toBe(200);
+      expect(jsonOf(response).note.origin).toBe("https://a.example");
+      expect(harness.state.notes[0]?.origin).toBe("https://a.example");
+    });
+
+    it("normalises a case variant on create (AC-A10)", () => {
+      const harness = createHarness();
+      const response = harness.call(request("POST", "/notes", { body: draft({ origin: "HTTPS://A.EXAMPLE" }) }));
+      expect(response.status).toBe(200);
+      expect(jsonOf(response).note.origin).toBe("https://a.example");
+    });
+
+    it("refuses an unusable create origin with 400 invalid_origin and stores nothing (AC-A10)", () => {
+      const harness = createHarness();
+      for (const origin of ["file:///x", "42", "data:text/html,x", "   ", {}]) {
+        const response = harness.call(request("POST", "/notes", { body: { ...draft(), origin } }));
+        expect(response.status).toBe(400);
+        expect(jsonOf(response).error.code).toBe("invalid_origin");
+      }
+      expect(harness.state.notes).toEqual([]);
+      expect(harness.saves()).toBe(0);
+    });
+
+    it("stores '', 'null', null and an absent origin as unassigned (AC-A10)", () => {
+      for (const body of [draft({ origin: "" }), draft({ origin: "null" }), draft({ origin: null }), draft()]) {
+        const harness = createHarness();
+        const response = harness.call(request("POST", "/notes", { body }));
+        expect(response.status).toBe(200);
+        expect(jsonOf(response).note.origin).toBeNull();
+        expect(harness.state.notes[0]?.origin).toBeNull();
+      }
+    });
+
+    it("filters by one origin and by the unassigned set (AC-A11)", () => {
+      const harness = createHarness({ notes: originNotes() });
+      expect(idsOf(harness.call(request("GET", "/notes?origin=https://a.example")))).toEqual(["n1"]);
+      // Both spellings of "unassigned" select only the origin-less note; a canonical origin is
+      // compared after normalisation, so a case/port variant still finds the stored value.
+      expect(idsOf(harness.call(request("GET", "/notes?origin=")))).toEqual(["n3"]);
+      expect(idsOf(harness.call(request("GET", "/notes?origin=null")))).toEqual(["n3"]);
+      expect(idsOf(harness.call(request("GET", "/notes?origin=https://A.example:443")))).toEqual(["n1"]);
+      expect(harness.call(request("GET", "/notes")).body).toContain('"n1"');
+      expect(idsOf(harness.call(request("GET", "/notes")))).toHaveLength(3);
+    });
+
+    it("refuses an unusable origin filter with 400 invalid_origin (AC-A11)", () => {
+      const harness = createHarness({ notes: originNotes() });
+      for (const query of ["origin=file:///x", "origin=42"]) {
+        const response = harness.call(request("GET", `/notes?${query}`));
+        expect(response.status).toBe(400);
+        expect(jsonOf(response).error.code).toBe("invalid_origin");
+      }
+    });
+
+    it("scopes a bulk-delete filter by origin, including the unassigned set (FR-2.2)", () => {
+      const harness = createHarness({ notes: originNotes() });
+      const refused = harness.call(
+        request("POST", "/notes/bulk-delete", { body: { confirm: true, filter: { origin: "file:///x" } } }),
+      );
+      expect(refused.status).toBe(400);
+      expect(jsonOf(refused).error.code).toBe("invalid_origin");
+      expect(harness.saves()).toBe(0);
+
+      const response = harness.call(
+        request("POST", "/notes/bulk-delete", { body: { confirm: true, filter: { origin: null } } }),
+      );
+      expect(response.status).toBe(200);
+      expect(jsonOf(response).removed).toBe(1);
+      expect(harness.state.notes.map((entry) => entry.id).sort()).toEqual(["n1", "n2"]);
+    });
+
+    it("refuses a patch that names origin and leaves the note untouched (AC-A09)", () => {
+      const harness = createHarness({
+        notes: [note("n1", "2026-09-15T09:00:01.000Z", { origin: "https://a.example" })],
+      });
+      const before = harness.state.notes[0];
+      // The refusal is the unknown-field path, not a value check: `origin` is not in PATCH_FIELDS,
+      // and a patch that also carries a valid field must not apply that field either.
+      const response = harness.call(
+        request("PATCH", "/notes/n1", { body: { status: "done", origin: "https://b.example" } }),
+      );
+      expect(response.status).toBe(400);
+      expect(jsonOf(response).error.code).toBe("invalid_payload");
+      expect(jsonOf(response).error.message).toContain("unknown patch field(s) origin");
+      expect(harness.state.notes[0]).toEqual(before);
+      expect(harness.state.notes[0]?.status).toBe("open");
+      expect(harness.saves()).toBe(0);
     });
   });
 

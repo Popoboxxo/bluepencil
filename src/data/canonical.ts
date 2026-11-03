@@ -17,44 +17,38 @@ import type {
   RevealHint,
   Session,
 } from "../core/model";
-
-/** Code-unit comparison: deterministic on every platform, unlike `localeCompare`. */
-function compareStrings(a: string, b: string): number {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
-}
-
-/**
- * Review order (NFR-10, docs/INTERNAL-API.md §7): a pending decision first, then notes that
- * only ask for an assessment (`intent: "feedback"`), then open, then done.
- */
-function priorityOf(note: Note): number {
-  if (note.status === "needs_decision") return 0;
-  if (note.intent === "feedback") return 1;
-  if (note.status === "open") return 2;
-  return 3; // done
-}
+import { originOf } from "../core/origin";
+import { compareCodeUnits, reviewPriority } from "./order";
 
 function routeOf(note: Note): string {
   return note.anchor.route ?? "";
 }
 
+/** Canonical origin key (FR-2.2): `null` sorts first, so unassigned notes lead the export. */
+function originKeyOf(note: Note): string {
+  return originOf(note) ?? "";
+}
+
+/**
+ * Canonical bundle order: `origin` (`null` as `""`) → `route` → priority → `createdAt` → `id`.
+ * The comparator and the priority class come from `order.ts` (BP-07) — there is no second copy.
+ */
 function compareNotes(a: Note, b: Note): number {
   return (
-    compareStrings(routeOf(a), routeOf(b)) ||
-    priorityOf(a) - priorityOf(b) ||
-    compareStrings(a.createdAt, b.createdAt) ||
-    compareStrings(a.id, b.id)
+    compareCodeUnits(originKeyOf(a), originKeyOf(b)) ||
+    compareCodeUnits(routeOf(a), routeOf(b)) ||
+    reviewPriority(a) - reviewPriority(b) ||
+    compareCodeUnits(a.createdAt, b.createdAt) ||
+    compareCodeUnits(a.id, b.id)
   );
 }
 
 function compareMessages(a: Message, b: Message): number {
-  return compareStrings(a.ts, b.ts) || compareStrings(a.id, b.id);
+  return compareCodeUnits(a.ts, b.ts) || compareCodeUnits(a.id, b.id);
 }
 
 function compareSessions(a: Session, b: Session): number {
-  return compareStrings(a.ref, b.ref) || compareStrings(a.createdAt, b.createdAt);
+  return compareCodeUnits(a.ref, b.ref) || compareCodeUnits(a.createdAt, b.createdAt);
 }
 
 function canonicalAnchor(anchor: Anchor): Anchor {
@@ -80,7 +74,7 @@ function canonicalReveal(reveal: RevealHint): RevealHint {
 
 function canonicalContext(context: CapturedContext): CapturedContext {
   const styles: Record<string, string> = {};
-  for (const key of Object.keys(context.styles).sort(compareStrings)) {
+  for (const key of Object.keys(context.styles).sort(compareCodeUnits)) {
     const value = context.styles[key];
     if (value !== undefined) styles[key] = value;
   }
@@ -134,6 +128,8 @@ export function canonicalNote(note: Note): Note {
     schemaVersion: note.schemaVersion,
     createdAt: note.createdAt,
     updatedAt: note.updatedAt,
+    // FR-2.2: always emitted (`null` included), between `updatedAt` and `sessionRef` (NFR-17).
+    origin: note.origin ?? null,
     ...(note.sessionRef !== undefined ? { sessionRef: note.sessionRef } : {}),
     type: note.type,
     // FR-3.6/3.7: fixed position right after `type` keeps bundles diffable (NFR-17).
@@ -203,7 +199,7 @@ function canonicalizeValue(value: unknown): unknown {
   if (isNoteLike(value)) return canonicalNote(value as unknown as Note);
   if (isObject(value)) {
     const out: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort(compareStrings)) {
+    for (const key of Object.keys(value).sort(compareCodeUnits)) {
       out[key] = canonicalizeValue(value[key]);
     }
     return out;
