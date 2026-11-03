@@ -35,6 +35,7 @@ export type UrlPolicyReason =
   | "metadata"
   | "unspecified"
   | "multicast"
+  | "reserved"
   | "unresolvable_host";
 
 /** Error thrown by `normalizeBaseUrl`/`checkBaseUrl`. Carries a machine-readable reason. */
@@ -83,6 +84,7 @@ export type IpClass =
   | "link_local"
   | "unspecified"
   | "multicast"
+  | "reserved"
   | "public";
 
 /** Cloud metadata host names, always blocked regardless of `allowInsecure`. */
@@ -207,6 +209,7 @@ function ipv4FromTail(high: number, low: number): string {
  * - IPv4-translated  `::ffff:0:a.b.c.d`   (`::ffff:0:0:0/96`)
  * - IPv4-compatible  `::a.b.c.d`          (`::/96`, but never `::` or `::1`)
  * - NAT64 well-known `64:ff9b::a.b.c.d`   (`64:ff9b::/96`)
+ * - 6to4             `2002:a.b.c.d::/48`  (embedded bits 16–47, SEC-11)
  *
  * The NAT64 local-use prefix `64:ff9b:1::/48` is deliberately not unwrapped: RFC 6052 places
  * the IPv4 bits at a prefix-length-dependent offset, so a fixed 32-bit tail is not well-defined.
@@ -242,6 +245,11 @@ function embeddedIpv4FromGroups(groups: readonly number[]): string | undefined {
     return ipv4FromTail(groups[6]!, groups[7]!);
   }
 
+  // 6to4 `2002::/16` carries the IPv4 address in bits 16–47 (groups 1 and 2).
+  if (groups[0] === 0x2002) {
+    return ipv4FromTail(groups[1]!, groups[2]!);
+  }
+
   return undefined;
 }
 
@@ -259,6 +267,20 @@ export function embeddedIpv4(address: string): string | undefined {
   const groups = parseIpv6(bare);
   if (groups === null) return undefined;
   return embeddedIpv4FromGroups(groups);
+}
+
+/**
+ * Returns the IPv4 address carried by a 6to4 literal (`2002::/16`, bits 16–47), or `null`
+ * for every other input. Kept separate from {@link embeddedIpv4} because it answers the
+ * narrower question the classification contract names explicitly (SEC-11).
+ */
+export function unwrap6to4(address: string): string | null {
+  const bare = stripBrackets(address.trim());
+  if (!bare.includes(":")) return null;
+
+  const groups = parseIpv6(bare);
+  if (groups === null || groups[0] !== 0x2002) return null;
+  return ipv4FromTail(groups[1]!, groups[2]!);
 }
 
 /** Canonical host form used for comparisons: lower-case, no IPv6 brackets, no trailing dot. */
@@ -281,6 +303,10 @@ function classifyIpv4(octets: readonly [number, number, number, number]): IpClas
   if (a === 192 && b === 168) return "private";
   // Carrier-grade NAT: not internet-routable, treated like a private range.
   if (a === 100 && b >= 64 && b <= 127) return "private";
+  // Benchmarking `198.18.0.0/15` and the former class E / broadcast block `240.0.0.0/4`
+  // (`255.255.255.255` included) are never a public peer (SEC-11).
+  if (a === 198 && (b === 18 || b === 19)) return "reserved";
+  if (a >= 240) return "reserved";
   return "public";
 }
 
@@ -331,6 +357,54 @@ export function classifyIp(address: string): IpClass {
   const ipv4 = parseIpv4(bare);
   if (ipv4 === null) throw new Error(`Not an IP address: ${JSON.stringify(address)}`);
   return classifyIpv4(ipv4);
+}
+
+/**
+ * Coarse, total address classification for the federation pre-check (SEC-11).
+ *
+ * Unlike {@link classifyIp} this never throws: malformed input is `"invalid"`. Valid literals
+ * that have no dedicated bucket in the public contract — `unspecified` (`0.0.0.0/8`, `::`) and
+ * `multicast` — report `"reserved"`, because neither can be a routable peer. Metadata is
+ * checked first, so an IPv4-embedded or 6to4-wrapped `169.254.169.254` reports `"metadata"`,
+ * not `"link-local"` (N-01). The function is pure: no DNS, no network.
+ */
+export type AddressClass =
+  | "public"
+  | "private"
+  | "loopback"
+  | "link-local"
+  | "reserved"
+  | "metadata"
+  | "invalid";
+
+export function classifyAddress(address: string): AddressClass {
+  const bare = stripBrackets(address.trim());
+  if (!isIpLiteral(bare)) return "invalid";
+
+  if (isMetadataAddress(bare)) return "metadata";
+
+  let kind: IpClass;
+  try {
+    kind = classifyIp(bare);
+  } catch {
+    return "invalid";
+  }
+
+  switch (kind) {
+    case "public":
+      return "public";
+    case "private":
+      return "private";
+    case "loopback":
+      return "loopback";
+    case "link_local":
+      return "link-local";
+    case "reserved":
+      return "reserved";
+    case "unspecified":
+    case "multicast":
+      return "reserved";
+  }
 }
 
 /** True when `host` is a valid IPv4 or IPv6 literal (brackets allowed). */
@@ -476,6 +550,12 @@ function assertAddressAllowed(
   }
   if (kind === "multicast") {
     throw new UrlPolicyError("multicast", "Base URL points at a multicast address", {
+      host,
+      address,
+    });
+  }
+  if (kind === "reserved") {
+    throw new UrlPolicyError("reserved", "Base URL points at a reserved address", {
       host,
       address,
     });

@@ -15,7 +15,11 @@
  *    therefore cannot follow a `Location` to a foreign host (T78).
  *  - **No hanging request.** Every request races its `fetch` against an `AbortController` timeout,
  *    so a server that accepts the socket and never answers is `timeout`, never an empty success
- *    (T15).
+ *    (T15). The same deadline stays armed while the body is consumed: a peer that sends headers and
+ *    then trickles the body is `invalid_response`, not an open-ended read.
+ *  - **No unbounded body.** The body is read through `response.body` with a per-peer byte cap; an
+ *    oversized answer is aborted at the limit and reported as `invalid_response`, never buffered
+ *    into memory (SEC-05). The cap holds per peer, so `--concurrency` multiplies peers, not bytes.
  *  - **No secret leaves this process.** The credential value is only ever used to build a header.
  *    It is not an enumerable field, not part of a message and every message is passed through the
  *    caller's {@link Redactor} plus a defensive redactor built from the value itself (T16/NFR-22).
@@ -72,6 +76,12 @@ export interface InstanceClientOptions {
   allowInsecure?: boolean;
   /** Per-request timeout in milliseconds (default 3000). */
   timeoutMs?: number;
+  /**
+   * Upper bound for one response body in bytes (default {@link MAX_RESPONSE_BODY_BYTES}).
+   * `/config` additionally clamps to {@link CONFIG_MAX_BODY_BYTES}; tests lower this to keep the
+   * overflow path cheap.
+   */
+  maxBodyBytes?: number;
   /** Injectable for tests and runtimes without a global `fetch`. */
   fetchImpl?: typeof fetch;
   /** Applied to every error message before it leaves the process. */
@@ -271,6 +281,59 @@ interface RequestInitLike {
 }
 
 /* ------------------------------------------------------------------------------------------------
+ * Outbound bounds (SEC-05)
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * Per-peer response budget. Both halves are enforced per instance, so fan-out at
+ * `--concurrency` multiplies the number of peers, never a peer's own allowance.
+ */
+export interface OutboundLimits {
+  /** Deadline for one exchange, armed before the pre-flight check and kept until the body ends. */
+  timeoutMs: number;
+  /** Byte cap for one response body; `/config` uses the smaller {@link CONFIG_MAX_BODY_BYTES}. */
+  maxBodyBytes: number;
+}
+
+/**
+ * One peer response may not exceed the hub's own inbound ceiling. A federating hub streams the
+ * same note bodies it accepts, so a larger answer is a contract violation, not a big bundle.
+ */
+export const MAX_RESPONSE_BODY_BYTES = 8 * 1024 * 1024;
+
+/** `/config` is a small DTO; the discovery probe must not be a way to stream 8 MiB. */
+export const CONFIG_MAX_BODY_BYTES = 64 * 1024;
+
+export const DEFAULT_OUTBOUND_LIMITS: OutboundLimits = {
+  timeoutMs: DEFAULT_CLIENT_TIMEOUT_MS,
+  maxBodyBytes: MAX_RESPONSE_BODY_BYTES,
+};
+
+/**
+ * Everything one response body read needs: the still-armed deadline signal, its rejection
+ * companion (so a non-conforming stream cannot ignore the abort) and the byte cap.
+ */
+interface BodyBudget {
+  signal: AbortSignal;
+  aborted: Promise<never>;
+  maxBodyBytes: number;
+}
+
+/** Rejection companion to an abort signal; swallows nothing, the caller attaches a no-op catch. */
+function abortRejection(signal: AbortSignal): Promise<never> {
+  return new Promise<never>((_resolve, reject) => {
+    const fail = (): void => reject(new Error("request aborted"));
+    if (signal.aborted) fail();
+    else signal.addEventListener("abort", fail, { once: true });
+  });
+}
+
+/** UTF-8 byte length for the non-streaming fallback path (`Response` without a body stream). */
+function utf8Length(text: string): number {
+  return typeof TextEncoder === "function" ? new TextEncoder().encode(text).byteLength : text.length;
+}
+
+/* ------------------------------------------------------------------------------------------------
  * InstanceClient
  * ---------------------------------------------------------------------------------------------- */
 
@@ -282,6 +345,7 @@ export class InstanceClient implements ReadSource {
   readonly #expectedApp: string | undefined;
   readonly #allowInsecure: boolean;
   readonly #timeoutMs: number;
+  readonly #maxBodyBytes: number;
   readonly #fetchImpl: typeof fetch | undefined;
   readonly #auth: InstanceAuth | undefined;
   readonly #resolver: HostResolver;
@@ -313,7 +377,13 @@ export class InstanceClient implements ReadSource {
     this.#timeoutMs =
       typeof options.timeoutMs === "number" && options.timeoutMs > 0
         ? options.timeoutMs
-        : DEFAULT_CLIENT_TIMEOUT_MS;
+        : DEFAULT_OUTBOUND_LIMITS.timeoutMs;
+    this.#maxBodyBytes =
+      typeof options.maxBodyBytes === "number" &&
+      Number.isFinite(options.maxBodyBytes) &&
+      options.maxBodyBytes > 0
+        ? Math.floor(options.maxBodyBytes)
+        : DEFAULT_OUTBOUND_LIMITS.maxBodyBytes;
     this.#fetchImpl = options.fetchImpl ?? (globalThis as { fetch?: typeof fetch }).fetch;
     this.#auth = options.auth;
     /* Default on purpose: a client without a resolver would never see a DNS answer, so an
@@ -573,7 +643,7 @@ export class InstanceClient implements ReadSource {
    * loading waits for it instead of racing ahead with the secret-header default (N-02).
    *
    * The slot is cleared once the attempt settles: a success is then served from
-   * `#cachedConfig`, a failure can be retried. The request itself goes through `#send` directly,
+   * `#cachedConfig`, a failure can be retried. The request itself goes through `#exchange` directly,
    * never through `#requestJson`, because that path primes auth and would recurse into here.
    */
   #loadConfig(): Promise<HubConfig> {
@@ -590,8 +660,9 @@ export class InstanceClient implements ReadSource {
 
   /** `GET /config` without priming; only {@link #loadConfig} calls this. */
   async #fetchConfig(): Promise<HubConfig> {
-    const response = await this.#send("GET", "/config", {});
-    const payload = await this.#readJson(response, "GET /config");
+    const payload = await this.#exchange("GET", "/config", {}, (response, body) =>
+      this.#readJson(response, "GET /config", body),
+    );
     const config = parseConfig(payload);
     if (config === null) {
       throw this.#failure(
@@ -623,8 +694,9 @@ export class InstanceClient implements ReadSource {
     /* Learn the auth mode before any non-config request, so a token hub receives its first
      * `/notes` call with `Authorization`, not the secret-header default (F-21). */
     await this.#primeAuth();
-    const response = await this.#send(method, path, init);
-    return this.#readJson(response, `${method} ${path}`);
+    return this.#exchange(method, path, init, (response, body) =>
+      this.#readJson(response, `${method} ${path}`, body),
+    );
   }
 
   /**
@@ -647,11 +719,78 @@ export class InstanceClient implements ReadSource {
     }
   }
 
-  /** Reads a body without ever letting a read failure surface as a raw error (F-14). */
-  async #bodyText(response: Response, label: string): Promise<string> {
+  /**
+   * Reads a body without ever letting a read failure surface as a raw error (F-14).
+   *
+   * The body is consumed through `response.body`, not `response.text()`, so the byte cap is
+   * enforced while the bytes arrive: crossing it cancels the stream and reports `invalid_response`
+   * instead of buffering past the limit (SEC-05). The caller's deadline is still armed, and the
+   * reader is raced against it, so a peer that trickles one byte per second cannot keep the read
+   * open past the budget either.
+   */
+  async #bodyText(response: Response, label: string, budget: BodyBudget): Promise<string> {
+    const stream = response.body;
+
+    if (stream === null || typeof stream.getReader !== "function") {
+      /* A body-less response (204/304) has nothing to read; a non-conforming stub may also expose
+       * no stream. `text()` is the only option left, but the result is still size-checked. */
+      try {
+        const pending = response.text();
+        pending.catch(() => {});
+        const text = await Promise.race([pending, budget.aborted]);
+        if (utf8Length(text) > budget.maxBodyBytes) {
+          throw this.#failure(
+            "invalid_response",
+            `${label}: response body exceeded ${budget.maxBodyBytes} bytes`,
+            { status: response.status },
+          );
+        }
+        return text;
+      } catch (error) {
+        if (error instanceof FederationError) throw error;
+        if (budget.signal.aborted) throw error;
+        if (!response.ok) throw this.#httpFailure(response.status, "");
+        throw this.#failure(
+          "instance_unreachable",
+          `${label}: response body could not be read: ${messageOf(error)}`,
+          { status: response.status },
+        );
+      }
+    }
+
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    /* Abort is not guaranteed to reject `reader.read()` in an injected stream, so cancelling the
+     * stream on the signal is what actually stops the peer from sending more bytes. */
+    const stop = (): void => {
+      void reader.cancel().catch(() => {});
+    };
+    if (budget.signal.aborted) stop();
+    else budget.signal.addEventListener("abort", stop, { once: true });
+
     try {
-      return await response.text();
+      let received = 0;
+      let text = "";
+      for (;;) {
+        const chunk = await Promise.race([reader.read(), budget.aborted]);
+        if (chunk.done) break;
+        received += chunk.value.byteLength;
+        if (received > budget.maxBodyBytes) {
+          stop();
+          throw this.#failure(
+            "invalid_response",
+            `${label}: response body exceeded ${budget.maxBodyBytes} bytes`,
+            { status: response.status },
+          );
+        }
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      return text + decoder.decode();
     } catch (error) {
+      if (error instanceof FederationError) throw error;
+      /* An abort is classified by #exchange, which knows whether the deadline fired while the
+       * headers or while the body were still outstanding. */
+      if (budget.signal.aborted) throw error;
       if (!response.ok) {
         // The status is still a fact, even when the body is unreadable.
         throw this.#httpFailure(response.status, "");
@@ -661,10 +800,12 @@ export class InstanceClient implements ReadSource {
         `${label}: response body could not be read: ${messageOf(error)}`,
         { status: response.status },
       );
+    } finally {
+      budget.signal.removeEventListener("abort", stop);
     }
   }
 
-  async #readJson(response: Response, label: string): Promise<unknown> {
+  async #readJson(response: Response, label: string, budget: BodyBudget): Promise<unknown> {
     if (response.status >= 300 && response.status < 400) {
       throw this.#failure(
         "invalid_response",
@@ -673,7 +814,7 @@ export class InstanceClient implements ReadSource {
       );
     }
 
-    const text = await this.#bodyText(response, label);
+    const text = await this.#bodyText(response, label, budget);
 
     if (!response.ok) {
       throw this.#httpFailure(response.status, text);
@@ -693,7 +834,7 @@ export class InstanceClient implements ReadSource {
   }
 
   /** Used for notifications, whose documented answer is 202 with an empty body. */
-  async #readNone(response: Response, label: string): Promise<void> {
+  async #readNone(response: Response, label: string, budget: BodyBudget): Promise<void> {
     if (response.status >= 300 && response.status < 400) {
       throw this.#failure(
         "invalid_response",
@@ -702,7 +843,7 @@ export class InstanceClient implements ReadSource {
       );
     }
 
-    const text = await this.#bodyText(response, label);
+    const text = await this.#bodyText(response, label, budget);
     if (!response.ok) {
       throw this.#httpFailure(response.status, text);
     }
@@ -744,8 +885,20 @@ export class InstanceClient implements ReadSource {
     return this.#failure(mapHttpStatus(status), `HTTP ${status}`, { status });
   }
 
-  /** One HTTP exchange with pre-flight policy, timeout and redirect refusal. */
-  async #send(method: string, path: string, init: RequestInitLike): Promise<Response> {
+  /**
+   * One HTTP exchange with pre-flight policy, timeout and redirect refusal.
+   *
+   * The deadline covers the whole exchange, not just the headers: `consume` runs inside the same
+   * `try`/`finally`, so the abort stays armed until the body is fully read and the timer is only
+   * cleared afterwards (SEC-05). A deadline that fires while the body is outstanding is
+   * `invalid_response` because the peer did answer — it just never finished the answer.
+   */
+  async #exchange<T>(
+    method: string,
+    path: string,
+    init: RequestInitLike,
+    consume: (response: Response, budget: BodyBudget) => Promise<T>,
+  ): Promise<T> {
     const controller = new AbortController();
     let timedOut = false;
     /* The deadline starts before the pre-flight check: a resolver that never answers would
@@ -757,14 +910,10 @@ export class InstanceClient implements ReadSource {
 
     /* A real `fetch` rejects on abort, but an injected or non-conforming implementation may keep a
      * promise pending forever. Racing against the abort event is what makes T15 deterministic. */
-    const aborted = new Promise<never>((_resolve, reject) => {
-      controller.signal.addEventListener("abort", () => reject(new Error("request aborted")), {
-        once: true,
-      });
-    });
+    const aborted = abortRejection(controller.signal);
     aborted.catch(() => {});
 
-    let phase: "check" | "fetch" = "check";
+    let phase: "check" | "fetch" | "body" = "check";
     try {
       // The DNS/address gate shares the same budget as the request that follows it.
       await Promise.race([this.#checkBase(), aborted]);
@@ -795,12 +944,25 @@ export class InstanceClient implements ReadSource {
       }
 
       phase = "fetch";
-      return await Promise.race([fetchImpl(url, requestInit), aborted]);
+      const response = await Promise.race([fetchImpl(url, requestInit), aborted]);
+
+      phase = "body";
+      return await consume(response, {
+        signal: controller.signal,
+        aborted,
+        maxBodyBytes: this.#maxBodyBytesFor(path),
+      });
     } catch (error) {
       // Policy and contract failures already carry their canonical code.
       if (error instanceof FederationError) throw error;
       const url = this.#url(path, init.query);
       if (timedOut) {
+        if (phase === "body") {
+          throw this.#failure(
+            "invalid_response",
+            `${method} ${url}: response body not complete within ${this.#timeoutMs} ms`,
+          );
+        }
         throw this.#failure(
           "timeout",
           `${method} ${url} timed out after ${this.#timeoutMs} ms`,
@@ -816,7 +978,19 @@ export class InstanceClient implements ReadSource {
     }
   }
 
-  /** DNS-rebinding gate: every request re-checks the base URL before any socket is opened. */
+  /** `/config` is the discovery probe, so it gets the smaller cap of the two. */
+  #maxBodyBytesFor(path: string): number {
+    return path === "/config"
+      ? Math.min(this.#maxBodyBytes, CONFIG_MAX_BODY_BYTES)
+      : this.#maxBodyBytes;
+  }
+
+  /**
+   * Address pre-check, not pinning: every request re-resolves the base URL before any socket is
+   * opened. The connection itself is not bound to the checked address, so a short TTL can still
+   * rebind between this check and `fetch` — an accepted residual risk documented in
+   * `docs/FEDERATION.md` §12, closed only by a pinned dispatcher or proxy (not a 0.12.0 goal).
+   */
   async #checkBase(): Promise<void> {
     try {
       await checkBaseUrl(this.base, {
@@ -891,32 +1065,40 @@ export class InstanceClient implements ReadSource {
      * token-authenticated hubs. The call is cached, so this costs one request per client. */
     await this.config();
 
-    const response = await this.#send("POST", "/mcp", {
-      headers: this.#mcpHeaders(),
-      body: {
-        jsonrpc: "2.0",
-        id: this.#nextRpcId(),
-        method: "initialize",
-        params: {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          capabilities: {},
-          clientInfo: {
-            name: this.clientName ?? DEFAULT_MCP_CLIENT_NAME,
-            version: VERSION,
+    const payload = await this.#exchange(
+      "POST",
+      "/mcp",
+      {
+        headers: this.#mcpHeaders(),
+        body: {
+          jsonrpc: "2.0",
+          id: this.#nextRpcId(),
+          method: "initialize",
+          params: {
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: {
+              name: this.clientName ?? DEFAULT_MCP_CLIENT_NAME,
+              version: VERSION,
+            },
           },
         },
       },
-    });
-    const payload = await this.#readJson(response, "initialize");
+      (response, body) => this.#readJson(response, "initialize", body),
+    );
     if (isRecord(payload) && isRecord(payload["error"])) {
       throw this.#rpcFailure(payload["error"], "initialize");
     }
 
-    const notification = await this.#send("POST", "/mcp", {
-      headers: this.#mcpHeaders(),
-      body: { jsonrpc: "2.0", method: "notifications/initialized" },
-    });
-    await this.#readNone(notification, "notifications/initialized");
+    await this.#exchange(
+      "POST",
+      "/mcp",
+      {
+        headers: this.#mcpHeaders(),
+        body: { jsonrpc: "2.0", method: "notifications/initialized" },
+      },
+      (response, body) => this.#readNone(response, "notifications/initialized", body),
+    );
   }
 
   /** JSON-RPC error → canonical code. A malformed result is `invalid_response`. */

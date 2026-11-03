@@ -11,7 +11,7 @@
  * Dummy tokens only, loopback only, no real network.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import {
   createServer as createHttpServer,
   request as nodeRequest,
@@ -438,5 +438,33 @@ describe("security.credential_blast_radius (T81)", () => {
     /* The aggregate itself must not surface either credential either. */
     expect(listed).not.toContain(tokenA);
     expect(listed).not.toContain(tokenB);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * AC-E06 — the address comment tells the truth (SEC-11, G12)
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("security.address_check_is_a_pre_check (AC-E06)", () => {
+  const clientSource = readFileSync(
+    new URL("../../src/federation/client.ts", import.meta.url),
+    "utf8",
+  );
+
+  it("calls the address check a pre-check, not pinning", () => {
+    expect(clientSource).toContain("pre-check, not pinning");
+  });
+
+  it("does not claim a DNS-rebinding gate", () => {
+    // `rebind` may only appear as the named residual risk, never as a claim of mitigation.
+    expect(clientSource).not.toMatch(/DNS[-\s]rebinding\s+gate/iu);
+    expect(clientSource).not.toMatch(/pins?\s+the\s+resolved\s+(IP|address)/iu);
+  });
+
+  it("names the re-resolution window and the pinning follow-up", () => {
+    expect(clientSource).toMatch(/re-resolves/iu);
+    expect(clientSource).toMatch(/rebind/iu);
+    expect(clientSource).toMatch(/residual risk/iu);
+    expect(clientSource).toMatch(/not a 0\.12\.0 goal/iu);
   });
 });
