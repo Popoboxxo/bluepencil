@@ -19,7 +19,7 @@ Resolution order: host hook (data-bluepencil, data-testid) → stored CSS path �
 
 *Acceptance criteria:* Removing the hook falls back to the path; rewording falls back to the quote
 
-## FR-2.2 The note stores route/path and (if present) the SPA route at capture time
+## FR-2.2 The note stores site origin and route separately: origin records the site the note was c…
 
 ```attr
 prio: P0
@@ -31,9 +31,9 @@ version: 1
 requires-trace-from: []
 ```
 
-The note stores route/path and (if present) the SPA route at capture time
+The note stores site origin and route separately: origin records the site the note was captured on (canonical scheme plus host, null when the origin is opaque or unknown), while anchor.route records the path (and, where the host opts in, the SPA route) inside that site. The two are distinct fields with distinct meaning: origin is provenance, anchor.route is position. A note may have a route without an origin (legacy data) and an origin without a route
 
-*Acceptance criteria:* Two notes on the same selector on different routes stay distinct
+*Acceptance criteria:* Two notes on the same selector on different routes stay distinct; the same route captured on two origins yields two distinct notes; a legacy note without `origin` reads as `origin: null` and keeps its `anchor.route`; `origin` never substitutes for `anchor.route` and vice versa
 
 ## FR-2.3 Each anchor is resolved *before* save so invalid anchors cannot be stored
 

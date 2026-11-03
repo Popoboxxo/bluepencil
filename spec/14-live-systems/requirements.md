@@ -31,9 +31,9 @@ version: 1
 requires-trace-from: []
 ```
 
-Export bundle: one schema-versioned JSON file containing sessions, notes, threads, anchors, context and metadata (exported_at, exported_by, environment, app/build, schema)
+Export bundle: one schema-versioned JSON file containing sessions, notes, threads, anchors, context and metadata (exported_at, exported_by, environment, app/build, schema). Every note carries its origin (canonical site origin, null for an unassigned/legacy note) in the canonical form, and the bundle summary reports the distinct origins and the number of unassigned notes. origin is emitted even when it is null, so the canonical form and its hash are stable
 
-*Acceptance criteria:* File validates against the published schema; contains everything needed for a full import
+*Acceptance criteria:* File validates against the published schema; contains everything needed for a full import; every note has an `origin` key (string or `null`); the summary lists the sorted distinct origins and the unassigned count; two exports of the same set are byte-identical
 
 ## FR-14.3 Import with modes — merge (default, idempotent), upsert (update changed notes), replace-…
 
@@ -47,9 +47,9 @@ version: 1
 requires-trace-from: []
 ```
 
-Import with modes — merge (default, idempotent), upsert (update changed notes), replace-session
+Import with modes — merge (default, idempotent), upsert (update changed notes), replace-session. The merge rule for origin is existing.origin ?? incoming.origin: an existing origin is never overwritten, an unassigned note takes the incoming origin. When both are set and differ, origin is reported in divergingFields, the note ID appears in conflicts, the existing origin wins and the note is skipped
 
-*Acceptance criteria:* Importing the same bundle twice changes nothing the second time
+*Acceptance criteria:* Importing the same bundle twice changes nothing the second time; a note with an existing origin keeps it when the bundle names another; an unassigned note adopts the incoming origin; a differing pair yields `origin` in `divergingFields`, the ID in `conflicts`, the existing origin and `skipped`
 
 ## FR-14.4 Import never silently overwrites: dry-run reports added / updated / skipped / conflicts;…
 

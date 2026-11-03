@@ -15,9 +15,9 @@ version: 1
 requires-trace-from: []
 ```
 
-MCP server exposing the note set — tools: list_notes, get_note, create_note, reply, set_status, set_intent, export_bundle, import_bundle; the note enums include feature and priority
+MCP server exposing the note set — tools: list_notes, get_note, create_note, reply, set_status, set_intent, export_bundle, import_bundle; the note enums include feature and priority. create_note and list_notes accept an optional origin: create_note normalises it (an absent field stores null), list_notes filters by it, origin: null selects exactly the unassigned notes and an absent origin leaves the filter unchanged (no silent widening)
 
-*Acceptance criteria:* An MCP client can list open notes, answer one and mark it done, using the same model and validators as the UI
+*Acceptance criteria:* An MCP client can list open notes, answer one and mark it done, using the same model and validators as the UI; `create_note` with `origin` stores the canonical value and without it stores `null`; `list_notes` with an origin returns exactly that origin, with `null` exactly the unassigned notes, and without the field applies no origin filter
 
 ## FR-16.2 Read-only by default; write tools need an explicit opt-in per session
 
