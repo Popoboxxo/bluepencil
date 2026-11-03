@@ -106,7 +106,8 @@ recognises these additional keys:
 | `data-src` | `<dir of attach.js>/bluepencil.element.min.js` | Where the element build is loaded from. May contain `{version}`, which is replaced by `data-version`. |
 | `data-version` | – | Version label the loader reports (and the value substituted into `{version}` in `data-src`). With `data-manifest` the version comes from the manifest and this key is only informational. |
 | `data-manifest` | – | URL of a JSON manifest for runtime updates: `{"version":"…","element":"…","sha256":"…"}`. |
-| `data-integrity` | `"false"` | `"true"` to verify the `sha256` from the manifest with WebCrypto before executing. |
+| `data-integrity` | `"false"` | `"true"` turns on the loader's **download check**: the element bytes are hashed with WebCrypto before the module is imported. Without a digest (`data-sha256` or `manifest.sha256`) this is an error (`integrity_missing`), never a silent pass. |
+| `data-sha256` | – | Optional **host pin**: the 64-character hex SHA-256 the host itself vouches for. It wins over `manifest.sha256`, and a mismatch refuses the build. Only a pin is a trust anchor a compromised manifest or CDN cannot rewrite. Used when `data-integrity="true"` is set. |
 | `data-watch` | `"0"` | Seconds between manifest polls; `0` = off. On a version change the old layer is torn down and the new version mounted. |
 | `data-tag` | `"bluepencil-notes"` | Element tag name to create. |
 | `data-auto` | `"true"` | `"false"` = only define the custom element; the host mounts the element itself. |
@@ -129,7 +130,7 @@ both. `script-src` alone is not enough for a page that talks to a hub.
 | the manifest, and the file the digest is checked against | `latest.json`; with `data-integrity="true"` the element file again | `connect-src` |
 | the hub API | `{base}/health`, `{base}/notes…`, `{base}/sessions` | `connect-src` |
 
-The loader's manifest read (`data-manifest`, `data-watch`, `reload()`) and the SRI check are
+The loader's manifest read (`data-manifest`, `data-watch`, `reload()`) and the digest check are
 `fetch()` calls in the page, so `connect-src` governs them; the element build is a script load, so
 `script-src` governs it (both the dynamic `import()` and the script-tag fallback). The mounted layer
 then talks to the hub through its HTTP adapter, whose requests are `connect-src` as well. The hub
@@ -191,8 +192,8 @@ The manifest is a JSON file with three required keys:
 | Field | Type | Meaning |
 |---|---|---|
 | `version` | string | Version label; any difference from the running version triggers the swap (it is compared for equality, never ordered). |
-| `element` | string | URL of the `bluepencil.element.min.js` build for this version, resolved against the manifest URL. |
-| `sha256` | string | Hex-encoded SHA-256 hash of the element file; verified whenever `data-integrity="true"` is set. |
+| `element` | string | URL of the `bluepencil.element.min.js` build for this version, resolved against the manifest URL. It may point at another origin (a CDN); with `data-integrity="true"` and no host pin the loader warns, but does not block. |
+| `sha256` | string | Hex-encoded SHA-256 hash of the element file; used for the download check when `data-integrity="true"` is set **and** no `data-sha256` pin is given. |
 
 ### Loader attributes for runtime updates
 
@@ -201,7 +202,8 @@ The manifest is a JSON file with three required keys:
 | `data-manifest` | URL of the manifest (enables polling). |
 | `data-version` | Set to `"latest"` (the default when `data-manifest` is present) to always follow the manifest. |
 | `data-watch` | Polling interval in seconds; `0` = off. |
-| `data-integrity` | `"true"` to verify the manifest `sha256` against the fetched file with WebCrypto before executing it. |
+| `data-integrity` | `"true"` turns on the download check: the fetched element bytes are hashed with WebCrypto before the module is imported. Opting in without a digest is an error. |
+| `data-sha256` | Host pin (64 hex characters). Wins over the manifest digest; a mismatch refuses the build and the module is not imported. |
 
 ### `window.bluepencilAttach` API
 
@@ -297,11 +299,15 @@ only in unit tests. See [examples/attach/README.md](../examples/attach/README.md
   `script-src` CSP needs an explicit allowlist entry for the URL of `attach.js` (and for the element
   build); a page that talks to a hub also needs the hub origin in `connect-src` — `script-src`
   alone does not cover `fetch()`. See [CSP: `script-src` and `connect-src`](#csp-script-src-and-connect-src).
-* **Subresource Integrity (SRI):** when `data-integrity="true"`, the
-  manifest's `sha256` is verified with WebCrypto. The element file must
-  be served from the **same origin** or with appropriate
-  `Access-Control-Allow-Origin` headers (CORS) for the hash to be
-  fetchable.
+* **Download check, not Subresource Integrity.** With `data-integrity="true"` the loader hashes the
+  fetched element bytes with WebCrypto before it imports the module. That is a download check: the
+  browser does not enforce a digest at execution time, and the module is imported normally afterwards.
+  The expected digest comes from `data-sha256` (the **host pin**) or, if that is absent, from
+  `manifest.sha256`. Only the host pin is a real trust anchor — a manifest served from the same mutable
+  location can be rewritten by whoever compromises it, together with its digest. Pin the build with
+  `data-sha256` when you need assurance. `manifest.element` may point at another origin (a CDN); that
+  is allowed, and with `data-integrity="true"` and no host pin the loader logs a warning instead of
+  blocking. A cross-origin build must be fetchable (CORS) so the digest check can read the bytes.
 
 ## 4. The store contract
 

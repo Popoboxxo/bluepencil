@@ -55,6 +55,21 @@ describe("elementAttributesFor", () => {
     expect(elementAttributesFor(base, "en").route).toBe("url");
   });
 
+  it("writes the path-only route and never the query opt-in (AC-C04)", () => {
+    // Every store mode, including the hub: the route sentence does not depend on where notes go.
+    for (const store of ["chromeStorage", "localStorage", "http"] as const) {
+      const attributes = elementAttributesFor(
+        { ...base, store, endpoint: store === "http" ? "http://127.0.0.1:8787/api" : "" },
+        "en",
+      );
+      expect(attributes.route).toBe("url");
+      expect(attributes.route).not.toBe("url-with-query");
+      // No implicit opt-in: without `query-allow` the element cannot keep a query parameter.
+      expect(attributes["query-allow"]).toBeUndefined();
+      expect(attributes["query-deny"]).toBeUndefined();
+    }
+  });
+
   it("selects the HTTP adapter by its endpoint, never by an adapter name alone", () => {
     const attributes = elementAttributesFor(
       { ...base, store: "http", endpoint: "http://127.0.0.1:8787/api/v1/bluepencil" },

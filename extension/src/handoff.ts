@@ -44,10 +44,19 @@ export function pageSettingsFor(settings: ExtensionSettings): PageSettings {
 }
 
 /** The subset of settings that decides the element's attributes. */
-export type AttributeSource = Pick<
+export type ExtensionAttributeSource = Pick<
   ExtensionSettings,
   "environment" | "appName" | "language" | "identity" | "store" | "endpoint" | "auth" | "token"
 >;
+
+/**
+ * The route the extension writes, always the path-only mode (G8, AC-C04).
+ *
+ * `route="url"` means "store the page's pathname"; the query is never part of an extension note.
+ * The extension offers **no** query opt-in in 0.12.0: writing `route="url-with-query"` (or a
+ * `query-allow` list) would silently turn a deep-link token into a stored note field.
+ */
+const EXTENSION_ROUTE = "url" as const;
 
 /**
  * The attributes the element should be given, in its own vocabulary.
@@ -66,21 +75,23 @@ export type AttributeSource = Pick<
  *   used to offer "take it from the page", which has no counterpart in the element contract at all.
  * - **`route: "url"`** gives the tab's own URL a home. The worker used to write `data-bluepencil-url`,
  *   which no attribute reads; `route="url"` makes every note carry the page it was taken on, which is
- *   what the tab URL was recorded for.
+ *   what the tab URL was recorded for. Since G8 the value is path-only: the query is never stored,
+ *   and the extension deliberately writes neither `url-with-query` nor `query-allow` (AC-C04).
  * - **the credential** keeps its two modes, because they are two different headers: the shared secret
  *   goes in `x-bluepencil-auth`, the signed token in `Authorization: Bearer <token>`. Choosing one is
  *   a decision, never an inference.
  */
 export function elementAttributesFor(
-  settings: AttributeSource,
+  settings: ExtensionAttributeSource,
   browserLanguage: string = "",
 ): Record<string, string> {
   const attributes: Record<string, string> = {
     environment: settings.environment,
     language: settings.language === "auto" ? autoLanguage(browserLanguage) : settings.language,
     identity: settings.identity,
-    // A review note belongs to the page it was taken on; the element stores the route itself.
-    route: "url",
+    // A review note belongs to the page it was taken on; the element stores the path only — the
+    // extension never opts into the query (G8, AC-C04).
+    route: EXTENSION_ROUTE,
   };
 
   if (settings.appName.trim().length > 0) {

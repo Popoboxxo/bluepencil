@@ -9,8 +9,13 @@
  *
  * `latest.json` is `{"version":"0.2.1","element":"<url>","sha256":"<hex>"}`. The loader reads the
  * pointer, compares it with the version it already mounted and swaps the layer when it changed.
- * Everything in this module is pure (except `verifyIntegrity`, which takes the fetch function
- * injected) so the contract is unit-testable without a browser.
+ * Everything in this module is pure (except the injected `fetch` in `fetchBytes`/the compatibility
+ * overload) so the contract is unit-testable without a browser.
+ *
+ * The digest is a **download check, not Subresource Integrity (G7)**: the loader hashes a separate
+ * download and then imports the module normally, so the browser enforces nothing at execution time.
+ * A digest from the manifest can be rewritten by whoever can rewrite the manifest; only the host pin
+ * (`data-sha256` on the loader tag) is a trust anchor the host itself controls.
  */
 import { isRecord } from "../core/adapter";
 
@@ -19,7 +24,10 @@ export interface AttachManifest {
   version: string;
   /** Absolute or relative URL of the element build for that version. */
   element: string;
-  /** Optional hex SHA-256 of the element build; verified when `data-integrity` is set. */
+  /**
+   * Optional hex SHA-256 of the element build; verified when `data-integrity` is set *and* no
+   * `data-sha256` host pin is given (the pin wins).
+   */
   sha256?: string;
 }
 
@@ -130,38 +138,131 @@ export async function sha256Hex(
 }
 
 /**
- * Downloads and hashes the element build before it is executed. Returns a failure when the digest
- * does not match; a missing WebCrypto implementation is reported as "could not verify" so a host
- * never believes an unverified script was checked.
+ * What an integrity check can conclude — never a silent "ok" when no digest was actually checked.
+ *
+ * `source` names the trust anchor that was used: the host pin (`data-sha256`) or the manifest digest.
+ * `code` is part of the observable contract (AC-C06/AC-C07): a loader failure is reported as
+ * `integrity_missing` / `integrity_mismatch`, not as an anonymous "check failed".
  */
-export async function verifyIntegrity(options: {
+export type IntegrityOutcome =
+  | { ok: true; source: "host-pin" | "manifest"; issue?: undefined }
+  | { ok: false; code: "integrity_missing" | "integrity_mismatch"; issue: string };
+
+/** The bytes-based contract: the caller fetched the build, this only decides whether it may run. */
+export interface IntegrityBytesInput {
+  bytes: Uint8Array;
+  /** `data-sha256` on the loader tag — the host pin. Takes precedence over the manifest digest. */
+  expected?: string;
+  /** `manifest.sha256` — a download check only, never a trust anchor. */
+  manifestSha256?: string;
+  /** Only used to make an issue message point at the build. */
+  url?: string;
+  cryptoImpl?: Crypto;
+}
+
+/** Compatibility input for callers that only have a URL (the version module's own history). */
+export interface IntegrityFetchInput {
   url: string;
   sha256: string;
   fetchImpl: typeof fetch;
   cryptoImpl?: Crypto;
-}): Promise<{ ok: boolean; issue?: string }> {
+}
+
+/** Downloads a build so it can be hashed; a transport failure is an issue, never a silent pass. */
+export async function fetchBytes(
+  url: string,
+  fetchImpl: typeof fetch,
+): Promise<{ bytes?: Uint8Array; issue?: string }> {
   let response: Response;
   try {
     // Called with the global as receiver: an unbound `fetch` extracted from the window is an
     // "Illegal invocation" in a real browser, and this check must never fail for that reason.
-    response = await (options.fetchImpl as typeof fetch).call(globalThis, options.url, { cache: "no-store" });
+    response = await fetchImpl.call(globalThis, url, { cache: "no-store" });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { ok: false, issue: `integrity check could not fetch ${options.url}: ${reason}` };
+    return { issue: `integrity check could not fetch ${url}: ${reason}` };
   }
   if (!response.ok) {
-    return { ok: false, issue: `integrity check: ${options.url} → HTTP ${response.status}` };
+    return { issue: `integrity check: ${url} → HTTP ${response.status}` };
   }
-  const buffer = await response.arrayBuffer();
-  const digest = await sha256Hex(buffer, options.cryptoImpl);
-  if (digest === undefined) {
-    return { ok: false, issue: "integrity check needs WebCrypto (crypto.subtle) — not available here" };
+  try {
+    return { bytes: new Uint8Array(await response.arrayBuffer()) };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { issue: `integrity check could not read ${url}: ${reason}` };
   }
-  if (digest !== options.sha256.toLowerCase()) {
+}
+
+const HEX_SHA256 = /^[0-9a-f]{64}$/i;
+
+/**
+ * Decides whether `bytes` may be executed (G7, AC-C06…AC-C08).
+ *
+ * Precedence: the host pin wins over the manifest digest. Without either digest an opt-in check is
+ * an `integrity_missing` error — the old behaviour returned silently and let unverified code run.
+ * A malformed digest is treated the same way: there is no usable expectation, so nothing was proven.
+ */
+async function verifyBytes(input: IntegrityBytesInput): Promise<IntegrityOutcome> {
+  const expected = input.expected ?? input.manifestSha256;
+  const label = input.url === undefined ? "the element build" : input.url;
+  if (expected === undefined) {
     return {
       ok: false,
-      issue: `integrity check failed for ${options.url}: expected ${options.sha256.toLowerCase()}, got ${digest}`,
+      code: "integrity_missing",
+      issue: `integrity_missing: ${label} has no digest — set data-sha256 (host pin) or publish sha256 in the manifest`,
     };
   }
-  return { ok: true };
+  if (!HEX_SHA256.test(expected)) {
+    return {
+      ok: false,
+      code: "integrity_missing",
+      issue: `integrity_missing: the expected digest for ${label} is not a 64-character hex SHA-256`,
+    };
+  }
+  const digest = await sha256Hex(input.bytes, input.cryptoImpl);
+  if (digest === undefined) {
+    return {
+      ok: false,
+      code: "integrity_mismatch",
+      issue: "integrity check needs WebCrypto (crypto.subtle) — not available here",
+    };
+  }
+  if (digest !== expected.toLowerCase()) {
+    return {
+      ok: false,
+      code: "integrity_mismatch",
+      issue: `integrity check failed for ${label}: expected ${expected.toLowerCase()}, got ${digest}`,
+    };
+  }
+  return { ok: true, source: input.expected === undefined ? "manifest" : "host-pin" };
+}
+
+/**
+ * Verifies the element build before it is imported.
+ *
+ * The bytes form is the contract (G7). The URL form is a thin compatibility overload for callers
+ * that already have a URL: it fetches once and then runs the exact same check.
+ */
+export async function verifyIntegrity(input: IntegrityBytesInput): Promise<IntegrityOutcome>;
+export async function verifyIntegrity(input: IntegrityFetchInput): Promise<IntegrityOutcome>;
+export async function verifyIntegrity(
+  input: IntegrityBytesInput | IntegrityFetchInput,
+): Promise<IntegrityOutcome> {
+  if ("bytes" in input) {
+    return verifyBytes(input);
+  }
+  const fetched = await fetchBytes(input.url, input.fetchImpl);
+  if (fetched.bytes === undefined) {
+    return {
+      ok: false,
+      code: "integrity_mismatch",
+      issue: fetched.issue ?? `integrity check could not read ${input.url}`,
+    };
+  }
+  return verifyBytes({
+    bytes: fetched.bytes,
+    expected: input.sha256,
+    url: input.url,
+    ...(input.cryptoImpl === undefined ? {} : { cryptoImpl: input.cryptoImpl }),
+  });
 }

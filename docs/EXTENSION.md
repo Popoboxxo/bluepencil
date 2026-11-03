@@ -95,7 +95,7 @@ service worker, and the worker is outside the document's CSP. A page with `defau
 no `connect-src` therefore no longer blocks note sync.
 
 The relay covers the hub's HTTP requests and nothing else. When the page uses the attach loader, its
-own manifest (`latest.json`) and asset/SRI fetches still run as page `fetch()` calls and still need
+own manifest (`latest.json`) and element bytes for the digest check still run as page `fetch()` calls and still need
 `connect-src`; the element script itself stays under `script-src`. A page **without** the extension —
 a plain embed, a bookmarklet, an IIFE build — never gets this path and always needs `connect-src`
 for the hub origin. So `script-src` alone is still not enough for such a page. A blocked request
@@ -107,7 +107,7 @@ Refused to connect to 'https://hub.example/api/v1/bluepencil/notes' because it v
 
 (`"default-src …"` appears instead when the page declares no `connect-src`, which is the fallback
 directive.) Allow the origin in `connect-src`, or route the request through the extension. The full
-recipe, including the loader's manifest and SRI fetches, is in
+recipe, including the loader's manifest and digest fetches, is in
 [EMBED.md — CSP: `script-src` and `connect-src`](EMBED.md#csp-script-src-and-connect-src).
 
 The overlay's own CSS remains subject to `style-src`.
