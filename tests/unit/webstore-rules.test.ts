@@ -10,6 +10,10 @@
  * tell a working rule from a rule that matches nothing, so both directions are pinned here.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 interface WebstoreRules {
@@ -58,5 +62,54 @@ describe("webstore rules — executeScript code injection", () => {
   it("is defensive about its input", () => {
     expect(injectsCodeString("")).toBe(false);
     expect(injectsCodeString(undefined as unknown as string)).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * The boundary shape of the source manifest (AC-B12, AC-B18, AC-B56(a))
+ *
+ * Read from `extension/`, never from `dist`: a clean checkout has no build, and the ordering
+ * assertion is deliberately two-part (source here, artefact in `smoke:webstore`).
+ * ---------------------------------------------------------------------------------------------- */
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
+const source = (relative: string): string => readFileSync(join(ROOT, relative), "utf8");
+
+const MANIFEST_SOURCE = JSON.parse(source("extension/manifest.json")) as {
+  host_permissions?: string[];
+  optional_host_permissions?: string[];
+  content_scripts?: unknown[];
+  web_accessible_resources?: unknown[];
+};
+const WORKER_SOURCE = source("extension/src/sw.ts");
+
+describe("manifest — host access is optional, never pre-granted (AC-B18, AC-B56)", () => {
+  it("carries no host_permissions", () => {
+    expect(MANIFEST_SOURCE.host_permissions ?? []).toEqual([]);
+  });
+
+  it("declares exactly the documented optional http/https patterns", () => {
+    expect(MANIFEST_SOURCE.optional_host_permissions).toEqual(["http://*/*", "https://*/*"]);
+  });
+
+  it("never asks for <all_urls>", () => {
+    const all = [
+      ...(MANIFEST_SOURCE.host_permissions ?? []),
+      ...(MANIFEST_SOURCE.optional_host_permissions ?? []),
+    ];
+    expect(all).not.toContain("<all_urls>");
+  });
+
+  it("declares no content script and no web-accessible resource", () => {
+    expect(MANIFEST_SOURCE.content_scripts ?? []).toEqual([]);
+    expect(MANIFEST_SOURCE.web_accessible_resources ?? []).toEqual([]);
+  });
+});
+
+describe("worker — no persistent MAIN-world registration (AC-B54, AC-B56(a))", () => {
+  it("does not register or unregister content scripts", () => {
+    expect(WORKER_SOURCE).not.toContain("registerContentScripts");
+    expect(WORKER_SOURCE).not.toContain("unregisterContentScripts");
+    expect(WORKER_SOURCE).not.toContain("ensureBootstrapRegistered");
   });
 });

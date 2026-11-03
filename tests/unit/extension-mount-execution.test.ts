@@ -316,9 +316,15 @@ describe("ownership — one reader, one sequence, no import back-edge (AC-B54)",
   });
 
   it("keeps persistent content-script registration out of the mount sequence", () => {
-    // The deletion of `ensureBootstrapRegistered` belongs to B.3b; this task only guarantees that the
-    // sequence itself never registers anything.
     expect(MOUNT_SOURCE).not.toMatch(/registerContentScripts\s*\(/);
     expect(MOUNT_PLAN_SOURCE).not.toMatch(/registerContentScripts\s*\(/);
+  });
+
+  it("deletes the persistent registration from the worker (AC-B54, AC-B56)", () => {
+    // The boundary commit: no dynamic MAIN-world registration survives, because the manifest no
+    // longer carries a host grant that could justify one.
+    expect(SW_SOURCE).not.toContain("registerContentScripts");
+    expect(SW_SOURCE).not.toContain("ensureBootstrapRegistered");
+    expect(SW_SOURCE).not.toContain("unregisterContentScripts");
   });
 });

@@ -4,12 +4,11 @@
  * Three responsibilities, deliberately kept small:
  *
  * 1. **Inject the layer on demand.** The user asks for access to a page (toolbar click, keyboard
- *    shortcut) and the injection happens under `activeTab`, so the grant expires when they leave. A
- *    MAIN-world `bootstrap.js` *is* registered dynamically (`ensureBootstrapRegistered`) — that is the
- *    channel that gets the layer past a page's strict `script-src` CSP, not a navigation-survival
- *    mechanism: a fresh document has no config and no overlay until the user invokes the extension
- *    again. The manifest additionally carries the broad http/https host permission as a deliberate
- *    pre-grant; it is broader than the on-demand injection strictly needs.
+ *    shortcut) and the injection happens under `activeTab`, so the grant expires when they leave.
+ *    There is **no** persistent content-script registration: the manifest asks for the http/https
+ *    hosts only as *optional* permissions (`optional_host_permissions`), granted for the hub origin
+ *    the user configured, and a fresh document has no config and no overlay until the user invokes
+ *    the extension again (SEC-20, AC-B18, AC-B56).
  *
  * 2. **Run it in the page's MAIN world.** Chromium's isolated content-script world reports
  *    `customElements === null` (measured: `typeof` is `"object"`, the value is `null`), so
@@ -24,7 +23,9 @@
  * 4. **Relay hub requests (#116).** A page's `connect-src` governs the layer's `fetch`, so a strict
  *    policy silently blocks note sync. The page registers a transport that sends the request here;
  *    `hub-fetch.ts` validates it (configured origin and base path only, GET/POST/PATCH, a header
- *    allowlist, no cookies, no redirects, a timeout) and performs it with the worker's permissions.
+ *    allowlist, no cookies, no redirects, a timeout), checks the optional host grant
+ *    (`permission_missing` before any `fetch`) and attaches the credential header itself
+ *    (`authHeadersFor`). The page never holds or sends a credential (SEC-14, AC-B13/14/20).
  *    The worker — not the bridge — is the trust boundary.
  *
  * The worker holds no state between events. A MV3 service worker is terminated aggressively, so
@@ -33,61 +34,8 @@
 
 import type { WorkerOutcome } from "./bridge-messages";
 import { hubFetchPolicy, refuse, runHubRequest, validateHubRequest } from "./hub-fetch";
-import { mountOnTab, readSettings, type MountResult } from "./mount";
+import { mountOnTab, readSettings } from "./mount";
 import { dispatchTabMessage, type DispatchHooks } from "./tab-binding";
-
-/** Id of the registered MAIN-world content script; re-registering the same id is an error. */
-const BOOTSTRAP_ID = "bluepencil-bootstrap";
-
-/**
- * The dynamic MAIN-world registration that is still in place until B.3b removes it.
- *
- * The *sequence* — bridge, bootstrap, config — lives in `mount.ts` and is what a mount executes. This
- * registration is the remaining navigation-survival mechanism of the pre-`activeTab` design and is
- * deleted, with its callers, in B.3b (T-B16). Keeping it here while `mount.ts` owns the sequence is
- * deliberate: this task must not change the manifest or the registration behaviour.
- *
- * Registration is idempotent — re-registering an existing id is an error, so the worker unregisters
- * first and the failure is swallowed: if it is already registered, that is the state we wanted.
- */
-async function ensureBootstrapRegistered(): Promise<void> {
-  try {
-    await chrome.scripting.unregisterContentScripts({ ids: [BOOTSTRAP_ID] });
-  } catch {
-    // Not registered yet — the normal first-run case.
-  }
-  await chrome.scripting.registerContentScripts([
-    {
-      id: BOOTSTRAP_ID,
-      matches: ["http://*/*", "https://*/*"],
-      js: ["bootstrap.js"],
-      runAt: "document_start",
-      world: "MAIN",
-      persistAcrossSessions: true,
-    },
-  ]);
-}
-
-/**
- * Mount a tab, with the legacy registration still in front of the sequence.
- *
- * `mount.ts` is the only owner of the injection sequence (bridge → bootstrap → config) and never
- * throws; this wrapper adds the registration that B.3b removes and therefore cannot fail the mount
- * on its own: a registration error is reported as the mount error, so a toolbar click still answers
- * `{ ok: false, error }` instead of a rejection.
- */
-async function mountWithBootstrap(
-  tabId: number,
-  tabUrl: string = "",
-  options: { force?: boolean } = {},
-): Promise<MountResult> {
-  try {
-    await ensureBootstrapRegistered();
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  }
-  return mountOnTab(tabId, tabUrl, options);
-}
 
 /**
  * Publish the worker's own entry points on its global scope.
@@ -179,12 +127,12 @@ async function toggleOnTab(tabId: number, enabled: boolean): Promise<WorkerOutco
  * The two effects the dispatcher may trigger.
  *
  * They live here because the browser APIs do; `tab-binding.ts` stays pure and cannot look up a tab
- * on its own. `mount` keeps the legacy registration of B.3b in front of the sequence, exactly as the
- * toolbar and command paths do.
+ * on its own. `mount` is the same `mountOnTab` the toolbar and command paths call — there is no
+ * registration in front of it any more (SEC-20).
  */
 const dispatchHooks: DispatchHooks = {
   async mount(tabId, tabUrl, options) {
-    const result = await mountWithBootstrap(tabId, tabUrl, options);
+    const result = await mountOnTab(tabId, tabUrl, options);
     return { kind: "mount", ok: result.ok, tabUrl: result.tabUrl, error: result.error };
   },
   toggle: toggleOnTab,
@@ -238,7 +186,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse(validated);
           return;
         }
-        sendResponse(await runHubRequest(validated.request, policy));
+        // Both deps are real, and the credential is attached here — the page never saw it. The
+        // endpoint is the settings value read for this message; `contains` is Chrome's own check.
+        sendResponse(
+          await runHubRequest(validated.request, policy, {
+            endpoint: () => settings.endpoint,
+            permissions: {
+              contains: (pattern) => chrome.permissions.contains({ origins: [pattern] }),
+            },
+            credential: () => ({ auth: settings.auth, token: settings.token }),
+          }),
+        );
       } catch (error) {
         sendResponse(
           refuse("network", error instanceof Error ? error.message : "the relay request failed"),
@@ -274,7 +232,7 @@ chrome.action.onClicked.addListener((tab) => {
   // The result is the answer: a refused injection resolves to `{ ok: false, error }` instead of
   // rejecting, so there is no promise to catch here. The visible failure path is the page's report
   // and badge (#70), not the gesture.
-  void mountWithBootstrap(tab.id, tab.url ?? "");
+  void mountOnTab(tab.id, tab.url ?? "");
 });
 
 /**
@@ -313,18 +271,18 @@ chrome.commands.onCommand.addListener((command) => {
     if (tab?.id === undefined) return;
     // A keyboard command grants `activeTab` for the current tab as well, so the same path applies.
     // The call resolves even when the mount is refused; there is nothing to catch.
-    await mountWithBootstrap(tab.id, tab.url ?? "");
+    await mountOnTab(tab.id, tab.url ?? "");
   });
 });
 
 // Declared for the type checker; the object itself is provided by the extension host.
 //
 // `url` is declared because the calls below still read `tab.url` and pass it to
-// `mountWithBootstrap`, where it feeds the `tabUrl` field of the mount configuration. Nothing
+// `mountOnTab`, where it feeds the `tabUrl` field of the mount configuration. Nothing
 // consumes that field: the page a note belongs to comes from the element's own `route="url"`, which
 // reads the page's `location.href`. So the `tabs` permission is deliberately NOT requested — the
-// active tab's URL is covered by the http/https host permission, and the query / `tab.id` never
-// needed a permission at all. Re-adding `tabs` would be an extra permission for data nothing
+// active tab's URL is readable under the `activeTab` grant the click itself makes, and the query /
+// `tab.id` never needed a permission at all. Re-adding `tabs` would be an extra permission for data nothing
 // reads; `npm run smoke:webstore` fails if it comes back.
 declare const chrome: {
   runtime: {
@@ -360,17 +318,10 @@ declare const chrome: {
       args: unknown[];
       injectImmediately: boolean;
     }): Promise<unknown[]>;
-    // Registered content scripts are what get extension code into a page's MAIN world under a strict
-    // CSP; `js` takes file names, never `{code}` objects (Chrome: "Invalid type: expected string,
-    // found object").
-    registerContentScripts(scripts: {
-      id: string;
-      matches: string[];
-      js: string[];
-      runAt: "document_start" | "document_end" | "document_idle";
-      world: "MAIN" | "ISOLATED";
-      persistAcrossSessions: boolean;
-    }[]): Promise<void>;
-    unregisterContentScripts(filter: { ids: string[] }): Promise<void>;
+  };
+  // The optional host grant (`optional_host_permissions`). No content-script registration API is
+  // declared: the boundary commit deleted the persistent registration (SEC-20, AC-B56).
+  permissions: {
+    contains(details: { origins: string[] }): Promise<boolean>;
   };
 };

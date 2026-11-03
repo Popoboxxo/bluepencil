@@ -319,6 +319,20 @@ async function checkArtefacts() {
     production !== null && canonical(testRest) === canonical(productionRest),
     `production=${canonical(productionRest)} dist-test=${canonical(testRest)}`);
 
+  // The host guard (B.3b, AC-B18/AC-B56(b)): read from the **production** build, never from the
+  // loaded `dist-test` — the grant this suite needs is exactly what the shipped manifest must not
+  // carry. A missing production file is a named FAIL, not a skip and not a fallback to `src`.
+  ok("the production manifest declares no host_permissions",
+    production !== null && (production.host_permissions ?? []).length === 0,
+    `host_permissions=${JSON.stringify(production?.host_permissions ?? null)}`);
+  ok("the production manifest declares exactly the optional http/https patterns",
+    JSON.stringify(production?.optional_host_permissions ?? []) ===
+      JSON.stringify(["http://*/*", "https://*/*"]),
+    `optional_host_permissions=${JSON.stringify(production?.optional_host_permissions ?? null)}`);
+  ok("the production manifest requests no <all_urls>",
+    ![...(production?.host_permissions ?? []), ...(production?.optional_host_permissions ?? [])]
+      .includes("<all_urls>"),
+    JSON.stringify(production?.optional_host_permissions ?? null));
   const sw = await readFile(join(extDist, "sw.js"), "utf8");
   const bootstrap = await readFile(join(extDist, "bootstrap.js"), "utf8");
   ok("worker injects in the MAIN world", /world:\s*"MAIN"/.test(sw));

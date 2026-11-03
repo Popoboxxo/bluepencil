@@ -390,7 +390,7 @@ export function insecureEndpointRefusal(input: {
   // message ("not a hub URL", "invalid_origin") rather than this one pretending to know.
   if (url === null || url.protocol !== "http:" || isLoopbackHost(url.hostname)) return null;
 
-  return `A credential will not be sent to ${url.origin} over plain HTTP. Bluepencil sends a credential over HTTPS, or over plain HTTP only to this machine (127.0.0.1, localhost or [::1]). Use an https:// address, or set Authentication to None if the hub has no credential.`;
+  return `A credential will not be sent to ${url.origin} over plain HTTP. Bluepencil sends a credential over HTTPS, or over plain HTTP only to this machine (127.0.0.1, localhost or [::1]). Use an HTTPS address, or set Authentication to None if the hub has no credential.`;
 }
 
 type TransportAnswer =

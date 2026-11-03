@@ -24,7 +24,7 @@
  * Two things this file owns, and both were wrong before #53:
  *
  *   1. **The element's vocabulary.** Attributes are written without the `data-` prefix — `adapter`,
- *      `environment`, `app`, `identity`, `endpoint`, `token…`. `data-*` is the *loader's* spelling,
+ *      `environment`, `app`, `identity`, `endpoint`. `data-*` is the *loader's* spelling,
  *      which `dist/attach.js` translates when it creates the element. Writing it onto the element
  *      meant the layer read nothing: it fell back to its default `memory` store while the attribute
  *      readback still said `chromeStorage`. `handoff.ts` holds that translation, unit-tested.
@@ -41,9 +41,8 @@ import {
   registerHttpTransport,
 } from "../../dist/bluepencil.element.js";
 import { detectHostEmbed, type HostEmbedSource } from "./detect";
-import { elementAttributesFor } from "./handoff";
+import { elementAttributesFor, type PageSettings } from "./handoff";
 import { installPageTransport } from "./page-relay";
-import type { ExtensionSettings } from "./settings";
 
 /** The settings for this mount, placed here by the worker. Absent until the user asks for the layer. */
 const CONFIG_KEY = "__bluepencilConfig__";
@@ -61,7 +60,8 @@ const STORAGE_PENDING_KEY = "__bluepencilStoragePending";
 const BRIDGE_TIMEOUT_MS = 8_000;
 
 interface MountConfig {
-  settings: ExtensionSettings;
+  /** The page-facing projection: no credential, its expiry or the device name (SEC-14, AC-B15). */
+  settings: PageSettings;
   /**
    * The tab's URL, recorded by the worker. It is no longer written onto the element: no attribute
    * reads it (`data-bluepencil-url` reached nothing), and the element's own `route="url"` gives every
@@ -167,8 +167,8 @@ function mount(options?: MountOptions): void {
     const tag = "bluepencil-notes";
     const el = document.createElement(tag);
     // One vocabulary, translated in one place: `handoff.ts`. It answers with the element's own
-    // attribute names, the credential header the chosen mode implies, and `route="url"` so a note
-    // carries the page it was taken on.
+    // attribute names and `route="url"` so a note carries the page it was taken on. No credential
+    // attribute: the worker authenticates the relayed request (SEC-14).
     const attributes = elementAttributesFor(config.settings, navigator.language ?? "");
     for (const [name, value] of Object.entries(attributes)) el.setAttribute(name, value);
     (document.body ?? document.documentElement).append(el);

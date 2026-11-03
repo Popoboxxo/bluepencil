@@ -22,6 +22,7 @@ const source = (relative: string): string => readFileSync(join(ROOT, relative), 
 
 const OPTIONS_HTML = source("extension/options.html");
 const OPTIONS_SOURCE = source("extension/src/options.ts");
+const CREDENTIAL_COPY_SOURCE = source("extension/src/credential-copy.ts");
 
 describe("options page — the page toggle controls are gone (AC-B48)", () => {
   it("has no turn-on or turn-off element", () => {
@@ -43,5 +44,23 @@ describe("options page — the page toggle controls are gone (AC-B48)", () => {
   it("links to the review page for stored notes", () => {
     expect(OPTIONS_HTML).toContain('href="review.html"');
     expect(OPTIONS_HTML).toContain("Open the review page");
+  });
+});
+
+describe("options page — the credential comes from its one module (AC-B53)", () => {
+  it("imports `configuredCredential` from ./credential", () => {
+    expect(OPTIONS_SOURCE).toMatch(
+      /import \{[^}]*\bconfiguredCredential\b[^}]*\} from "\.\/credential"/,
+    );
+    expect(CREDENTIAL_COPY_SOURCE).toMatch(
+      /import \{[^}]*\bconfiguredCredential\b[^}]*\} from "\.\/credential"/,
+    );
+  });
+
+  it("never imports from ./handoff, whose re-export is gone", () => {
+    // The re-export was deleted in the boundary commit; an import through it would no longer
+    // typecheck, and this source assertion says so before the compiler has to.
+    expect(OPTIONS_SOURCE).not.toMatch(/from "\.\/handoff"/);
+    expect(CREDENTIAL_COPY_SOURCE).not.toMatch(/from "\.\/handoff"/);
   });
 });

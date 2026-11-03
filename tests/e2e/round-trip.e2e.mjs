@@ -13,7 +13,7 @@
  *                       so the layer writes to and reads from the hub on its own origin;
  *   strand "extension"  a plain page with no embed, served on a SEPARATE static origin; the built
  *                       MV3 extension mounts the layer, whose `http` adapter talks to the hub
- *                       cross-origin (hence the hub runs with `--cors "*"`).
+ *                       cross-origin (hence the hub runs with `--cors <this page's origin>`).
  *
  * Requirements pinned (docs/REQUIREMENTS.md):
  *   FR-16.8  the same MCP is reachable over HTTP    — the hub answers `POST {base}/mcp`, the same
@@ -94,11 +94,12 @@ async function freePort() {
 
 /**
  * Start `dist/server.js` with `--root <repo root>` so the SAME origin serves the EMBED fixture and
- * `/dist/**`. `--cors "*"` is required for the extension strand (its page is a different origin).
+ * `/dist/**`. `--cors <origin>` names the extension strand's page origin, the only cross-origin
+ * browser context in this run (an explicit origin, never the credential-requiring `*`).
  * `--journal none` keeps the smoke out of the work tree's git history. The hub is writable —
  * only `--read-only` would refuse the MCP reply/status writes this test needs.
  */
-async function startHub(storePath) {
+async function startHub(storePath, corsOrigin) {
   const port = await freePort();
   const child = spawn(
     process.execPath,
@@ -109,7 +110,7 @@ async function startHub(storePath) {
       "--port", String(port),
       "--root", root,
       "--environment", "dev",
-      "--cors", "*",
+      "--cors", corsOrigin,
       "--journal", "none",
       "--quiet",
     ],
@@ -554,7 +555,7 @@ async function main() {
   const state = { embedNote: null, extNote: null };
 
   try {
-    hub = await startHub(join(WORKSPACE, "hub-store.json"));
+    hub = await startHub(join(WORKSPACE, "hub-store.json"), `http://127.0.0.1:${extStaticPort}`);
     const embedUrl = `${hub.origin}/examples/round-trip/embed.html`;
     console.log(`[round-trip] hub on ${hub.origin} (base ${hub.base}); embed ${embedUrl}; extension ${extUrl}`);
 

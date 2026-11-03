@@ -18,12 +18,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { insecureEndpointRefusal, probeConnection } from "../../extension/src/connection";
-import { authHeadersFor } from "../../extension/src/credential";
+import { authHeadersFor, configuredCredential, credentialHeaderFor } from "../../extension/src/credential";
 import { insecureSaveRefusal } from "../../extension/src/options";
-import {
-  configuredCredential as configuredCredentialFromHandoff,
-  credentialHeaderFor,
-} from "../../extension/src/handoff";
 
 const BASE = "http://127.0.0.1:8787/api/v1/bluepencil";
 const OPTIONS_SOURCE = readFileSync(
@@ -786,8 +782,8 @@ describe("probeConnection", () => {
     it("keeps the handoff re-export identical to credential.ts", () => {
       // B.3a moved the mapping; `handoff.ts` re-exports it for the importers that have not moved
       // yet (options.ts until B.4). A second copy here would defeat the single mapping.
-      expect(configuredCredentialFromHandoff("  a.b.c\n")).toBe("a.b.c");
-      expect(configuredCredentialFromHandoff("   ")).toBeNull();
+      expect(configuredCredential("  a.b.c\n")).toBe("a.b.c");
+      expect(configuredCredential("   ")).toBeNull();
       expect(credentialHeaderFor("token")).toEqual({ header: "Authorization", scheme: "Bearer" });
       expect(credentialHeaderFor("secret")).toEqual({ header: "x-bluepencil-auth", scheme: null });
       expect(credentialHeaderFor("none")).toBeNull();
@@ -819,7 +815,7 @@ describe("insecureEndpointRefusal (B.8, SEC-18)", () => {
 
     expect(refusal).not.toBeNull();
     // The message has to name the fix, not just the rule: HTTPS or a loopback hub.
-    expect(refusal).toContain("https");
+    expect(refusal).toContain("HTTPS");
     expect(refusal).toContain("127.0.0.1");
     expect(refusal).toContain("[::1]");
     // The message names the origin as the browser parsed it (lower-cased scheme and host).
@@ -885,7 +881,7 @@ describe("the save path (B.8, AC-B60)", () => {
     const refusal = insecureSaveRefusal({ endpoint: "http://hub.example/api", auth: "secret" });
 
     expect(refusal).toMatchObject({ ok: false, code: "insecure_endpoint" });
-    expect(refusal?.message).toContain("https");
+    expect(refusal?.message).toContain("HTTPS");
     expect(insecureSaveRefusal({ endpoint: "http://127.0.0.1:8787/api", auth: "secret" })).toBeNull();
     expect(insecureSaveRefusal({ endpoint: "https://hub.example/api", auth: "token" })).toBeNull();
     expect(insecureSaveRefusal({ endpoint: "http://hub.example/api", auth: "none" })).toBeNull();
@@ -967,7 +963,7 @@ describe("the save path (B.8, AC-B60)", () => {
     expect(page.writes, "a refused endpoint must not be persisted").toEqual([]);
     expect(page.requested, "and no permission may be requested for it").toEqual([]);
     expect(page.statusText()).toContain("http://hub.example");
-    expect(page.statusText()).toContain("https");
+    expect(page.statusText()).toContain("HTTPS");
     expect(document.getElementById("save")!.hasAttribute("disabled")).toBe(false);
 
     // Positive control: the *same* endpoint with auth "none" is a valid save, so the assertion above

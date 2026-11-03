@@ -7,7 +7,7 @@
  *   when the message names B and B is the tab in front. There is no active-tab lookup in the path.
  * - **Source (AC-B24).** `chrome.tabs.query` appears in `sw.ts` exactly once, inside
  *   `chrome.commands.onCommand`; the toolbar handler addresses the tab the gesture hands it. Both
- *   gesture handlers mount through the same `mountWithBootstrap` → `mountOnTab` sequence, and the
+ *   gesture handlers mount through the same `mountOnTab` sequence, and the
  *   worker has exactly one `chrome.runtime.onMessage` listener calling the dispatcher once.
  *
  * The built-worker half of AC-B24 is `smoke:ext`; this unit file deliberately reads `extension/src`
@@ -99,10 +99,10 @@ describe("the worker has exactly one dispatch hook (AC-B24)", () => {
     const command = SW_SOURCE.indexOf("chrome.commands.onCommand.addListener");
     const declarations = SW_SOURCE.indexOf("declare const chrome");
 
-    expect(SW_SOURCE.slice(action, command)).toContain("mountWithBootstrap(tab.id");
-    expect(SW_SOURCE.slice(command, declarations)).toContain("mountWithBootstrap(tab.id");
+    expect(SW_SOURCE.slice(action, command)).toContain("mountOnTab(tab.id");
+    expect(SW_SOURCE.slice(command, declarations)).toContain("mountOnTab(tab.id");
     // Both gestures end in the same owner of the injection sequence, never a second copy of it.
-    expect(SW_SOURCE).toContain("return mountOnTab(tabId, tabUrl, options)");
+    expect(SW_SOURCE).toContain("const result = await mountOnTab(tabId, tabUrl, options)");
   });
 
   it("keeps the dispatch module free of browser APIs", () => {
