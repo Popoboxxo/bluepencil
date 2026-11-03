@@ -16,8 +16,10 @@ docker compose logs hub | head -20                    # the address and the cred
 Without compose:
 
 ```sh
-docker run -d --name bluepencil-hub -p 8787:8787 -v bluepencil-notes:/data \
-  ghcr.io/popoboxxo/bluepencil:latest
+docker run -d --name bluepencil-hub \
+  -p 127.0.0.1:8787:8787 -v bluepencil-notes:/data \
+  --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
+  ghcr.io/popoboxxo/bluepencil:0.12.0
 docker logs bluepencil-hub | head -20
 ```
 
@@ -73,7 +75,7 @@ either — an empty value counts as unset, so the entrypoint generates or reuses
 | Variable | Default | Meaning |
 |---|---|---|
 | `BLUEPENCIL_NAME` | container hostname | How the hub introduces itself in `{base}/config` — a readable entry beats a container id |
-| `BLUEPENCIL_PORT` | `8787` (inside) | Port the hub listens on; map it with `-p <outside>:8787` |
+| `BLUEPENCIL_PORT` | `8787` (inside) | Port the hub listens on; map it with `-p 127.0.0.1:<outside>:8787` |
 | `BLUEPENCIL_BASE` | `/api/v1/bluepencil` | Base path of the API |
 | `BLUEPENCIL_STORE` | `/data/notes.bluepencil.json` | Where the note set lives — keep it inside `/data` |
 | `BLUEPENCIL_APP` | `bluepencil hub` | Identity reported as `/config.app`; a registry peer must match it |
@@ -221,6 +223,52 @@ The safe default stays what the image does: publish only the port the proxy need
 `BLUEPENCIL_AUTH_SECRET` (or let the entrypoint generate one), and keep a credential-free hub on
 `127.0.0.1` where only this machine can reach it.
 
+## Widening, TLS and digest pinning (G11)
+
+The shipped `docker-compose.yml` is closed by default:
+
+- **The published port is loopback.** `ports: ["127.0.0.1:${BLUEPENCIL_PORT:-8787}:8787"]` renders
+  to `127.0.0.1:8787:8787`; `docker compose config` shows it. Nothing outside this machine can
+  reach the hub until you change that line.
+- **The image is pinned to an exact version** (`ghcr.io/popoboxxo/bluepencil:0.12.0`), never
+  `:latest`, so a restart does not silently change the code under an operator.
+- **The container runs hardened:** `read_only: true`, `tmpfs: ["/tmp"]`,
+  `cap_drop: ["ALL"]`, `security_opt: ["no-new-privileges:true"]`. The only writable paths are the
+  `/data` volume (store and generated credential) and `/tmp`. The entrypoint creates what it needs
+  there, so the hardening needs no extra flags.
+
+**Widening is an explicit edit, never a default.** To publish on all host interfaces:
+
+```yaml
+services:
+  hub:
+    ports:
+      - "0.0.0.0:${BLUEPENCIL_PORT:-8787}:8787"   # exposes the hub to your network
+```
+
+Do that only behind a TLS-terminating reverse proxy and with a stable credential. The image has no
+TLS: on anything but a trusted local network, terminate TLS in front of the hub (Traefik, Caddy,
+nginx), keep the hub itself on loopback, and let the proxy be the only listener. The shared secret,
+the admin secret and every note travel in plain HTTP otherwise.
+
+**Digest pinning is recommended for production, not the compose default.** A version tag is
+reproducible across platforms while a digest also freezes the exact image bytes. For a production
+deployment, resolve and pin the digest:
+
+```sh
+docker buildx imagetools inspect ghcr.io/popoboxxo/bluepencil:0.12.0
+# image: ghcr.io/popoboxxo/bluepencil:0.12.0
+# digest: sha256:<64 hex>
+```
+
+```yaml
+image: ghcr.io/popoboxxo/bluepencil@sha256:<64 hex>   # production: exact bytes
+```
+
+The root compose file keeps the version tag so that `docker compose pull` follows the documented
+release line without an edit per release; the digest is the stricter opt-in for a deployment that
+must not move at all.
+
 ## Hub of Hubs
 
 An aggregating hub reads several leaf hubs over one `/mcp` door; the leaves stay independent stores
@@ -229,8 +277,8 @@ of record. The runnable example is
 
 | Service | Role | Port |
 |---|---|---|
-| `hub-dev` | leaf hub, store of record for `dev` | `8787:8787` |
-| `hub-staging` | leaf hub, store of record for `staging` | `8788:8787` |
+| `hub-dev` | leaf hub, store of record for `dev` | `127.0.0.1:8787:8787` |
+| `hub-staging` | leaf hub, store of record for `staging` | `127.0.0.1:8788:8787` |
 | `hub-aggregator` | hub with `--registry --no-self`; only `/mcp` aggregates | `127.0.0.1:8790:8787` |
 
 The browser talks to `hub-dev` and `hub-staging` directly, exactly as to a single hub. The

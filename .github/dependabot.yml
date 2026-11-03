@@ -2,6 +2,12 @@ version: 2
 
 # The library has no runtime dependencies, so most of this is about the toolchain. Grouped and
 # weekly: a quiet repository should produce one reviewable pull request, not twenty.
+#
+# `github-actions` is the ecosystem that makes pinned SHAs maintainable (SEC-22). Every `uses:` in
+# `.github/workflows/` is a 40-hex commit SHA with the release tag as a comment; Dependabot's action
+# updater understands that form and rewrites the SHA and the `# vX.Y.Z` comment together, so a bump
+# arrives as a one-line diff that still names the version. Without it, pinning would mean the actions
+# silently age instead of only after review of a real, readable update PR.
 updates:
   - package-ecosystem: npm
     directory: /
@@ -14,6 +20,18 @@ updates:
         update-types: [minor, patch]
 
   - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        update-types: [minor, patch]
+
+  # The hub image is a shipped artefact (FR-6.14), so its base image is part of the supply chain too.
+  # This watcher proposes the digest/tag bump for the Dockerfile; the compose defaults stay on an
+  # exact version (G11) and are reviewed, not auto-merged.
+  - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly

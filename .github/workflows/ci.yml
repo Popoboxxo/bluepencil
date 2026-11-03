@@ -64,6 +64,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege (SEC-27): nothing in this pipeline writes to the repository, the registry or Pages.
+# Without this block the token carries the repository default, which is write-all on older repos and
+# a wider scope than a test run has any use for. A job that needs more declares it itself, with a
+# reason; none does here.
+permissions:
+  contents: read
+
 # A superseded run of the same branch has nothing left to prove.
 concurrency:
   group: ci-${{ github.ref }}
@@ -75,18 +82,22 @@ jobs:
     # own job means a broken requirement block reports fast and does not queue behind the browser legs.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
       - name: Install reqmd
         run: |
-          # Prebuilt single binary, checksum verified against the release manifest.
+          # Prebuilt single binary. The digest below is the published value for
+          # v0.2-alpha/reqmd-linux-amd64, hard-coded in this file on purpose: a checksum that is
+          # downloaded next to the artefact it verifies proves nothing (SEC-28) — both come from the
+          # same place, so an attacker who can replace one can replace the other. This constant is
+          # the only trust anchor, and changing it is a reviewable diff.
+          reqmd_sha256="7f9eb531b42505a4e4aa2b7e42f9978d1b3341f6a953dd0a3b6525e214f09f52"
           curl -sSL -o reqmd https://github.com/dVoo/reqmd/releases/download/v0.2-alpha/reqmd-linux-amd64
-          curl -sSL -o SHA256SUMS.txt https://github.com/dVoo/reqmd/releases/download/v0.2-alpha/SHA256SUMS.txt
-          grep 'reqmd-linux-amd64$' SHA256SUMS.txt | sed 's/reqmd-linux-amd64/reqmd/' | sha256sum -c -
+          echo "${reqmd_sha256}  reqmd" | sha256sum -c -
           chmod +x reqmd
           sudo mv reqmd /usr/local/bin/reqmd
           reqmd --version
@@ -116,10 +127,10 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0          # merge-base needs full history, not a shallow clone
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Version bump required for behavioural changes
@@ -128,15 +139,21 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Every action is pinned to a commit SHA
+        # SEC-22: `uses: owner/action@v7` is whatever that tag means today, so a moved tag would run new
+        # code with this repository's token. The check belongs in the pipeline for the same reason the
+        # pins exist — a rule that lives only in review is relaxed on the first busy day.
+        run: npm run check:pins
 
       - name: Components manifest + coverage gate
         # `--list` runs the bidirectional gate (docs/E2E-COVERAGE.md vs the runner manifest) and
@@ -259,9 +276,9 @@ jobs:
     # fails red on any divergence between the embed-loader strand and the MV3-extension strand.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"
@@ -295,9 +312,9 @@ jobs:
     # pushes the ref is present and it normally passes. `continue-on-error: true` keeps it advisory.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"
@@ -325,12 +342,12 @@ jobs:
     # bundle without `node_modules`, so an image that secretly needs an install step fails here.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build the hub image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           push: false
@@ -390,9 +407,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: "npm"

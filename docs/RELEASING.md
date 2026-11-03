@@ -100,11 +100,30 @@ Before it uploads, that workflow checks the digest against the release's `SHA256
 `verify` smoke-tested. Prereleases are not dispatched: an `-alpha` tag is a release object too, and the
 public store is not where those belong.
 
+The upload and the publish are `scripts/chrome-webstore.mjs` in this repository, not a marketplace
+action. The action it replaced received the refresh token as an input and used it inside its own code
+— a second supply chain sitting exactly on the credential. The script takes the token from the
+environment, exchanges it for an access token, uploads the zip, and only with `--publish` sends a
+single publish request. Exit codes are stable (`1` configuration, `2` token exchange, `3` upload,
+`4` publish, `5` status check), so a red run names the failing stage without reading the log.
+`npm run webstore:publish -- --zip <file> --dry-run` prints the plan and makes no request; that is how
+to check the wiring locally before a release needs it.
+
 It needs five repository secrets: `EXTENSION_ID`, `PUBLISHER_ID`, and the OAuth trio `CLIENT_ID`,
-`CLIENT_SECRET`, `REFRESH_TOKEN`. To test them without touching the store, dispatch the workflow with
-`action: check-credentials`; `action: upload` stages a version without publishing it, which is how to
-find out whether the store accepts an artefact at all; `action: publish` — what a release does — puts
-it in front of review.
+`CLIENT_SECRET`, `REFRESH_TOKEN`. The dispatch mode maps one-to-one onto the script:
+
+| `action:` | script | effect |
+|---|---|---|
+| `check-credentials` | `--check-credentials` | reads the item status; writes nothing |
+| `upload` | `--zip <zip>` | stages the version; publishes nothing |
+| `publish` | `--zip <zip> --publish` | stages it, then one publish request |
+
+**RC-4 — the first run on this path is upload-only.** The first run after the script replaced the
+action is dispatched with `action: upload`; the version is then released by hand in the dashboard,
+once the listing has been checked there. `action: publish` — what a release does afterwards — is used
+only after that. Like RC-1…RC-3, this point is confirmed by the approval of the protected `release`
+environment; no test proves it, because it is a decision about when to publish, not a property of the
+code.
 
 ## Deliberately not automated
 

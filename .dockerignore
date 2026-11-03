@@ -17,3 +17,33 @@ spec
 # the test-grant build (B.7.5) is a host-granted copy of extension/dist; it must never
 # travel into an image, and no Docker target needs it.
 extension/dist-test
+
+# Secrets and agent-local state (SEC-26).
+#
+# The image is a published artefact: whatever is in the context can end up in a layer, and a layer
+# cannot be un-published. Nothing below is read by `npm ci` or `npm run build` — the build needs the
+# package metadata, `src/`, `scripts/` and `extension/manifest.json` — so excluding it costs nothing
+# and keeps a workstation's `.env`, MCP credentials and agent settings out of the container.
+#
+# `**/` is spelled out because a dockerignore pattern is matched against the whole relative path:
+# `.env` alone would only reach the root, and `examples/federation/.env.example` would then leak a
+# sibling rule's intent. The negation re-includes the documented template and must come last.
+.env
+**/.env
+.env.*
+**/.env.*
+!**/.env.example
+.meta-config/secrets.local.yaml
+.meta-config/env.sh
+.meta-config/env.ps1
+.meta-config/env.unset.sh
+.meta-config/env.unset.ps1
+.mcp.json
+*.bluepencil.json
+.claude/
+.opencode/
+.agent-meta/
+AGENTS.personal.md
+CLAUDE.local.md
+CLAUDE.personal.md
+*.sync-backup-*

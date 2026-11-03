@@ -18,6 +18,13 @@ test-results/
 # …except the fixture seed bundle, which is part of the example
 !examples/vanilla/data/seed.bluepencil.json
 
+# secrets — an environment file carries tokens for the hub, the MCP door or the webstore (SEC-26).
+# `.env.*` covers the per-environment variants (`.env.local`, `.env.production`, …); the single
+# negation keeps the public template committable, and it must come *after* the pattern it excepts.
+.env
+.env.*
+!.env.example
+
 # editors / os
 .DS_Store
 .idea/

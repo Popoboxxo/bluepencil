@@ -9,6 +9,11 @@
  * Hermetic on purpose: no Docker and no real hub. A stub `node` earlier on `PATH` records the
  * secret it was started with and exits, so the entrypoint's final `exec` never leaves a process
  * behind, and nothing touches the network.
+ *
+ * AC-J06 (SEC-12/G12) is pinned here too: the default banner names the secret file and the command
+ * that reads it back, and the value itself never reaches stdout — a container log is kept, shipped
+ * and pasted around, so a secret printed there outlives the container. Only the explicit opt-in
+ * `BLUEPENCIL_SHOW_SECRET_ONCE=1` restores the single echo.
  */
 import { spawnSync } from "node:child_process";
 import {
@@ -107,11 +112,49 @@ describe("docker/entrypoint.sh — the shared secret survives BLUEPENCIL_TOKEN_K
     expect(stored.length).toBe(64); // 32 random bytes as hex
     // (b) the secret reached the process the entrypoint exec'd.
     expect(run.dump).toBe(stored);
-    // (c) both accepted credentials are named, and only the freshly generated value is printed.
+    // (c) both accepted credentials are named, and the generated value stays out of stdout.
     expect(run.stdout).toContain("token (Authorization: Bearer");
     expect(run.stdout).toContain("shared secret (x-bluepencil-auth)");
-    expect(run.stdout).toContain(`x-bluepencil-auth: ${stored}`);
+    expect(run.stdout).toContain(`kept in ${space.secretFile}`);
+    expect(run.stdout).not.toContain(stored);
     expect(run.stdout).not.toContain(TOKEN_KEY);
+  });
+
+  it("prints the retrieval command instead of the generated secret (AC-J06)", () => {
+    const space = workspace();
+
+    const run = runEntrypoint(space);
+
+    expect(run.status).toBe(0);
+    const stored = readFileSync(space.secretFile, "utf8");
+    // The path and the one command that reads it are the whole default banner.
+    expect(run.stdout).toContain(`docker exec <container> cat ${space.secretFile}`);
+    expect(run.stdout).not.toContain("x-bluepencil-auth: ");
+    expect(run.stdout).not.toContain(stored);
+    // Nothing in stdout or stderr repeats any 32-byte hex string the entrypoint could have minted.
+    expect(`${run.stdout}${run.stderr}`).not.toMatch(/[0-9a-f]{64}/);
+  });
+
+  it("echoes the generated secret exactly once with BLUEPENCIL_SHOW_SECRET_ONCE=1", () => {
+    const space = workspace();
+
+    const run = runEntrypoint(space, { BLUEPENCIL_SHOW_SECRET_ONCE: "1" });
+
+    expect(run.status).toBe(0);
+    const stored = readFileSync(space.secretFile, "utf8");
+    expect(run.stdout.split(`x-bluepencil-auth: ${stored}`).length - 1).toBe(1);
+    // The opt-in replaces the retrieval hint for that start.
+    expect(run.stdout).not.toContain("docker exec <container>");
+  });
+
+  it("does not echo the secret for a non-1 opt-in value", () => {
+    const space = workspace();
+
+    const run = runEntrypoint(space, { BLUEPENCIL_SHOW_SECRET_ONCE: "true" });
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).not.toContain(readFileSync(space.secretFile, "utf8"));
+    expect(run.stdout).toContain(`docker exec <container> cat ${space.secretFile}`);
   });
 
   it("reuses an existing secret file unchanged and never prints its value", () => {
@@ -125,6 +168,8 @@ describe("docker/entrypoint.sh — the shared secret survives BLUEPENCIL_TOKEN_K
     expect(readFileSync(space.secretFile, "utf8")).toBe(EXISTING_VALUE);
     expect(run.dump).toBe(EXISTING_VALUE);
     expect(run.stdout).toContain(`shared secret (from ${space.secretFile})`);
+    // A restart reads the file back on request rather than publishing it in the log.
+    expect(run.stdout).toContain(`docker exec <container> cat ${space.secretFile}`);
     expect(run.stdout).not.toContain(EXISTING_VALUE);
   });
 
@@ -176,7 +221,7 @@ describe("docker/entrypoint.sh — secret-file edge cases", () => {
     expect(run.stdout).not.toContain("shared secret");
   });
 
-  it("regenerates and prints a secret once when the secret file is empty", () => {
+  it("regenerates a secret when the secret file is empty and does not print it", () => {
     const space = workspace();
     // Loose mode on purpose: the regenerated file must end up 0600 regardless of the leftover's.
     writeFileSync(space.secretFile, "", { mode: 0o644 });
@@ -190,7 +235,8 @@ describe("docker/entrypoint.sh — secret-file edge cases", () => {
     expect(statSync(space.secretFile).mode & 0o777).toBe(0o600);
     expect(run.dump).toBe(stored);
     expect(run.stdout).toContain("generated now");
-    // Printed exactly once, so the operator can copy it.
-    expect(run.stdout.split(`x-bluepencil-auth: ${stored}`).length - 1).toBe(1);
+    // Default: path and retrieval command, never the value.
+    expect(run.stdout).not.toContain(stored);
+    expect(run.stdout).toContain(`docker exec <container> cat ${space.secretFile}`);
   });
 });

@@ -19,7 +19,10 @@
 #     a new extension is the dashboard, by hand (listing, permission justifications, screenshots);
 #   - a version already uploaded to the store is rejected, so a mistake is fixed by bumping the version
 #     and releasing again, not by re-publishing the same tag;
-#   - prereleases are skipped: the `-alpha` tags must not reach the public store.
+#   - prereleases are skipped: the `-alpha` tags must not reach the public store;
+#   - the FIRST run of this path is upload-only (`action: upload`) and a human releases the version in
+#     the dashboard. That is release-checklist point RC-4 in `docs/RELEASING.md`, not a test: the new
+#     path should not publish on its maiden run just because it can.
 name: chrome-webstore
 
 on:
@@ -54,9 +57,9 @@ jobs:
     # A prerelease is a release object too; the public store is not where those belong.
     if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
@@ -132,39 +135,42 @@ jobs:
           print(f"{zip_path}: manifest {manifest.get('version')} at the root, digest matches the release")
           PY
 
-      # Cheap, and it separates the two failure modes: the credentials, or the upload. The action
-      # documents this mode as touching nothing in the store.
-      - name: Check the store credentials
-        if: ${{ steps.release.outputs.action != 'check-credentials' }}
-        uses: wdzeng/chrome-extension@v2
-        with:
-          client-id: ${{ secrets.CLIENT_ID }}
-          client-secret: ${{ secrets.CLIENT_SECRET }}
-          refresh-token: ${{ secrets.REFRESH_TOKEN }}
-          action: check-credentials
-
-      - name: Check the credentials only
-        if: ${{ steps.release.outputs.action == 'check-credentials' }}
-        uses: wdzeng/chrome-extension@v2
-        with:
-          client-id: ${{ secrets.CLIENT_ID }}
-          client-secret: ${{ secrets.CLIENT_SECRET }}
-          refresh-token: ${{ secrets.REFRESH_TOKEN }}
-          action: check-credentials
-
+      # One step, one process, no third-party action in the credential path (SEC-22, AC-I02). The
+      # refresh token used to be handed to a marketplace action: that action's own code held it, and
+      # the repository pinned a tag rather than the code. `scripts/chrome-webstore.mjs` lives here,
+      # is reviewed like any other file, and keeps the token out of argv — it arrives as an
+      # environment variable and is exchanged for an access token inside the script.
+      #
+      # The mode is the *only* thing that decides whether a version is published: `upload` stages it,
+      # `publish` adds the one publish request. The default is `check-credentials`, which reads the
+      # item status and changes nothing — the cheapest way to find out that the secrets are stale.
       - name: Hand the extension to the store
-        if: ${{ steps.release.outputs.action != 'check-credentials' }}
-        uses: wdzeng/chrome-extension@v2
-        with:
-          extension-id: ${{ secrets.EXTENSION_ID }}
-          zip-path: store-asset/*.zip
-          publisher-id: ${{ secrets.PUBLISHER_ID }}
-          client-id: ${{ secrets.CLIENT_ID }}
-          client-secret: ${{ secrets.CLIENT_SECRET }}
-          refresh-token: ${{ secrets.REFRESH_TOKEN }}
-          # A release publishes; a dispatch may stage a version instead, which is the honest way to
-          # find out whether the store accepts the artefact at all.
-          action: ${{ steps.release.outputs.action }}
+        env:
+          WEBSTORE_CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          WEBSTORE_CLIENT_SECRET: ${{ secrets.CLIENT_SECRET }}
+          WEBSTORE_REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+          WEBSTORE_EXTENSION_ID: ${{ secrets.EXTENSION_ID }}
+          WEBSTORE_PUBLISHER_ID: ${{ secrets.PUBLISHER_ID }}
+          ACTION: ${{ steps.release.outputs.action }}
+        run: |
+          set -euo pipefail
+          case "${ACTION}" in
+            check-credentials)
+              node scripts/chrome-webstore.mjs --check-credentials
+              ;;
+            upload)
+              # RC-4: the first run of this path stages the version and stops. A human releases it in
+              # the dashboard once the listing is reviewed — see docs/RELEASING.md.
+              node scripts/chrome-webstore.mjs --zip store-asset/*.zip
+              ;;
+            publish)
+              node scripts/chrome-webstore.mjs --zip store-asset/*.zip --publish
+              ;;
+            *)
+              echo "::error::unknown action '${ACTION}' — expected check-credentials, upload or publish"
+              exit 1
+              ;;
+          esac
 
       - name: Summary
         if: always()
