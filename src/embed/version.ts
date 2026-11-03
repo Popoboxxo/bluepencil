@@ -32,7 +32,7 @@ export interface AttachManifest {
 }
 
 /** Fallback element file name, used when neither `data-src` nor a manifest is given. */
-export const ELEMENT_FILE = "bluepencil.element.min.js";
+const ELEMENT_FILE = "bluepencil.element.min.js";
 
 /** Parses a manifest document; a malformed one is an issue, never a silent no-op. */
 export function parseManifest(value: unknown): { manifest?: AttachManifest; issue?: string } {

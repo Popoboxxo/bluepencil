@@ -20,5 +20,6 @@ export * from "./order";
 export * from "./origin";
 export * from "./note-set";
 export * from "./legacy-assign";
+export * from "./sessions";
 export { normaliseOrigin, parseOriginInput, originOf, currentOrigin } from "../core/origin";
 export type { Note, NoteOrigin } from "../core/model";

@@ -76,7 +76,9 @@ import { VERSION } from "../src/version";
 import { canonicalNote } from "../src/data/canonical";
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { validateNote } from "../src/data/schema";
+import { AUTH_HEADER_SECRET, AUTH_HEADER_TOKEN } from "../src/core/protocol-headers";
 import { corsHeaders, preflightResponse } from "./cors";
+import { errorText, oneLine } from "./text";
 import { presenceOf, type PresenceTracker } from "./presence";
 import { credentialMode } from "./credentials";
 // The admin surface answers before the credential gate, so it must not import the gate — the
@@ -448,16 +450,7 @@ function originField(value: unknown): NoteOrigin {
  * Small text/HTTP helpers
  * ---------------------------------------------------------------------------------------------- */
 
-/** Collapses any message to a single line — an error body is never a multi-line blob. */
-function oneLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-/** The header an authenticated client presents its shared secret in (#36). */
-const AUTH_HEADER = "x-bluepencil-auth";
-
-/** The header a client presents a signed token in (#36, phase 2). */
-const BEARER_HEADER = "authorization";
+/** The scheme prefix of `Authorization: Bearer …` — `Bearer` is case-insensitive (RFC 7235). */
 const BEARER_PREFIX = "bearer ";
 
 /**
@@ -521,7 +514,7 @@ function tokenRefusal(reason: "expired" | "revoked" | "insufficient-scope" | "ot
 
 /** Reads `Authorization: Bearer <token>`, case-insensitively, as any HTTP client may write it. */
 function bearerToken(request: ServerRequest): string | undefined {
-  const raw = headerValue(request.headers, BEARER_HEADER);
+  const raw = headerValue(request.headers, AUTH_HEADER_TOKEN);
   if (raw === undefined) return undefined;
   // `Bearer` is case-insensitive per RFC 7235; the scheme and the single space are not optional in
   // practice, so anything else is a different scheme and belongs to somebody else.
@@ -546,11 +539,6 @@ function secretsMatch(expected: string, presented: string): boolean {
     diff |= expected.charCodeAt(i) ^ presented.charCodeAt(i);
   }
   return diff === 0;
-}
-
-function errorText(error: unknown): string {
-  if (error instanceof BluepencilValidationError) return error.issues.join("; ");
-  return error instanceof Error ? error.message : String(error);
 }
 
 function headerValue(
@@ -1479,7 +1467,7 @@ export function authorize(
     return null;
   }
 
-  const presented = headerValue(request.headers, AUTH_HEADER);
+  const presented = headerValue(request.headers, AUTH_HEADER_SECRET);
   const adminAttempt =
     options?.allowAdminSecret === true && typeof adminSecret === "string" && adminSecret.length > 0;
 
@@ -1490,13 +1478,13 @@ export function authorize(
       ? errorResponse(
           401,
           "unauthorized",
-          `missing ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`,
+          `missing ${AUTH_HEADER_SECRET} — this hub requires authentication (--auth-secret)`,
           context,
         )
       : errorResponse(
           401,
           "unauthorized",
-          `missing ${BEARER_HEADER}: Bearer <token> — this hub requires a signed token (--token-key)`,
+          `missing ${AUTH_HEADER_TOKEN}: Bearer <token> — this hub requires a signed token (--token-key)`,
           context,
         );
   }
@@ -1529,8 +1517,8 @@ export function authorize(
     401,
     "unauthorized",
     secretAttempt
-      ? `invalid ${AUTH_HEADER} — this hub requires authentication (--auth-secret)`
-      : `missing ${BEARER_HEADER}: Bearer <token> — this hub requires a signed token (--token-key)`,
+      ? `invalid ${AUTH_HEADER_SECRET} — this hub requires authentication (--auth-secret)`
+      : `missing ${AUTH_HEADER_TOKEN}: Bearer <token> — this hub requires a signed token (--token-key)`,
     context,
   );
 }

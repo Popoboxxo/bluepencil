@@ -25,6 +25,7 @@
 import type { Note } from "../model";
 import { excludeDone } from "../adapter";
 import { exceptionNotes, sortForReview } from "../protocol";
+import { compareCodeUnits } from "../../data/order";
 
 export interface MarkdownOptions {
   /** Section headings and field labels; field *values* stay the raw model vocabulary. */
@@ -279,13 +280,6 @@ function fenced(text: string, indent: string): string[] {
   return [indent + fence, ...lines.map((line) => (line === "" ? "" : indent + line)), indent + fence];
 }
 
-function compareText(a: string, b: string): number {
-  if (a < b) {
-    return -1;
-  }
-  return a > b ? 1 : 0;
-}
-
 function bullet(label: string, value: string): string {
   return `- ${label}: ${value}`;
 }
@@ -375,7 +369,7 @@ function renderNote(note: Note, s: ExportStrings, headingLevel: number): string[
       lines.push(`  - build: ${code(context.buildRef)}`);
     }
     // Sorted so the export does not depend on the insertion order of the captured styles.
-    for (const key of Object.keys(context.styles).sort(compareText)) {
+    for (const key of Object.keys(context.styles).sort(compareCodeUnits)) {
       const value = context.styles[key];
       if (value === undefined) {
         continue;
@@ -488,7 +482,7 @@ export function toMarkdown(notes: Note[], options: MarkdownOptions = {}): string
   if (groups.size > 0) {
     out.push("", `## ${s.byRouteSection}`);
     // Routes are sorted by code unit; the no-route group always comes last.
-    const keys = [...groups.keys()].filter((key) => key !== s.noRoute).sort(compareText);
+    const keys = [...groups.keys()].filter((key) => key !== s.noRoute).sort(compareCodeUnits);
     if (groups.has(s.noRoute)) {
       keys.push(s.noRoute);
     }

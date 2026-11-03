@@ -5,6 +5,9 @@
  * which own the bundle format and its validation.
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -24,7 +27,8 @@ import { BluepencilValidationError, createNote } from "../../src/core/model";
 import { excludeDone, filterNotes } from "../../src/core/adapter";
 import { noteToMarkdown, toMarkdown } from "../../src/core/export/markdown";
 import { fromJson, toJson } from "../../src/core/export/json";
-import { parseBundle } from "../../src/data/bundle";
+import { createBundle, inspectBundle, parseBundle } from "../../src/data/bundle";
+import { compareCodeUnits } from "../../src/data/order";
 
 const T0 = "2026-01-01T00:00:00.000Z";
 const T1 = "2026-01-01T00:10:00.000Z";
@@ -613,5 +617,44 @@ describe("json export", () => {
   it("writes a bundle the data library reads back", () => {
     const bundle = parseBundle(toJson(notes, { now: T0 }));
     expect(bundle.notes).toHaveLength(2);
+  });
+});
+
+/*
+ * One comparator source (BP-07, AC-H03): the bundle summary and the Markdown route headings must
+ * sort by the shared `compareCodeUnits` from `src/data/order.ts`, never a local copy or the
+ * locale. The mixed-case route set puts that to the test — `localeCompare` would order `ä`/`Ä`
+ * next to `a`, code units keep uppercase binary-first.
+ */
+describe("shared comparator (BP-07, AC-H03)", () => {
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const read = (path: string): string => readFileSync(join(ROOT, path), "utf8");
+
+  it("imports compareCodeUnits from order.ts and keeps no local comparator copy", () => {
+    const bundleSource = read("src/data/bundle.ts");
+    const markdownSource = read("src/core/export/markdown.ts");
+
+    expect(bundleSource).toContain('import { compareCodeUnits } from "./order";');
+    expect(markdownSource).toContain('import { compareCodeUnits } from "../../data/order";');
+
+    expect(bundleSource).not.toMatch(/function\s+compareStrings\b/);
+    expect(markdownSource).not.toMatch(/function\s+compareText\b/);
+    expect(bundleSource).not.toMatch(/localeCompare/);
+    expect(markdownSource).not.toMatch(/localeCompare/);
+  });
+
+  it("sorts bundle routes and markdown route headings identically, in code-unit order", () => {
+    const routes = ["a", "Ä", "B"];
+    const notes = routes.map((route, index) =>
+      makeNote({ id: `n-route-${String(index)}`, route, now: T0 }),
+    );
+    const expected = [...routes].sort(compareCodeUnits);
+    expect(expected).toEqual(["B", "a", "Ä"]);
+
+    expect(inspectBundle(createBundle(notes)).routes).toEqual(expected);
+
+    const md = toMarkdown(notes);
+    const headings = [...md.matchAll(/^### Route: `(.+)`$/gm)].map((match) => match[1]);
+    expect(headings).toEqual(expected);
   });
 });

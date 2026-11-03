@@ -34,9 +34,9 @@ export function reviewPriority(note: Note): number {
  * Code-unit string comparison: deterministic everywhere, unlike `localeCompare`.
  *
  * This is the one comparator the data layer shares (BP-07): `canonical.ts` imports it for the
- * canonical bundle order, so a reviewer and an agent never disagree about which note comes
- * first. The remaining code-unit copies in `bundle.ts`/`markdown.ts`/`aggregate.ts` are the
- * documented H-wave cleanup, not a second opinion.
+ * canonical bundle order, and `bundle.ts`, `markdown.ts` and `aggregate.ts` import it from here
+ * too — none of them keeps a local copy. A reviewer and an agent therefore never disagree about
+ * which note comes first.
  */
 export function compareCodeUnits(a: string, b: string): number {
   if (a < b) {

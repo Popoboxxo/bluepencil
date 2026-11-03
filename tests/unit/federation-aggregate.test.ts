@@ -4,11 +4,14 @@
  * qualification, limit/truncation and the all-fail contract (T17–T20, T25, T68, T74, T87).
  */
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import type { Environment, Note, NoteIntent, NoteStatus } from "../../src/core/model";
 import { createNote } from "../../src/core/model";
-import { compareForReview, reviewPriority } from "../../src/data/order";
+import { compareCodeUnits, compareForReview, reviewPriority } from "../../src/data/order";
 import {
   DEFAULT_AGGREGATE_LIMIT,
   MAX_AGGREGATE_LIMIT,
@@ -488,5 +491,42 @@ describe("aggregate.selection_errors", () => {
 
     expect(result.notes.map((note) => note.id)).toEqual(["beta/b-1"]);
     expect(result.instances.map((entry) => entry.id)).toEqual(["beta"]);
+  });
+});
+
+/*
+ * One comparator source (BP-07, AC-H03): the aggregate instance/id tie-break uses the shared
+ * `compareCodeUnits` from `src/data/order.ts`. Uppercase sorts before lowercase by code unit,
+ * the opposite of what `localeCompare` would do for `a` vs `B`.
+ */
+describe("shared comparator (BP-07, AC-H03)", () => {
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const SOURCE = readFileSync(join(ROOT, "src", "federation", "aggregate.ts"), "utf8");
+
+  it("imports compareCodeUnits from order.ts and keeps no local comparator copy", () => {
+    expect(SOURCE).toContain('import { compareCodeUnits, compareForReview } from "../data/order";');
+    expect(SOURCE).not.toMatch(/function\s+compareText\b/);
+    expect(SOURCE).not.toMatch(/localeCompare/);
+  });
+
+  it("orders equal-priority notes by code unit, not by locale", async () => {
+    /* `ä` sorts after `z` by code unit but before it under `localeCompare`. Note ids are the
+     * final tie-break when instance and priority/time are equal. */
+    expect(compareCodeUnits("n-z", "n-ä")).toBeLessThan(0);
+    expect(["n-z", "n-ä"].sort((a, b) => a.localeCompare(b))).toEqual(["n-ä", "n-z"]);
+
+    const result = await aggregateList(
+      [
+        sourceOf("alpha", [
+          makeNote({ id: "n-ä", status: "open", now: T0 }),
+          makeNote({ id: "n-z", status: "open", now: T0 }),
+        ]),
+      ],
+      undefined,
+      {},
+      options(),
+    );
+
+    expect(result.notes.map((entry) => entry.id)).toEqual(["alpha/n-z", "alpha/n-ä"]);
   });
 });

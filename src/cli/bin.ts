@@ -20,14 +20,15 @@
  * It shares schema, validation, filtering and merge logic with the UI and the MCP server
  * (FR-15.3) and has no runtime dependencies (FR-15.4).
  */
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { bundleToJson, createBundle, inspectBundle } from "../data/bundle";
 import { canonicalBundle, serializeCanonical } from "../data/canonical";
 import { mergeNotes } from "../data/merge";
 import type { MergeConflict, MergeMode, MergeResult } from "../data/merge";
 import { migrateBundle, migrateNote } from "../data/migrate";
 import { validateBundle, validateNote } from "../data/schema";
+import { deriveSessions } from "../data/sessions";
 import { excludeDone, filterNotes, matchesFilter } from "../core/adapter";
 import { parseOriginInput } from "../core/origin";
 import { toMarkdown } from "../core/export/markdown";
@@ -49,10 +50,15 @@ import {
   isNoteType,
   systemClock,
 } from "../core/model";
-import type { Bundle, Environment, Note, NoteFilter, NoteOrigin, Session } from "../core/model";
+import type { Bundle, Environment, Note, NoteFilter, NoteOrigin } from "../core/model";
 import { VERSION } from "../version";
 import { createMemoryAdapter } from "../adapters/memory";
 import { createStore } from "../core/store";
+// The one atomic-write implementation: the hub and the CLI share it instead of keeping copies
+// (CQ-01). `src/cli/**` is excluded from the declaration emit, so pulling that file in does not
+// move `dist/types` (see `tsconfig.types.json`); the import graph stays acyclic — `atomic-write.ts`
+// depends on `node:fs`/`node:path` only.
+import { writeAtomic } from "../../server/atomic-write";
 import { runInstances } from "./instances";
 
 const EXIT = { ok: 0, usage: 1, conflict: 2, envMismatch: 3, invalid: 4, federation: 5 } as const;
@@ -160,21 +166,6 @@ function readText(path: string): string {
     return readFileSync(path, "utf8");
   } catch (error) {
     fail(`cannot read ${path}: ${messageOf(error)}`);
-  }
-}
-
-/**
- * Atomic write: the temp file lives in the target directory, so rename() never crosses a mount
- * (FR-6.5). The temp file is removed on *every* exit path — including a failed rename — so a
- * refused write can never leave litter behind (F8).
- */
-function writeAtomic(path: string, text: string): void {
-  const tmp = join(dirname(path), `.${basename(path)}.tmp-${process.pid}`);
-  try {
-    writeFileSync(tmp, text, "utf8");
-    renameSync(tmp, path);
-  } finally {
-    rmSync(tmp, { force: true });
   }
 }
 
@@ -312,21 +303,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** Documents without a `schemaVersion` predate versioning and are the only ones migrated (F14). */
 function isLegacy(doc: Record<string, unknown>): boolean {
   return doc.schemaVersion === undefined || doc.schemaVersion === null;
-}
-
-/**
- * Sessions referenced by the notes of a legacy bare `Note[]` — the readers keep this derivation
- * private, so the CLI mirrors it for the one input form that has no session header.
- */
-function deriveSessions(notes: readonly Note[]): Session[] {
-  const earliest = new Map<string, string>();
-  for (const note of notes) {
-    const ref = note.sessionRef;
-    if (ref === undefined || ref === "") continue;
-    const current = earliest.get(ref);
-    if (current === undefined || note.createdAt < current) earliest.set(ref, note.createdAt);
-  }
-  return [...earliest.entries()].map(([ref, createdAt]) => ({ ref, label: ref, createdAt }));
 }
 
 /**

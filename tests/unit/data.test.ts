@@ -40,6 +40,7 @@ import {
   validateBundle,
   validateNote,
 } from "../../src/data/index";
+import { deriveSessions } from "../../src/data/sessions";
 
 const T = "2026-09-14T18:20:00.000Z";
 const LATER = "2026-09-14T19:00:00.000Z";
@@ -952,5 +953,66 @@ describe("bug severity (FR-3.6, issue #71)", () => {
     const degraded = without(bug, "severity");
     expect("severity" in degraded).toBe(false);
     expect(validateNote(degraded)).toEqual([]);
+  });
+});
+
+/**
+ * CQ-01 (AC-H01): session derivation exists exactly once. `src/data/bundle.ts`,
+ * `src/data/migrate.ts` and the CLI each carried an identical private copy; a rule change could
+ * therefore reach one reader and miss the other two. `src/data/sessions.ts` is now the single
+ * definition, and the cross-surface case below pins that the three call sites cannot drift.
+ */
+describe("session derivation — one implementation (AC-H01)", () => {
+  const SOURCE = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const read = (relative: string): string => readFileSync(join(SOURCE, relative), "utf8");
+  const SURFACES = ["src/data/bundle.ts", "src/data/migrate.ts", "src/cli/bin.ts"];
+
+  it("declares deriveSessions only in src/data/sessions.ts — never as a private copy", () => {
+    const definitions = SURFACES.filter((file) => /function\s+deriveSessions\b/.test(read(file)));
+    expect(definitions).toEqual([]);
+
+    const module = read("src/data/sessions.ts");
+    expect(module).toMatch(/export function deriveSessions\(notes: readonly Note\[\]\): Session\[\]/);
+    // Exactly one implementation in the whole tree, the new module included.
+    const all = [...SURFACES, "src/data/sessions.ts"].filter((file) =>
+      /function\s+deriveSessions\b/.test(read(file)),
+    );
+    expect(all).toEqual(["src/data/sessions.ts"]);
+  });
+
+  it("is imported by bundle.ts, migrate.ts and the CLI", () => {
+    expect(read("src/data/bundle.ts")).toContain('import { deriveSessions } from "./sessions"');
+    expect(read("src/data/migrate.ts")).toContain('import { deriveSessions } from "./sessions"');
+    expect(read("src/cli/bin.ts")).toContain('import { deriveSessions } from "../data/sessions"');
+  });
+
+  it("derives the earliest createdAt per ref and labels it with the ref", () => {
+    const notes = [
+      makeNote({ id: "n-late", sessionRef: "s-1", now: LATER }),
+      makeNote({ id: "n-early", sessionRef: "s-1", now: T }),
+      makeNote({ id: "n-other", sessionRef: "s-2", now: T }),
+      makeNote({ id: "n-noref" }),
+    ];
+    expect(deriveSessions(notes)).toEqual([
+      { ref: "s-1", label: "s-1", createdAt: T },
+      { ref: "s-2", label: "s-2", createdAt: T },
+    ]);
+    // An empty ref is not a session; the bundle readers are lenient here on purpose.
+    expect(deriveSessions([{ ...makeNote({ id: "n-empty" }), sessionRef: "" }])).toEqual([]);
+    expect(deriveSessions([])).toEqual([]);
+  });
+
+  it("yields one identical header from bundle creation, migration and inspection", () => {
+    const notes = [
+      makeNote({ id: "n-late", sessionRef: "s-1", now: LATER }),
+      makeNote({ id: "n-early", sessionRef: "s-1", now: T }),
+      makeNote({ id: "n-other", sessionRef: "s-2", now: T }),
+    ];
+    const derived = deriveSessions(notes);
+    const bundle = createBundle(notes, BUNDLE_OPTIONS);
+
+    expect(bundle.sessions).toEqual(derived);
+    expect(migrateBundle(JSON.parse(JSON.stringify(notes)) as unknown).sessions).toEqual(derived);
+    expect(inspectBundle(bundle).sessions).toEqual(derived);
   });
 });

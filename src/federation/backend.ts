@@ -152,7 +152,7 @@ export interface FederatedBackendOptions {
 const UNKNOWN_APP = "unknown";
 
 type WriteTarget =
-  | { kind: "self"; instance: typeof SELF_INSTANCE }
+  | { kind: "self"; instance: typeof SELF_INSTANCE; source: SelfSource }
   | { kind: "peer"; instance: string; peer: PeerSource };
 
 /* ------------------------------------------------------------------------------------------------
@@ -280,14 +280,17 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
   }
 
   function selfTarget(): Extract<WriteTarget, { kind: "self" }> {
-    if (!selfAvailable()) {
+    const local = self;
+    if (!selfAvailable() || local === undefined) {
       throw new FederationError(
         "self_unavailable",
         "The local instance is not part of this session",
         { instance: SELF_INSTANCE },
       );
     }
-    return { kind: "self", instance: SELF_INSTANCE };
+    /* The source travels with the target: every self write then reads `target.source` instead
+     * of asserting `self` inside a closure, where the guard's narrowing would be lost. */
+    return { kind: "self", instance: SELF_INSTANCE, source: local };
   }
 
   function peerTarget(id: string): Extract<WriteTarget, { kind: "peer" }> {
@@ -573,7 +576,7 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
           }
           target = instance === SELF_INSTANCE ? selfTarget() : peerTarget(instance);
         } else if (selfAvailable()) {
-          target = { kind: "self", instance: SELF_INSTANCE };
+          target = selfTarget();
         } else {
           throw new FederationError(
             "instance_required",
@@ -584,7 +587,8 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
       }
 
       if (target.kind === "self") {
-        const note = await callSelf("read", () => self!.get(noteId));
+        const local = target.source;
+        const note = await callSelf("read", () => local.get(noteId));
         return note === undefined ? undefined : qualifySelf(note);
       }
 
@@ -601,7 +605,7 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
       const selected: WriteTarget[] = [];
       if (instance === undefined || isSelectorInstance(instance)) {
         selected.push(...sources.map((peer) => ({ kind: "peer" as const, instance: peer.id, peer })));
-        if (selfAvailable()) selected.push({ kind: "self", instance: SELF_INSTANCE });
+        if (selfAvailable()) selected.push(selfTarget());
       } else if (instance === SELF_INSTANCE) {
         selected.push(selfTarget());
       } else {
@@ -610,10 +614,14 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
 
       const sessions: Session[] = [];
       for (const target of selected) {
-        const rows =
-          target.kind === "self"
-            ? await callSelf("read", () => self!.sessions())
-            : await callPeer(target.peer, () => target.peer.sessions());
+        let rows: Session[];
+        if (target.kind === "self") {
+          const local = target.source;
+          rows = await callSelf("read", () => local.sessions());
+        } else {
+          const peer = target.peer;
+          rows = await callPeer(peer, () => peer.sessions());
+        }
         for (const row of rows) {
           sessions.push({ ...row, ref: formatQualifiedId(target.instance, row.ref) });
         }
@@ -680,8 +688,9 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
       assertWritable(target);
 
       if (target.kind === "self") {
-        const before = await callSelf("read", () => self!.list({}));
-        const note = await callSelf("write", () => self!.create(draft));
+        const local = target.source;
+        const before = await callSelf("read", () => local.list({}));
+        const note = await callSelf("write", () => local.create(draft));
         pendingSelfConfirm = { action: `create_note ${note.id}`, expected: [...before, note] };
         return qualifySelf(note);
       }
@@ -696,8 +705,9 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
       assertWritable(target);
 
       if (target.kind === "self") {
-        const before = await callSelf("read", () => self!.list({}));
-        const note = await callSelf("write", () => self!.update(noteId, patch));
+        const local = target.source;
+        const before = await callSelf("read", () => local.list({}));
+        const note = await callSelf("write", () => local.update(noteId, patch));
         pendingSelfConfirm = {
           action: `update ${noteId}`,
           expected: before.map((candidate) => (candidate.id === note.id ? note : candidate)),
@@ -715,8 +725,9 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
       assertWritable(target);
 
       if (target.kind === "self") {
-        const before = await callSelf("read", () => self!.list({}));
-        const note = await callSelf("write", () => self!.addMessage(noteId, message));
+        const local = target.source;
+        const before = await callSelf("read", () => local.list({}));
+        const note = await callSelf("write", () => local.addMessage(noteId, message));
         pendingSelfConfirm = {
           action: `reply to ${noteId}`,
           expected: before.map((candidate) => (candidate.id === note.id ? note : candidate)),
@@ -734,8 +745,9 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
       assertWritable(target);
 
       if (target.kind === "self") {
-        const before = await callSelf("read", () => self!.list({}));
-        await callSelf("write", () => self!.remove(noteId));
+        const local = target.source;
+        const before = await callSelf("read", () => local.list({}));
+        await callSelf("write", () => local.remove(noteId));
         pendingSelfConfirm = {
           action: `remove ${noteId}`,
           expected: before.filter((candidate) => candidate.id !== noteId),
@@ -760,8 +772,9 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
       const targetFilter = sessionFilterFor(filter, target.instance);
 
       if (target.kind === "self") {
-        const before = await callSelf("read", () => self!.list({}));
-        const result = await callSelf("write", () => self!.bulkRemove(targetFilter));
+        const local = target.source;
+        const before = await callSelf("read", () => local.list({}));
+        const result = await callSelf("write", () => local.bulkRemove(targetFilter));
         pendingSelfConfirm = {
           action: `bulk_remove (${result.removed} note(s))`,
           expected: before.filter((candidate) => !matchesFilter(candidate, targetFilter)),
@@ -797,8 +810,8 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
       }
 
       if (instance === SELF_INSTANCE) {
-        selfTarget();
-        return callSelf("read", () => self!.exportBundle(exportOptions));
+        const local = selfTarget().source;
+        return callSelf("read", () => local.exportBundle(exportOptions));
       }
 
       const target = peerTarget(instance);
@@ -833,7 +846,8 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
       if (instance === SELF_INSTANCE) {
         const target = selfTarget();
         assertWritable(target);
-        return callSelf("write", () => self!.importBundle(bundle, importOptions));
+        const local = target.source;
+        return callSelf("write", () => local.importBundle(bundle, importOptions));
       }
 
       const target = peerTarget(instance);
@@ -859,8 +873,12 @@ export function createFederatedBackend(options: FederatedBackendOptions): McpBac
        * it because the tool always calls this after a write. */
       const pending = pendingSelfConfirm;
       pendingSelfConfirm = undefined;
-      if (pending === undefined || self?.confirmWrite === undefined) return null;
-      return callSelf("write", () => self.confirmWrite!(pending.expected, pending.action));
+      const local = self;
+      if (pending === undefined || local === undefined) return null;
+      const confirm = local.confirmWrite;
+      if (confirm === undefined) return null;
+      // `.call(local, ...)` keeps the store as the receiver, exactly like the former `self.confirmWrite(...)`.
+      return callSelf("write", () => confirm.call(local, pending.expected, pending.action));
     },
 
     async close(): Promise<void> {

@@ -59,7 +59,7 @@ export interface Shortcut {
 }
 
 /** Group headings, shared by every legend row so the overlay needs no table of its own. */
-export const SHORTCUT_GROUPS = Object.freeze({
+const SHORTCUT_GROUPS = Object.freeze({
   capture: "legend.group.capture" as MessageKey,
   view: "legend.group.view" as MessageKey,
   navigate: "legend.group.navigate" as MessageKey,

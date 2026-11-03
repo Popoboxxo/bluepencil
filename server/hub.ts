@@ -50,6 +50,7 @@ import {
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { migrateBundle } from "../src/data/migrate";
 import { assertBundle } from "../src/data/schema";
+import { errorText, oneLine } from "./text";
 import {
   DEFAULT_BASE_PATH,
   JSON_CONTENT_TYPE,
@@ -528,14 +529,6 @@ interface GlueResponse {
 function write(response: NodeResponse, result: GlueResponse): void {
   response.writeHead(result.status, result.headers);
   response.end(result.body);
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function oneLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
 }
 
 /** The documented error shape, for the answers the glue itself produces (static 404/405, read errors). */

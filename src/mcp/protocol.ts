@@ -26,11 +26,11 @@ import { VERSION } from "../version";
 export const PROTOCOL_VERSION = "2024-11-05";
 
 /** Unparsable input: the id cannot be recovered, so its response carries `id: null`. */
-export const PARSE_ERROR = -32700;
+const PARSE_ERROR = -32700;
 /** Parsed JSON that is not a JSON-RPC request object (`null`, an array, a bare value). */
-export const INVALID_REQUEST = -32600;
-export const METHOD_NOT_FOUND = -32601;
-export const INVALID_PARAMS = -32602;
+const INVALID_REQUEST = -32600;
+const METHOD_NOT_FOUND = -32601;
+const INVALID_PARAMS = -32602;
 
 export interface RpcRequest {
   jsonrpc?: string;

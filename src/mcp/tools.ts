@@ -60,16 +60,16 @@ import {
 } from "../core/model";
 
 /** Merge modes the tool accepts (FR-14.3) — the schema and the validator share this list. */
-export const MERGE_MODES = ["merge", "upsert", "replace-session"] as const;
+const MERGE_MODES = ["merge", "upsert", "replace-session"] as const;
 /** Conflict policies the tool accepts (FR-14.4) — the schema and the validator share this list. */
-export const CONFLICT_POLICIES = ["fail", "keep-incoming", "keep-existing"] as const;
+const CONFLICT_POLICIES = ["fail", "keep-incoming", "keep-existing"] as const;
 /** Output formats of `list_notes` and `export_bundle`. */
-export const FORMATS = ["json", "markdown"] as const;
+const FORMATS = ["json", "markdown"] as const;
 /**
  * Message kinds this server may append. `decision` is missing on purpose: a decision is a human
  * act (PROTOCOL §6.1), so the tool never advertises it and refuses it explicitly.
  */
-export const AGENT_MESSAGE_KINDS: readonly MessageKind[] = MESSAGE_KINDS.filter(
+const AGENT_MESSAGE_KINDS: readonly MessageKind[] = MESSAGE_KINDS.filter(
   (kind) => kind !== "decision",
 );
 
@@ -394,7 +394,7 @@ function withoutProperties(
  * `list_notes`; `list_instances` does not exist without an aggregate. `aggregate` is the complete
  * federation surface: ten tools, `instance`/`limit` included.
  */
-export function toolDefinitionsForScope(scope: ToolScope): ToolDefinition[] {
+function toolDefinitionsForScope(scope: ToolScope): ToolDefinition[] {
   if (scope === "aggregate") return [...TOOL_DEFINITIONS];
   return TOOL_DEFINITIONS.filter((tool) => tool.name !== "list_instances").map((tool) => ({
     ...tool,

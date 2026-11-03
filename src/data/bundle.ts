@@ -21,7 +21,9 @@ import {
 import type { Bundle, Environment, Note, Session } from "../core/model";
 import { originOf } from "../core/origin";
 import { canonicalBundle, serializeCanonical } from "./canonical";
+import { compareCodeUnits } from "./order";
 import { assertBundle, assertNote } from "./schema";
+import { deriveSessions } from "./sessions";
 
 export interface BundleOptions {
   exportedBy?: string;
@@ -48,14 +50,8 @@ export interface BundleSummary {
   app?: { name: string; buildRef?: string };
 }
 
-function compareStrings(a: string, b: string): number {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
-}
-
 function uniqueEnvironments(values: readonly Environment[]): Environment[] {
-  return [...new Set(values)].sort(compareStrings);
+  return [...new Set(values)].sort(compareCodeUnits);
 }
 
 function zeroCounts(keys: readonly string[]): Record<string, number> {
@@ -88,18 +84,6 @@ function resolveEnvironment(found: Environment[], requested: Environment | undef
   throw new BluepencilValidationError([
     `notes span multiple environments (${found.join(", ")}); export one environment at a time or pass options.environment explicitly`,
   ]);
-}
-
-/** Sessions that are only referenced by notes, without a caller-supplied label. */
-function deriveSessions(notes: readonly Note[]): Session[] {
-  const earliest = new Map<string, string>();
-  for (const note of notes) {
-    const ref = note.sessionRef;
-    if (ref === undefined || ref === "") continue;
-    const current = earliest.get(ref);
-    if (current === undefined || note.createdAt < current) earliest.set(ref, note.createdAt);
-  }
-  return [...earliest.entries()].map(([ref, createdAt]) => ({ ref, label: ref, createdAt }));
 }
 
 /**
@@ -177,13 +161,18 @@ export function inspectBundle(bundle: Bundle): BundleSummary {
 
   return {
     notes: value.notes.length,
-    sessions: value.sessions.map((session) => ({ ...session })).sort((a, b) => compareStrings(a.ref, b.ref) || compareStrings(a.createdAt, b.createdAt)),
+    sessions: value.sessions
+      .map((session) => ({ ...session }))
+      .sort(
+        (a, b) =>
+          compareCodeUnits(a.ref, b.ref) || compareCodeUnits(a.createdAt, b.createdAt),
+      ),
     environments: uniqueEnvironments(value.notes.map((note) => note.environment)),
     byStatus,
     byIntent,
     byType,
-    routes: [...routes].sort(compareStrings),
-    origins: [...origins].sort(compareStrings),
+    routes: [...routes].sort(compareCodeUnits),
+    origins: [...origins].sort(compareCodeUnits),
     unassigned,
     app: {
       name: value.app.name,

@@ -22,7 +22,6 @@ import type { Environment } from "../src/core/model";
 import type { Store } from "../src/core/store";
 import { createStore } from "../src/core/store";
 import type { McpBackend } from "../src/mcp/backend";
-import { VERSION } from "../src/version";
 import { createStoreBackend } from "../src/mcp/backend";
 import {
   createStorePersistence,
@@ -330,7 +329,3 @@ export async function handleMcpRoute(
   }
   return answer(200, response, context);
 }
-
-/** The revision this hub speaks, as a client would have to send it. */
-export const MCP_PROTOCOL_VERSION = PROTOCOL_VERSION;
-export const HUB_VERSION = VERSION;

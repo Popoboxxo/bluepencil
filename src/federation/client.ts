@@ -38,6 +38,8 @@ import {
 import type { ImportOptions } from "../mcp/backend";
 import type { ToolResponse } from "../mcp/tools";
 import { VERSION } from "../version";
+import { AUTH_HEADER_SECRET, AUTH_HEADER_TOKEN } from "../core/protocol-headers";
+import { errorText } from "../core/text";
 import type { ReadSource } from "./aggregate";
 import { FederationError, Redactor, canonicalErrorCode, type FederationErrorCode } from "./errors";
 import { assertFederatableNoteId } from "./ids";
@@ -128,15 +130,8 @@ export const DEFAULT_CLIENT_TIMEOUT_MS = 3000;
 export const DEFAULT_MCP_CLIENT_NAME = "bluepencil-federation";
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
 
-const DEFAULT_AUTH_HEADER = "x-bluepencil-auth";
-const TOKEN_AUTH_HEADER = "Authorization";
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -752,7 +747,7 @@ export class InstanceClient implements ReadSource {
         if (!response.ok) throw this.#httpFailure(response.status, "");
         throw this.#failure(
           "instance_unreachable",
-          `${label}: response body could not be read: ${messageOf(error)}`,
+          `${label}: response body could not be read: ${errorText(error)}`,
           { status: response.status },
         );
       }
@@ -797,7 +792,7 @@ export class InstanceClient implements ReadSource {
       }
       throw this.#failure(
         "instance_unreachable",
-        `${label}: response body could not be read: ${messageOf(error)}`,
+        `${label}: response body could not be read: ${errorText(error)}`,
         { status: response.status },
       );
     } finally {
@@ -971,7 +966,7 @@ export class InstanceClient implements ReadSource {
       if (phase === "check") throw error;
       throw this.#failure(
         "instance_unreachable",
-        `${method} ${url} failed: ${messageOf(error)}`,
+        `${method} ${url} failed: ${errorText(error)}`,
       );
     } finally {
       clearTimeout(timer);
@@ -1027,9 +1022,9 @@ export class InstanceClient implements ReadSource {
       };
     }
     if (this.#authMode === "token") {
-      return { [TOKEN_AUTH_HEADER]: `Bearer ${auth.value}` };
+      return { [AUTH_HEADER_TOKEN]: `Bearer ${auth.value}` };
     }
-    return { [DEFAULT_AUTH_HEADER]: auth.value };
+    return { [AUTH_HEADER_SECRET]: auth.value };
   }
 
   #mcpHeaders(): Record<string, string> {

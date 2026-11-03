@@ -23,7 +23,7 @@ import { resolveKeymap, type KeymapOverrides } from "../ui/keymap";
 import { CAPTURE_MODES, isCaptureMode, type CaptureMode } from "../ui/modes";
 
 /** Attributes that existed before FR-17 — kept unchanged for existing hosts. */
-export const CORE_ATTRIBUTES = [
+const CORE_ATTRIBUTES = [
   "enabled",
   "adapter",
   "language",

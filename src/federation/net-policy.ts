@@ -87,6 +87,12 @@ export type IpClass =
   | "reserved"
   | "public";
 
+/**
+ * A parsed IPv6 address: exactly eight 16-bit groups. Encoding the length in the type is what
+ * lets the group arithmetic below stay assertion-free; `parseIpv6` is the only producer.
+ */
+type Ipv6Groups = readonly [number, number, number, number, number, number, number, number];
+
 /** Cloud metadata host names, always blocked regardless of `allowInsecure`. */
 export const METADATA_HOSTNAMES: readonly string[] = [
   "metadata",
@@ -127,7 +133,18 @@ function parseIpv4(value: string): readonly [number, number, number, number] | n
     octets.push(octet);
   }
 
-  return [octets[0]!, octets[1]!, octets[2]!, octets[3]!];
+  return toIpv4Quad(octets);
+}
+
+/**
+ * Widens a length-checked octet list to a four-octet tuple, or `null` when the arity is wrong.
+ * The explicit checks are what keep the parser assertion-free under `noUncheckedIndexedAccess`.
+ */
+function toIpv4Quad(octets: readonly number[]): readonly [number, number, number, number] | null {
+  if (octets.length !== 4) return null;
+  const [a, b, c, d] = octets;
+  if (a === undefined || b === undefined || c === undefined || d === undefined) return null;
+  return [a, b, c, d];
 }
 
 /**
@@ -149,7 +166,7 @@ function expandEmbeddedIpv4(value: string): string | null {
 }
 
 /** Parses an IPv6 address into eight 16-bit groups. Returns `null` for malformed input. */
-function parseIpv6(value: string): readonly number[] | null {
+function parseIpv6(value: string): Ipv6Groups | null {
   // Zone identifiers are not part of a URL host and not supported here.
   if (value.includes("%")) return null;
   if (!value.includes(":")) return null;
@@ -171,21 +188,42 @@ function parseIpv6(value: string): readonly number[] | null {
     return groups;
   };
 
-  let groups: number[];
+  let groups: readonly number[];
   if (halves.length === 2) {
-    const head = toGroups(splitGroups(halves[0]!));
-    const tail = toGroups(splitGroups(halves[1]!));
+    const [headText, tailText] = halves;
+    if (headText === undefined || tailText === undefined) return null;
+    const head = toGroups(splitGroups(headText));
+    const tail = toGroups(splitGroups(tailText));
     if (head === null || tail === null) return null;
     const missing = 8 - head.length - tail.length;
     if (missing < 1) return null;
     groups = [...head, ...new Array<number>(missing).fill(0), ...tail];
   } else {
     const parsed = toGroups(splitGroups(expanded));
-    if (parsed === null || parsed.length !== 8) return null;
+    if (parsed === null) return null;
     groups = parsed;
   }
 
-  return groups;
+  return toIpv6Groups(groups);
+}
+
+/** Widens a length-checked group list to the eight-group tuple, or `null` on any other arity. */
+function toIpv6Groups(groups: readonly number[]): Ipv6Groups | null {
+  if (groups.length !== 8) return null;
+  const [g0, g1, g2, g3, g4, g5, g6, g7] = groups;
+  if (
+    g0 === undefined ||
+    g1 === undefined ||
+    g2 === undefined ||
+    g3 === undefined ||
+    g4 === undefined ||
+    g5 === undefined ||
+    g6 === undefined ||
+    g7 === undefined
+  ) {
+    return null;
+  }
+  return [g0, g1, g2, g3, g4, g5, g6, g7];
 }
 
 function stripBrackets(host: string): string {
@@ -214,10 +252,10 @@ function ipv4FromTail(high: number, low: number): string {
  * The NAT64 local-use prefix `64:ff9b:1::/48` is deliberately not unwrapped: RFC 6052 places
  * the IPv4 bits at a prefix-length-dependent offset, so a fixed 32-bit tail is not well-defined.
  */
-function embeddedIpv4FromGroups(groups: readonly number[]): string | undefined {
+function embeddedIpv4FromGroups(groups: Ipv6Groups): string | undefined {
   // IPv4-mapped `::ffff:a.b.c.d`.
   if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
-    return ipv4FromTail(groups[6]!, groups[7]!);
+    return ipv4FromTail(groups[6], groups[7]);
   }
 
   // IPv4-translated `::ffff:0:a.b.c.d` — a distinct prefix from the mapped form above.
@@ -226,14 +264,14 @@ function embeddedIpv4FromGroups(groups: readonly number[]): string | undefined {
     groups[4] === 0xffff &&
     groups[5] === 0
   ) {
-    return ipv4FromTail(groups[6]!, groups[7]!);
+    return ipv4FromTail(groups[6], groups[7]);
   }
 
   // IPv4-compatible `::a.b.c.d`; `::` and `::1` keep their unspecified/loopback meaning.
   if (groups.slice(0, 6).every((group) => group === 0)) {
     const unspecified = groups[6] === 0 && groups[7] === 0;
     const loopback = groups[6] === 0 && groups[7] === 1;
-    if (!unspecified && !loopback) return ipv4FromTail(groups[6]!, groups[7]!);
+    if (!unspecified && !loopback) return ipv4FromTail(groups[6], groups[7]);
   }
 
   // NAT64 well-known prefix `64:ff9b::/96`.
@@ -242,12 +280,12 @@ function embeddedIpv4FromGroups(groups: readonly number[]): string | undefined {
     groups[1] === 0xff9b &&
     groups.slice(2, 6).every((group) => group === 0)
   ) {
-    return ipv4FromTail(groups[6]!, groups[7]!);
+    return ipv4FromTail(groups[6], groups[7]);
   }
 
   // 6to4 `2002::/16` carries the IPv4 address in bits 16–47 (groups 1 and 2).
   if (groups[0] === 0x2002) {
-    return ipv4FromTail(groups[1]!, groups[2]!);
+    return ipv4FromTail(groups[1], groups[2]);
   }
 
   return undefined;
@@ -280,7 +318,7 @@ export function unwrap6to4(address: string): string | null {
 
   const groups = parseIpv6(bare);
   if (groups === null || groups[0] !== 0x2002) return null;
-  return ipv4FromTail(groups[1]!, groups[2]!);
+  return ipv4FromTail(groups[1], groups[2]);
 }
 
 /** Canonical host form used for comparisons: lower-case, no IPv6 brackets, no trailing dot. */
@@ -310,8 +348,8 @@ function classifyIpv4(octets: readonly [number, number, number, number]): IpClas
   return "public";
 }
 
-function classifyIpv6(groups: readonly number[]): IpClass {
-  const first = groups[0]!;
+function classifyIpv6(groups: Ipv6Groups): IpClass {
+  const first = groups[0];
   const allZero = groups.every((group) => group === 0);
 
   if (allZero) return "unspecified";

@@ -39,6 +39,7 @@
  * is exactly one implementation of note handling in this repository.
  */
 import { readFileSync } from "node:fs";
+import { ADMIN_HEADER } from "../src/core/protocol-headers";
 import { dirname, join } from "node:path";
 
 import type { HandlerContext, ServerErrorCode, ServerRequest, ServerResponse } from "./handler";
@@ -48,9 +49,13 @@ import { renderAdminHtml } from "./admin-html";
 import { ADMIN_STRINGS, adminLanguage } from "./admin-i18n";
 import { presenceOf } from "./presence";
 import { acceptedCredentials, credentialMode } from "./credentials";
+import { errorText } from "./text";
 
-/** The header an admin request carries; matched case-insensitively by the caller. */
-export const ADMIN_HEADER = "x-bluepencil-admin";
+/**
+ * The header an admin request carries; matched case-insensitively by the caller. Re-exported from
+ * the protocol header module so the name stays available at this import path (AC-H04).
+ */
+export { ADMIN_HEADER };
 
 /** Longest accepted device name — enough for "caro's laptop (firefox)" and short enough to render. */
 const DEVICE_NAME_MAX_LENGTH = 200;
@@ -182,10 +187,6 @@ function bodyOf(request: ServerRequest): Record<string, unknown> {
   return {};
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /**
  * Reads the device registry. A missing path or a missing file is the documented empty start; every
  * other problem — unreadable file, invalid JSON, a document that is not an array, an entry that is
@@ -193,7 +194,7 @@ function errorText(error: unknown): string {
  * silent "no devices". Extra fields are tolerated; the known ones are normalised so a caller never
  * has to defend against a hand-edited file.
  */
-export function readRegistry(path: string | undefined): RegistryRead {
+function readRegistry(path: string | undefined): RegistryRead {
   if (path === undefined) return { records: [] };
   let raw: string;
   try {

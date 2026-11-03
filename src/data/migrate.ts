@@ -38,6 +38,7 @@ import type {
 } from "../core/model";
 import { normaliseOrigin } from "../core/origin";
 import { assertBundle, assertNote } from "./schema";
+import { deriveSessions } from "./sessions";
 
 /** Loose view of unknown JSON input while migrating. */
 type JsonObject = Record<string, unknown>;
@@ -275,17 +276,6 @@ function upgradeNote(value: unknown, defaults: NoteDefaults, path: string): Note
     ...(debug !== undefined ? { debug } : {}),
   };
   return assertNote(note);
-}
-
-function deriveSessions(notes: readonly Note[]): Session[] {
-  const earliest = new Map<string, string>();
-  for (const note of notes) {
-    const ref = note.sessionRef;
-    if (ref === undefined || ref === "") continue;
-    const current = earliest.get(ref);
-    if (current === undefined || note.createdAt < current) earliest.set(ref, note.createdAt);
-  }
-  return [...earliest.entries()].map(([ref, createdAt]) => ({ ref, label: ref, createdAt }));
 }
 
 function upgradeSessions(value: unknown, notes: readonly Note[], now: string): Session[] {

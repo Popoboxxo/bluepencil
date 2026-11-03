@@ -50,12 +50,12 @@ export interface CredentialContext {
 }
 
 /** True when the hub accepts the shared secret. An empty string is "not configured", not a secret. */
-export function hasSecretCredential(context: CredentialContext): boolean {
+function hasSecretCredential(context: CredentialContext): boolean {
   return typeof context.authSecret === "string" && context.authSecret.length > 0;
 }
 
 /** True when the hub accepts signed tokens. */
-export function hasTokenCredential(context: CredentialContext): boolean {
+function hasTokenCredential(context: CredentialContext): boolean {
   return context.verifyToken !== undefined;
 }
 

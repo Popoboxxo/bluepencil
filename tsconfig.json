@@ -8,6 +8,7 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
+    // exactOptionalPropertyTypes stays off: the trial reported 67 root + 1 extension error(s) in 35 files (12 src/server, 22 tests), almost all outside Welle 8's write-set (decision: tests/unit/exact-options.test.ts).
     "exactOptionalPropertyTypes": false,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
