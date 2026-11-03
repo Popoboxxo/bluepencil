@@ -84,6 +84,23 @@ disagreement stops the release before anything is published.
 Re-running the workflow (`workflow_dispatch` with an existing tag) **updates** the release instead of
 failing, so a half-written release is recoverable.
 
+## Release checklist RC-1…RC-3
+
+The extension's real permission grant cannot be produced headlessly: `chrome.permissions.request`
+only answers inside a live user gesture, and a headless Chrome has no gesture. Every release
+therefore carries three manual steps that the protected GitHub `release` environment gates. The
+release job declares `environment: release`, and that environment is approved **only after** RC-1…RC-3
+have been confirmed on a real Chrome profile with the release build loaded unpacked. The approval
+**confirms** the steps; it cannot **prove** them. This grant path is not checked automatically.
+
+- **RC-1 — hub origin in the options save.** Switch the notes store to *on a hub*, enter an
+  `https://` endpoint, press Save, and confirm the browser asks for that origin and the save is
+  accepted. A refusal names `permission_denied` and writes nothing.
+- **RC-2 — toolbar mount on a real profile page.** On an ordinary web page, click the toolbar
+  button and confirm the overlay mounts and a note can be taken.
+- **RC-3 — Alt+Shift+B.** On the same page, press Alt+Shift+B and confirm the overlay toggles
+  without a second injection prompt.
+
 ## The Chrome Web Store
 
 The release job dispatches `.github/workflows/chrome-webstore.yml` once the release is published, and

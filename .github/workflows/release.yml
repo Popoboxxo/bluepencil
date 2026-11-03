@@ -43,6 +43,9 @@ jobs:
   release:
     name: publish the release assets
     runs-on: ubuntu-latest
+    # The protected `release` environment carries the required reviewers (AC-B59). Approving the
+    # deployment is where RC-1…RC-3 are confirmed; see docs/RELEASING.md.
+    environment: release
     permissions:
       contents: write # create or update the release
       actions: write # dispatch the store leg (see below)
