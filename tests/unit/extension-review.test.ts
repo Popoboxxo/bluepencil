@@ -641,6 +641,23 @@ describe("source assertions — AC-B52 review surface without a build", () => {
     expect(review).toMatch(/from "\.\.\/\.\.\/dist\/data\.js"/);
   });
 
+  it("imports compareCodeUnits from the data surface and keeps no local comparator copy", () => {
+    const review = read("extension/src/review.ts");
+    // One comparator for every sort (BP-07): the page uses the data layer's, not its own.
+    expect(review).toMatch(/from "\.\.\/\.\.\/dist\/data\.js"/);
+    expect(review).toMatch(/^\s*compareCodeUnits,$/m);
+    expect(review).not.toMatch(/\bfunction\s+compareCodeUnits\s*\(/);
+    expect(review).not.toMatch(/\b(?:const|let|var)\s+compareCodeUnits\b/);
+    // A re-implementation is recognisable by its body even under another name.
+    expect(review).not.toMatch(/a\s*>\s*b\s*\?\s*1\s*:\s*0/);
+
+    // The declared surface — and the bundle behind it — really carry that value.
+    expect(read("extension/src/review-data.d.ts")).toMatch(
+      /export function compareCodeUnits\(a: string, b: string\): number;/,
+    );
+    expect(read("src/data/index.ts")).toContain('export * from "./order";');
+  });
+
   it("extension/build.mjs defines the review entry and bundles the built data bundle", () => {
     const build = read("extension/build.mjs");
     expect(build).toMatch(/review:\s*join\(here, "src", "review\.ts"\)/);

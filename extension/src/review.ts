@@ -22,13 +22,15 @@
  * silently.
  *
  * Note parsing and key classification are imported from the built data bundle `dist/data.js`, not
- * re-implemented here (FR-15.3). The declaration in `review-data.d.ts` describes that surface; the
+ * re-implemented here (FR-15.3); the same holds for the code-unit comparator the page sorts with.
+ * The declaration in `review-data.d.ts` describes that surface; the
  * `extension/build.mjs` build bundles the artefact into `review.js`.
  */
 import {
   beginAssign,
   commitAssign,
   commitUndoAssign,
+  compareCodeUnits,
   migrateNote,
   parseAssignProvenance,
   parseNoteSet,
@@ -93,14 +95,6 @@ export interface ReviewStorageArea {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** Plain code-unit comparison — the page must sort identically on every machine. */
-function compareCodeUnits(a: string, b: string): number {
-  if (a < b) {
-    return -1;
-  }
-  return a > b ? 1 : 0;
 }
 
 /**

@@ -54,6 +54,13 @@ declare module "*/dist/data.js" {
   /** Upgrade one stored document to the current note schema (never mutates its input). */
   export function migrateNote(value: unknown): Note;
 
+  /**
+   * The one code-unit comparator of the data layer (BP-07), used for every deterministic sort.
+   * The page imports it instead of keeping a local copy, so its order cannot drift from the
+   * canonical bundle order.
+   */
+  export function compareCodeUnits(a: string, b: string): number;
+
   /** Normalise any value to a canonical origin or `null` (FR-2.2). */
   export function normaliseOrigin(value: unknown): NoteOrigin;
 
