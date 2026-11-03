@@ -14,7 +14,7 @@ import { createMemoryAdapter } from "../../src/adapters/memory";
 import { currentHttpTransport, registerHttpTransport } from "../../src/adapters/transport";
 import { matchesFilter, type Adapter } from "../../src/core/adapter";
 import { createNote, type Note } from "../../src/core/model";
-import { init, type Blueprint } from "../../src/index";
+import { BlueprintDestroyedError, createBlueprint, init, type Blueprint } from "../../src/index";
 
 const T0 = "2026-09-15T10:00:00.000Z";
 
@@ -154,6 +154,79 @@ describe("createBlueprint — loading contract (NFR-2, NFR-8)", () => {
     expect(errors).toHaveLength(1);
     expect(blueprint.notes()).toEqual([]);
 
+    await blueprint.destroy();
+  });
+});
+
+/**
+ * BP-09 / AC-K05 — the pinned variant, not either rejected one:
+ *
+ * - after `destroy()` every access to `blueprint.layer`/`blueprint.store` throws
+ *   `BlueprintDestroyedError` (`code: "blueprint_destroyed"`) — the "inert handle" variant is
+ *   deliberately *not* implemented, so a test that expected a callable no-op would fail here;
+ * - `destroy()` is idempotent;
+ * - `blueprint.layer.enable()` is routed through the facade's `enable()`, so the gate still owns
+ *   the decision — the "gate bypass" variant is deliberately not implemented either.
+ */
+describe("createBlueprint — destroy is terminal (BP-09, AC-K05)", () => {
+  it("throws BlueprintDestroyedError on layer/store/enable after destroy()", async () => {
+    const blueprint = createBlueprint({ adapter: createMemoryAdapter(), autoEnable: false });
+    await blueprint.destroy();
+
+    const accesses: readonly [string, () => unknown][] = [
+      ["layer", () => blueprint.layer],
+      ["store", () => blueprint.store],
+      ["enable", () => blueprint.enable()],
+    ];
+    for (const [name, access] of accesses) {
+      let error: unknown;
+      try {
+        access();
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error, name).toBeInstanceOf(BlueprintDestroyedError);
+      expect((error as BlueprintDestroyedError).code, name).toBe("blueprint_destroyed");
+    }
+
+    // A destroyed instance can never be mounted again, so no second start is possible.
+    expect(() => blueprint.enable()).toThrow(BlueprintDestroyedError);
+  });
+
+  it("handles repeated destroy() calls as one idempotent teardown", async () => {
+    const blueprint = init({ adapter: createMemoryAdapter(), autoEnable: false });
+
+    await expect(blueprint.destroy()).resolves.toBeUndefined();
+    // Both a concurrent and a later call resolve without tearing down twice or throwing.
+    await expect(Promise.all([blueprint.destroy(), blueprint.destroy()])).resolves.toEqual([
+      undefined,
+      undefined,
+    ]);
+    await expect(blueprint.destroy()).resolves.toBeUndefined();
+  });
+
+  it("routes layer.enable() through the facade gate instead of bypassing it", async () => {
+    let allowed = false;
+    const blueprint = init({
+      adapter: createMemoryAdapter(),
+      autoEnable: false,
+      enabled: () => allowed,
+    });
+
+    // Closed gate: a bypass would have mounted the layer here (the rejected variant).
+    blueprint.layer.enable();
+    expect(blueprint.isEnabled()).toBe(false);
+    expect(blueprint.layer.isEnabled()).toBe(false);
+
+    // The same handle now goes through the facade's enable(): the gate decides.
+    allowed = true;
+    blueprint.layer.enable();
+    expect(blueprint.isEnabled()).toBe(true);
+    expect(blueprint.layer.isEnabled()).toBe(true);
+
+    // Let the hydration started by enable() settle before teardown, so the test observes the
+    // enable path only.
+    await blueprint.ready();
     await blueprint.destroy();
   });
 });
