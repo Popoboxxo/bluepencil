@@ -35,7 +35,7 @@ No polling. Data is fetched on demand (open/refresh/write)
 
 *Acceptance criteria:* Idle page produces no repeated requests over 10 minutes
 
-## NFR-3 Core bundle small enough to embed casually (budgets derived from a measurement: Core = m…
+## NFR-3 Core bundle small enough to embed casually — the budgets are a snapshot, not a target: C…
 
 ```attr
 prio: P1
@@ -47,7 +47,7 @@ version: 1
 requires-trace-from: []
 ```
 
-Core bundle small enough to embed casually (budgets derived from a measurement: Core = measured + 10 %, IIFE = measured + 1.5 kB, Element = measured + 1.5 kB; the attach loader is reported separately). The measured values and the measurement date are recorded in the release-cut PR after the voice removal; numbers are never raised preventively, and no historical budget figure is carried forward. *Zahlen folgen im Release-Cut (F-Messung).*
+Core bundle small enough to embed casually — the budgets are a snapshot, not a target: Core = measured + 10 %, IIFE = measured + 1.5 kB, Element = measured + 1.5 kB; the attach loader is reported separately. Measured at the 0.12.0 release cut on 2026-11-03 (after the voice removal), minified+gzip: Core 40.7 kB → budget 44.7 kB, IIFE 44.4 kB → 45.9 kB, Element 47.6 kB → 49.1 kB, attach 4.1 kB within its own 8 kB gate. Numbers are never raised preventively, and no historical budget figure is carried forward.
 
 *Acceptance criteria:* `npm run size` reports Core, IIFE, Element and the attach loader; CI fails on a regression beyond the budget; at the release cut the headline names the measured value and the measurement date and `scripts/size-guard.mjs` carries the same measurement; a temporary overshoot fails the guard
 
