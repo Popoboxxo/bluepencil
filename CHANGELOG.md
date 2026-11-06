@@ -1,3 +1,48 @@
+## [0.13.0] - 2026-11-06
+
+### Added
+
+- **Hub viewer (`--viewer`)** — the hub serves a website from its own origin with the layer already
+  injected, so a page can be reviewed without installing the extension. `GET {base}/viewer` is the
+  page, `GET {base}/view?url=<target>` the proxied target, `GET {base}/viewer/assets/*` the layer
+  bundles. Off unless configured: `--viewer` needs `--viewer-assets <dist>`, `--viewer-allow <hosts>`
+  and `--admin-secret`, and each missing piece is a startup error (issue #140).
+- **The bookmarklet is an artifact, not a snippet** (`server/viewer-bookmarklet.ts`): one versioned
+  source feeds the viewer page *and* `GET {base}/viewer/bookmarklet.txt`, so the copy that works on
+  pages a proxy cannot carry (logins, SPAs, other origins) is shipped and maintained with every
+  release. A unit test pins the routes it hard-codes against the routes the hub serves, because a
+  bookmarklet that silently stops writing is the failure mode that costs a review round.
+
+### Changed
+
+- `authorize()` accepts a viewer session (HttpOnly cookie or `x-bluepencil-viewer`) for the note
+  routes — never for the MCP door and never for the admin routes. The admin secret itself never
+  enters a served page: it is exchanged once for a session that expires.
+
+### Fixed
+
+- Nothing regressed; the viewer is additive. `--viewer` on a hub without an allowlist, without the
+  built assets or without an operator credential is refused at parse time instead of half-opening a
+  server-side fetch door.
+
+### Verified
+
+- Measured against the built hub over sockets: session exchange (302 + `HttpOnly` cookie), 401
+  without a session, 403 for a non-allowlisted host **before any fetch**, a proxied page with the
+  target's `<meta>` CSP removed and `<base>` + an absolute `endpoint` injected, the layer bundle
+  served (166 kB), a note created with the viewer session only, and that note read back from the same
+  store. `tests/unit/viewer.test.ts` — 20 cases (allowlist/SSRF, injection, sessions, the door, the
+  bookmarklet artifact).
+
+### Known gaps
+
+- A proxied page runs on the hub's origin: its JavaScript can do what the layer can. The viewer is
+  an operator surface (own session, allowlist, admin gate), not a sandbox. Logins and single-page
+  apps do not survive the proxy — that is what the bookmarklet is for.
+- Sessions are in memory: a hub restart ends them.
+- The bookmarklet's token is readable by the page being annotated while the session lives; it is
+  note-scoped and dies with the session.
+
 ## [0.12.0] - 2026-11-03
 
 ### Breaking

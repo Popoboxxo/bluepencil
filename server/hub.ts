@@ -27,7 +27,7 @@
  * notes is delegated to `src/core/**` + `src/data/**` through the handler (FR-15.3); this file
  * adds no note logic of its own.
  */
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import {
   createServer,
   type IncomingMessage,
@@ -90,6 +90,14 @@ import {
 import { asHandlerVerifier, createTokenIssuer } from "./tokens";
 // The admin surface's device registry lives next to the store; the page itself is only a route.
 import { devicesPathFor } from "./admin";
+import {
+  createViewerSessions,
+  DEFAULT_VIEWER_TTL_SECONDS,
+  handleViewer,
+  isViewerRequest,
+  MAX_VIEWER_TTL_SECONDS,
+  type ViewerOptions,
+} from "./viewer";
 import { selectJournal, type Journal, type JournalRecord, type JournalStatus } from "./journal";
 import { handleMcpRoute, type McpBackendFactoryInput } from "./mcp";
 import { createStoreBackend, type McpBackend } from "../src/mcp/backend";
@@ -220,6 +228,21 @@ export interface ServerOptions {
    * that mints credentials.
    */
   adminSecret?: string;
+  /**
+   * The viewer (`--viewer`): serve a website from this origin with the layer injected, and hand out
+   * the bookmarklet artifact. Off unless configured — and then only with an allowlist, an operator
+   * credential and the directory holding the built layer, because the hub fetches server-side.
+   */
+  viewer?: {
+    /** Directory with the built element bundles (`dist`). */
+    assetsDir: string;
+    /** Hosts that may be fetched (`example.com`, `*.example.com`). */
+    allow: readonly string[];
+    /** Session lifetime in seconds. */
+    ttlSeconds: number;
+    /** Public origin, when it differs from the request's `Host`. */
+    publicBaseUrl?: string;
+  };
   allowEnvMismatch?: boolean;
   /** Optional Markdown mirror of the note set (`--mirror`). */
   mirror?: string;
@@ -290,6 +313,7 @@ interface ResolvedOptions {
   revokedTokens: ReadonlySet<string> | undefined;
   revokedPath: string | undefined;
   adminSecret: string | undefined;
+  viewer: ViewerOptions | undefined;
   mirror: string | undefined;
   cors: string | undefined;
   quiet: boolean;
@@ -324,6 +348,18 @@ function resolveOptions(options: HubOptions): ResolvedOptions {
     allowEnvMismatch: options.allowEnvMismatch ?? false,
     authSecret: options.authSecret,
     adminSecret: options.adminSecret,
+    viewer:
+      options.viewer === undefined
+        ? undefined
+        : {
+            assetsDir: options.viewer.assetsDir,
+            allow: options.viewer.allow,
+            ttlSeconds: options.viewer.ttlSeconds,
+            ...(options.viewer.publicBaseUrl === undefined
+              ? {}
+              : { publicBaseUrl: options.viewer.publicBaseUrl }),
+            sessions: createViewerSessions(options.viewer.ttlSeconds),
+          },
     tokenKey: options.tokenKey,
     tokenTtlSeconds: options.tokenTtlSeconds,
     revokedTokens: options.revokedTokens,
@@ -756,6 +792,10 @@ function earlyRefusal(request: IncomingMessage, context: HandlerContext): Server
   if (isMcpRequest(url, context.base)) {
     return method === "POST" ? authorize(minimal, context, "read") : null;
   }
+  // The viewer is asynchronous (it fetches another site), so the pre-check lets it through to
+  // `respond()` instead of asking the synchronous router, which would answer 404 for a path it
+  // does not know. The door itself decides about the credential.
+  if (context.viewer !== undefined && isViewerRequest(url, context)) return null;
   const gate = gateRequest(minimal, context);
   return gate.kind === "response" ? gate.response : null;
 }
@@ -779,6 +819,20 @@ async function respond(
   if (refusedHost !== null) {
     write(response, refusedHost);
     return;
+  }
+
+  // The viewer door: asynchronous, so it sits outside the pure router — the same placement as the
+  // MCP door. It answers its own 404/401/403/502, so a `null` here means "not a viewer request".
+  if (context.viewer !== undefined && isViewerRequest(url, context)) {
+    const remote = request.socket.remoteAddress;
+    const answer = await handleViewer(
+      { method, url, headers: request.headers, ...(remote === undefined ? {} : { remote }) },
+      context,
+    );
+    if (answer !== null) {
+      write(response, answer);
+      return;
+    }
   }
 
   // The journal answers before the static/API split: it belongs to neither.
@@ -1311,6 +1365,9 @@ export async function startHub(options: HubOptions): Promise<RunningServer> {
     // could not catch it, because they call the handler directly with their own context.
     ...(resolved.authSecret !== undefined ? { authSecret: resolved.authSecret } : {}),
     ...(resolved.adminSecret !== undefined ? { adminSecret: resolved.adminSecret } : {}),
+    // The same wiring rule as the two credentials above: parsed, validated — and it has to reach the
+    // context, or `--viewer` would answer 404 on a hub that reports it as configured.
+    ...(resolved.viewer !== undefined ? { viewer: resolved.viewer } : {}),
     ...(tokenIssuer !== undefined ? { verifyToken: asHandlerVerifier(tokenIssuer), tokenIssuer } : {}),
     revokedTokens: liveRevoked,
     ...(devicesPathFor(resolved.storePath) !== undefined ? { devicesPath: devicesPathFor(resolved.storePath) } : {}),
@@ -1639,6 +1696,52 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
   }
   const adminSecret = adminSecretRaw;
 
+  // The viewer (`--viewer`): an SSRF-capable door, so it exists only as a complete set — an
+  // allowlist, an operator credential and the directory holding the built layer. Every missing piece
+  // is a startup error rather than a half-open feature.
+  const viewerFlag = present("--viewer") || process.env.BLUEPENCIL_VIEWER === "1";
+  let viewer: ServerOptions["viewer"];
+  if (viewerFlag) {
+    const assetsRaw = get("--viewer-assets") ?? process.env.BLUEPENCIL_VIEWER_ASSETS;
+    if (assetsRaw === undefined || assetsRaw.length === 0) {
+      return "--viewer requires --viewer-assets <dir> (the directory with the built layer bundles)";
+    }
+    const elementPath = resolve(assetsRaw, "bluepencil.element.min.js");
+    if (!existsSync(elementPath)) {
+      return `--viewer-assets: ${elementPath} not found — run npm run build or point at dist/`;
+    }
+    const allowRaw = get("--viewer-allow") ?? process.env.BLUEPENCIL_VIEWER_ALLOW ?? "";
+    const allow = allowRaw
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+    if (allow.length === 0) {
+      return "--viewer requires --viewer-allow <host[,host]> — an open proxy is a server-side request forgery door";
+    }
+    if (adminSecret === undefined) {
+      return "--viewer requires --admin-secret: the viewer is an operator surface";
+    }
+    const ttlRaw = get("--viewer-ttl");
+    let viewerTtl = DEFAULT_VIEWER_TTL_SECONDS;
+    if (ttlRaw !== undefined) {
+      const parsed = Number(ttlRaw);
+      if (!Number.isInteger(parsed) || parsed < 60 || parsed > MAX_VIEWER_TTL_SECONDS) {
+        return `--viewer-ttl must be an integer between 60 and ${MAX_VIEWER_TTL_SECONDS} seconds`;
+      }
+      viewerTtl = parsed;
+    }
+    const publicRaw = get("--viewer-public-url") ?? process.env.BLUEPENCIL_VIEWER_PUBLIC_URL;
+    if (publicRaw !== undefined && !/^https?:\/\//.test(publicRaw)) {
+      return "--viewer-public-url must be an absolute http(s) URL";
+    }
+    viewer = {
+      assetsDir: resolve(assetsRaw),
+      allow,
+      ttlSeconds: viewerTtl,
+      ...(publicRaw === undefined ? {} : { publicBaseUrl: publicRaw.replace(/\/+$/, "") }),
+    };
+  }
+
   // Phase 2 (#36): a signing key for per-device tokens. Separate from the shared secret on purpose —
   // it is a different credential with a different job, and one is not a substitute for the other:
   // the key never leaves the hub, the secret is handed to every client. Setting both is
@@ -1720,6 +1823,7 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
     // authentication", so a typo in the flag must not silently fall back to that (#36).
     ...(authSecret !== undefined ? { authSecret } : {}),
     ...(adminSecret !== undefined ? { adminSecret } : {}),
+    ...(viewer !== undefined ? { viewer } : {}),
     ...(tokenKey !== undefined ? { tokenKey } : {}),
     ...(tokenTtlSeconds !== undefined ? { tokenTtlSeconds } : {}),
     ...(revokedTokens !== undefined ? { revokedTokens } : {}),
