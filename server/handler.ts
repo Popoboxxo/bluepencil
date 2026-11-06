@@ -87,6 +87,7 @@ import { credentialMode } from "./credentials";
 // bundle). `adminGate` is the header-only half: it decides whether this request is an admin request
 // and whether it may proceed, before anything reads a body (SEC-08).
 import { adminGate, handleAdmin } from "./admin";
+import { viewerAuthorized, type ViewerOptions } from "./viewer";
 
 // Re-exported so the existing imports from `./handler` keep working; the implementation lives in
 // `server/cors.ts`, which imports nothing and can therefore be used from `server/admin.ts` too.
@@ -301,6 +302,12 @@ export interface HandlerContext {
    * surface at all — the routes answer 404 rather than a guarded page.
    */
   adminSecret?: string;
+  /**
+   * The viewer (`--viewer`): serve a website from this origin with the layer injected, plus the
+   * bookmarklet artifact. Absent means the routes do not exist — the same "off unless configured"
+   * rule as the admin surface, because a proxy that can be forgotten into existence is an SSRF door.
+   */
+  viewer?: ViewerOptions;
   /**
    * The token issuer, so the admin surface can mint per-device tokens; present only when the hub
    * runs with `--token-key`.
@@ -1429,6 +1436,13 @@ export function authorize(
   // The gate exists only when a credential was configured. An admin secret alone is not one: it
   // guards the admin routes, not the notes a client reads.
   if (verifier === undefined && !secretAttempt) return null;
+
+  // The viewer's session token authorizes the note routes: the layer inside a proxied page has to
+  // write with the session its page was served under. It deliberately does not open the MCP door
+  // (that credential belongs to a client) and never the admin routes (their own header decides).
+  if (!(request.url ?? "").includes("/mcp") && viewerAuthorized(request, context)) {
+    return null;
+  }
 
   // One tracker per hub context (or the one a test injected). Only successful checks below stamp it,
   // so a refused request cannot make a credential kind look alive.
