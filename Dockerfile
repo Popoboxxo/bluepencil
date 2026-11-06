@@ -21,11 +21,11 @@
 # out of it.
 
 # Both stages pin the base image by *tag and digest* (SEC-25): the tag keeps the file readable, the
-# digest makes the pull reproducible. A moving `node:22-alpine` re-resolves on every build, so an
+# digest makes the pull reproducible. A moving `node:26-alpine` re-resolves on every build, so an
 # upstream push would change the toolchain that compiles `dist/` without a diff in this repository.
 # `.github/dependabot.yml` watches `package-ecosystem: docker` and proposes the digest bump, so the
 # pin ages by review instead of by surprise. The digest is the multi-arch index digest
-# (`docker buildx imagetools inspect node:22-alpine`), not a single-platform manifest, so
+# (`docker buildx imagetools inspect node:26-alpine`), not a single-platform manifest, so
 # `--platform` still works.
 FROM node:26-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS build
 WORKDIR /app
