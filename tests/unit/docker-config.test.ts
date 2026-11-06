@@ -276,8 +276,8 @@ const GITIGNORE = fileURLToPath(new URL("../../.gitignore", import.meta.url));
 const DOCKERIGNORE = fileURLToPath(new URL("../../.dockerignore", import.meta.url));
 const DEPENDABOT = fileURLToPath(new URL("../../.github/dependabot.yml", import.meta.url));
 
-/** `node:22-alpine@sha256:<64 lowercase hex>` — the tag stays for humans, the digest pins the bits. */
-const PINNED_BASE = /^node:22-alpine@sha256:[0-9a-f]{64}$/;
+/** `node:<tag>@sha256:<64 lowercase hex>` — the tag stays for humans, the digest pins the bits. */
+const PINNED_BASE = /^node:[^@\s]+@sha256:[0-9a-f]{64}$/;
 
 /** The image reference of every `FROM`, without the optional stage name. */
 function fromImages(source: string): string[] {
@@ -299,8 +299,8 @@ describe("AC-J04 — both Dockerfile stages pin the base image by digest", () =>
   });
 
   it("does not depend on a moving tag", () => {
-    // A bare `node:22-alpine` re-resolves on every build; the digest is what makes it reproducible.
-    expect(source).not.toMatch(/^FROM\s+node:22-alpine(\s|$)/m);
+    // A bare tag such as `node:26-alpine` re-resolves on every build; the digest is what makes it reproducible.
+    expect(source).not.toMatch(/^FROM\s+node:[^@\s]+(\s|$)/m);
     expect(images.some((image) => image.includes(":latest"))).toBe(false);
   });
 
