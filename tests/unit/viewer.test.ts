@@ -183,7 +183,9 @@ describe("viewer door", () => {
     expect(ok?.status).toBe(302);
     expect(ok?.headers.location).toBe(`${BASE}/viewer`);
     expect(ok?.headers["set-cookie"]).toContain("HttpOnly");
-    const token = String(ok?.headers["set-cookie"]).split(";")[0].split("=")[1];
+    const cookie = String(ok?.headers["set-cookie"]);
+    // Index-free extraction: `split("…")[1]` is `string | undefined` under noUncheckedIndexedAccess.
+    const token = cookie.slice(cookie.indexOf("=") + 1, cookie.indexOf(";"));
     expect(context.viewer!.sessions.verify(token)).toBe(true);
 
     // The cookie alone is enough for the page; no secret in the URL any more.
