@@ -85,6 +85,16 @@ fi
 echo "bluepencil hub \"${NAME}\" — store ${STORE}"
 echo "  address:    http://<host>:${PORT}${BASE}"
 echo "  mcp:        POST http://<host>:${PORT}${BASE}/mcp   (tools/list, tools/call, …)"
+# The viewer is a second listener with its own origin (0.14.0+); this script decides nothing about
+# it and appends no flag — the port and its flags arrive through "$@" or the inherited
+# BLUEPENCIL_VIEWER_* environment. The one thing worth saying out loud is the obligation the
+# container inherits: the fixed `--host 0.0.0.0` below is a *wildcard* bind, so a viewer without
+# `--viewer-origin` (or a loopback `--viewer-host`) refuses to start with `viewer_origin_required`.
+if [ -n "${BLUEPENCIL_VIEWER_PORT:-}" ]; then
+  echo "  viewer:     port ${BLUEPENCIL_VIEWER_PORT} (second listener) — enabled by --viewer or BLUEPENCIL_VIEWER"
+  echo "              not published unless you map it in docker-compose.yml; this container binds"
+  echo "              --host 0.0.0.0, so --viewer-origin is required (or a loopback --viewer-host)"
+fi
 # Name every accepted credential. The token key is never printed; the shared secret is identified by
 # its source. A freshly generated value is *not* echoed: the default prints the path plus the one
 # command that reads it back, and `BLUEPENCIL_SHOW_SECRET_ONCE=1` restores the single echo (SEC-12).

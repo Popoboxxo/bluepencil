@@ -27,9 +27,15 @@ import {
   type NoteStoreState,
   type ServerRequest,
   type ServerResponse,
+  type TokenVerifier,
 } from "../../server/handler";
 import { startServer, type ServerOptions } from "../../server/index";
 import { createTokenIssuer } from "../../server/tokens";
+import {
+  createViewerSessions,
+  type ViewerOptions,
+  type ViewerSessions,
+} from "../../server/viewer";
 
 const BASE = "/api/v1/bluepencil";
 
@@ -308,6 +314,164 @@ describe("hub authentication — read-only is a separate thing", () => {
     });
 
     expect(response.status).toBe(403);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * Surface scoping (AC-5.10, AC-5.11, AC-5.32)
+ *
+ * The viewer runs on its own origin, but the two surfaces share one `authorize()`. That function is
+ * the security boundary: the hub must not accept a viewer session, the viewer must not be open just
+ * because no `--auth-secret` was configured, and a revocation must hit both surfaces at once.
+ * ---------------------------------------------------------------------------------------------- */
+
+const VIEWER_HUB_ORIGIN = "http://127.0.0.1:8787";
+
+function viewerOptions(sessions: ViewerSessions): ViewerOptions {
+  return {
+    assetsDir: "/tmp/bluepencil-viewer-assets",
+    allow: [],
+    ttlSeconds: 3600,
+    hubOrigin: VIEWER_HUB_ORIGIN,
+    sessions,
+  };
+}
+
+describe("UT-18 — surfaceOf + authorize (AC-5.10/5.11/5.32)", () => {
+  it("[AC-5.11] does not let a viewer session open a note route on the hub surface", () => {
+    const sessions = createViewerSessions(3600);
+    const token = sessions.mint().token;
+    const { call } = harness(CREDENTIAL, { viewer: viewerOptions(sessions) });
+
+    // Cookie and bookmarklet header are the two shapes a viewer credential arrives in. Neither may
+    // authorize anything on the hub port — the cookie is not port-isolated, so it *will* arrive.
+    for (const headers of [{ cookie: `bp_viewer=${token}` }, { "x-bluepencil-viewer": token }]) {
+      const response = call({ url: `${BASE}/notes`, headers });
+      expect(response.status, JSON.stringify(headers)).toBe(401);
+      expect(parsed(response)).toMatchObject({ error: { code: "unauthorized" } });
+    }
+
+    // The client credential still works: the session was ignored, the route was not broken.
+    expect(call({ url: `${BASE}/notes`, headers: { "x-bluepencil-auth": CREDENTIAL } }).status).toBe(200);
+  });
+
+  it("[AC-5.11] accepts the same viewer session on the viewer surface", () => {
+    const sessions = createViewerSessions(3600);
+    const token = sessions.mint().token;
+    const { call } = harness(undefined, { surface: "viewer", viewer: viewerOptions(sessions) });
+
+    for (const headers of [{ cookie: `bp_viewer=${token}` }, { "x-bluepencil-viewer": token }]) {
+      expect(call({ url: `${BASE}/notes`, headers }).status, JSON.stringify(headers)).toBe(200);
+    }
+    // An unknown session token is not a session.
+    expect(call({ url: `${BASE}/notes`, headers: { cookie: "bp_viewer=not-a-session" } }).status).toBe(401);
+  });
+
+  it("[AC-5.10] is fail-closed on the viewer surface when no client credential exists", () => {
+    // The hub's "no credential configured means open" rule must not leak onto the viewer origin.
+    const { call } = harness(undefined, {
+      surface: "viewer",
+      viewer: viewerOptions(createViewerSessions(3600)),
+    });
+
+    const response = call({ url: `${BASE}/notes` });
+    expect(response.status).toBe(401);
+    const body = parsed(response) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("unauthorized");
+    // The one refusal message names the hub launcher, never the retired `${BASE}/viewer?k=` form.
+    expect(body.error.message).toContain(`${VIEWER_HUB_ORIGIN}${BASE}/viewer/start`);
+    expect(body.error.message).not.toContain("?k=");
+  });
+
+  it("[AC-5.10] writes nothing on the viewer surface without a session", () => {
+    const persist = vi.fn();
+    const { call, context } = harness(undefined, {
+      surface: "viewer",
+      persist,
+      viewer: viewerOptions(createViewerSessions(3600)),
+    });
+
+    const response = call({ method: "POST", url: `${BASE}/notes`, body: JSON.stringify(VALID_NOTE) });
+
+    expect(response.status).toBe(401);
+    expect(context.store.notes).toEqual([]);
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("[AC-5.10] never treats the admin secret as a notes credential on the viewer surface", () => {
+    // Same context, same headers, only the surface differs. `allowAdminSecret` is a hub-only bridge.
+    const verifyToken: TokenVerifier = () => ({ ok: false, reason: "other" });
+    const fields = { adminSecret: ADMIN, verifyToken };
+    const presented = { "x-bluepencil-auth": ADMIN };
+    const viewerHeader = { "x-bluepencil-admin": ADMIN };
+
+    const hub = harness(undefined, fields);
+    expect(hub.call({ url: `${BASE}/notes`, headers: presented }).status).toBe(200);
+
+    const viewer = harness(undefined, {
+      ...fields,
+      surface: "viewer",
+      viewer: viewerOptions(createViewerSessions(3600)),
+    });
+    expect(viewer.call({ url: `${BASE}/notes`, headers: presented }).status).toBe(401);
+    expect(viewer.call({ url: `${BASE}/notes`, headers: viewerHeader }).status).toBe(401);
+  });
+
+  it("[AC-5.32] refuses a revoked jti with token_revoked on both surfaces", () => {
+    const revoked = new Set(["revoked-device-token"]);
+    const seen: ReadonlySet<string>[] = [];
+    const verifyToken: TokenVerifier = (token, _scope, revokedNow) => {
+      seen.push(revokedNow);
+      return token === "revoked-device-token" && revokedNow.has(token)
+        ? { ok: false, reason: "revoked" }
+        : { ok: true, device: "device-a" };
+    };
+    const headers = { authorization: "Bearer revoked-device-token" };
+
+    const hub = harness(undefined, { verifyToken, revokedTokens: revoked });
+    const hubResponse = hub.call({ url: `${BASE}/notes`, headers });
+    expect(hubResponse.status).toBe(401);
+    expect(parsed(hubResponse)).toMatchObject({ error: { code: "token_revoked" } });
+
+    const viewer = harness(undefined, {
+      surface: "viewer",
+      verifyToken,
+      revokedTokens: revoked,
+      viewer: viewerOptions(createViewerSessions(3600)),
+    });
+    const viewerResponse = viewer.call({ url: `${BASE}/notes`, headers });
+    expect(viewerResponse.status).toBe(401);
+    expect(parsed(viewerResponse)).toMatchObject({ error: { code: "token_revoked" } });
+
+    // AC-5.32 is about *identity*: both surfaces hand the verifier the same live set, never a copy.
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBe(revoked);
+    expect(seen[1]).toBe(revoked);
+  });
+
+  it("[AC-5.32] does not fall back to the shared secret when the token was revoked", () => {
+    // A revoked device must not downgrade to `x-bluepencil-auth` — "this device was cut off" wins.
+    const revoked = new Set(["revoked-device-token"]);
+    const verifyToken: TokenVerifier = (token, _scope, revokedNow) =>
+      revokedNow.has(token) ? { ok: false, reason: "revoked" } : { ok: true, device: "device-a" };
+
+    const viewer = harness(CREDENTIAL, {
+      surface: "viewer",
+      verifyToken,
+      revokedTokens: revoked,
+      viewer: viewerOptions(createViewerSessions(3600)),
+    });
+
+    const response = viewer.call({
+      url: `${BASE}/notes`,
+      headers: {
+        authorization: "Bearer revoked-device-token",
+        "x-bluepencil-auth": CREDENTIAL,
+      },
+    });
+
+    expect(response.status).toBe(401);
+    expect(parsed(response)).toMatchObject({ error: { code: "token_revoked" } });
   });
 });
 

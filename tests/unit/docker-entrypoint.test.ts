@@ -38,6 +38,7 @@ const TOKEN_KEY = "fixture-token-key-1";
 const EXISTING_VALUE = "hub-fixture-secret-existing-1";
 const ENV_VALUE = "hub-fixture-secret-env-1";
 const DUMP_VARIABLE = "BP_TEST_ENV_DUMP";
+const ARGS_VARIABLE = "BP_TEST_ARGS_DUMP";
 
 const dirs: string[] = [];
 
@@ -53,9 +54,10 @@ interface Workspace {
   bin: string;
   secretFile: string;
   dumpFile: string;
+  argsFile: string;
 }
 
-/** A tmpdir with a stub `node` that writes the secret it received and exits 0. */
+/** A tmpdir with a stub `node` that records the secret and arguments it received and exits 0. */
 function workspace(): Workspace {
   const dir = mkdtempSync(join(tmpdir(), "bp-entrypoint-"));
   dirs.push(dir);
@@ -64,11 +66,18 @@ function workspace(): Workspace {
   const stub = join(bin, "node");
   writeFileSync(
     stub,
-    `#!/bin/sh\nprintf '%s' "\${BLUEPENCIL_AUTH_SECRET:-<unset>}" > "$BP_TEST_ENV_DUMP"\nexit 0\n`,
+    `#!/bin/sh\nprintf '%s' "\${BLUEPENCIL_AUTH_SECRET:-<unset>}" > "$BP_TEST_ENV_DUMP"\n` +
+      `for arg in "$@"; do printf '%s\\n' "$arg"; done > "$BP_TEST_ARGS_DUMP"\nexit 0\n`,
     "utf8",
   );
   chmodSync(stub, 0o755);
-  return { dir, bin, secretFile: join(dir, "auth"), dumpFile: join(dir, "env.dump") };
+  return {
+    dir,
+    bin,
+    secretFile: join(dir, "auth"),
+    dumpFile: join(dir, "env.dump"),
+    argsFile: join(dir, "args.dump"),
+  };
 }
 
 interface Run {
@@ -76,6 +85,7 @@ interface Run {
   stdout: string;
   stderr: string;
   dump: string;
+  args: string[];
 }
 
 function runEntrypoint(space: Workspace, extraEnv: Record<string, string> = {}): Run {
@@ -83,6 +93,7 @@ function runEntrypoint(space: Workspace, extraEnv: Record<string, string> = {}):
     ...process.env,
     PATH: `${space.bin}:${process.env.PATH ?? ""}`,
     [DUMP_VARIABLE]: space.dumpFile,
+    [ARGS_VARIABLE]: space.argsFile,
     BLUEPENCIL_SERVER_JS: join(space.dir, "server.js"),
     BLUEPENCIL_STORE: join(space.dir, "notes.json"),
     BLUEPENCIL_SECRET_FILE: space.secretFile,
@@ -90,12 +101,19 @@ function runEntrypoint(space: Workspace, extraEnv: Record<string, string> = {}):
   // The test process may itself run inside a configured hub; the fixtures decide what is set.
   delete env.BLUEPENCIL_AUTH_SECRET;
   delete env.BLUEPENCIL_TOKEN_KEY;
+  // Same for the viewer: an inherited port would make the banner test pass or fail by environment.
+  for (const name of Object.keys(env)) {
+    if (name.startsWith("BLUEPENCIL_VIEWER")) delete env[name];
+  }
   Object.assign(env, extraEnv);
 
   const result = spawnSync("sh", [ENTRYPOINT], { env, encoding: "utf8", timeout: 5_000 });
   expect(result.error).toBeUndefined();
   const dump = existsSync(space.dumpFile) ? readFileSync(space.dumpFile, "utf8") : "";
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "", dump };
+  const args = existsSync(space.argsFile)
+    ? readFileSync(space.argsFile, "utf8").split("\n").filter((line) => line !== "")
+    : [];
+  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "", dump, args };
 }
 
 describe("docker/entrypoint.sh — the shared secret survives BLUEPENCIL_TOKEN_KEY (#108)", () => {
@@ -194,6 +212,53 @@ describe("docker/entrypoint.sh — the shared secret survives BLUEPENCIL_TOKEN_K
     expect(run.dump).toBe(ENV_VALUE);
     expect(run.stdout).toContain("shared secret (from BLUEPENCIL_AUTH_SECRET)");
     expect(run.stdout).not.toContain(ENV_VALUE);
+  });
+});
+
+describe("docker/entrypoint.sh — the viewer is a second listener, off by default", () => {
+  it("prints no viewer line when BLUEPENCIL_VIEWER_PORT is unset", () => {
+    const run = runEntrypoint(workspace());
+
+    expect(run.status).toBe(0);
+    // A default start must not advertise a port it does not serve: the viewer is off unless
+    // `--viewer`/`BLUEPENCIL_VIEWER` turns it on.
+    expect(run.stdout).not.toMatch(/viewer/i);
+  });
+
+  it("names the viewer port and the origin obligation when BLUEPENCIL_VIEWER_PORT is set", () => {
+    const space = workspace();
+
+    const run = runEntrypoint(space, {
+      BLUEPENCIL_VIEWER: "true",
+      BLUEPENCIL_VIEWER_PORT: "8788",
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).toMatch(/^ {2}viewer:/m);
+    expect(run.stdout).toContain("8788");
+    // The entrypoint always binds `--host 0.0.0.0`, which is a wildcard bind: without an explicit
+    // origin the hub refuses to start (viewer_origin_required). The banner says so up front.
+    expect(run.stdout).toContain("--viewer-origin");
+    expect(run.stdout).toContain("--host 0.0.0.0");
+    // The banner stays a pointer, never a credential: the secret rules are unchanged.
+    expect(run.stdout).not.toMatch(/[0-9a-f]{64}/);
+  });
+
+  it("still binds the hub on 0.0.0.0 and adds no viewer flag of its own", () => {
+    const space = workspace();
+
+    const run = runEntrypoint(space, {
+      BLUEPENCIL_VIEWER: "true",
+      BLUEPENCIL_VIEWER_PORT: "8788",
+    });
+
+    expect(run.status).toBe(0);
+    const host = run.args.indexOf("--host");
+    expect(host, "--host is passed to the hub").toBeGreaterThanOrEqual(0);
+    expect(run.args[host + 1]).toBe("0.0.0.0");
+    // Viewer flags come from "$@" or from the inherited BLUEPENCIL_VIEWER_* env; the entrypoint
+    // itself decides nothing about the viewer (spec §9).
+    expect(run.args.filter((arg) => arg.startsWith("--viewer"))).toEqual([]);
   });
 });
 

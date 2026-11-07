@@ -33,7 +33,9 @@
  *   a presentation hub still needs to be able to cut a device off. Note writes stay 403.
  * - **Limits and a brake.** Device names, token ids and TTLs are bounded, and failed secret checks
  *   are throttled by the injected `AdminThrottle` (10 per 5 minutes per peer, then 429) — the same
- *   `admin` budget `authorize()` spends when the same secret is presented on `/notes*` (SEC-03).
+ *   `admin` budget `authorize()` spends when the same secret is presented on `/notes*` (SEC-03)
+ *   and the launcher spends on `?k=` (one secret, one budget). A *missing* value is not a guess
+ *   and spends nothing (spec §2.3 rule 2, `Changed` in 0.14.0); only a *wrong* value does.
  *
  * The notes themselves are edited through the *existing* notes API with the admin secret, so there
  * is exactly one implementation of note handling in this repository.
@@ -165,14 +167,68 @@ function requestPath(url: string): string {
   return new URL(target).pathname;
 }
 
-/** Constant-time-ish comparison, mirroring the notes door's own secret check. */
-function matches(expected: string, presented: string | undefined): boolean {
-  if (presented === undefined) return false;
+/** Constant-time-ish comparison, mirroring the notes door's own `secretsMatch` (spec §2.3 rule 4). */
+function matches(expected: string, presented: string): boolean {
   let diff = expected.length ^ presented.length;
   for (let i = 0; i < Math.max(expected.length, presented.length); i += 1) {
     diff |= (expected.charCodeAt(i) ?? 0) ^ (presented.charCodeAt(i) ?? 0);
   }
   return diff === 0;
+}
+
+/**
+ * What one operator-secret check decided (spec §2.3). `missing` distinguishes "nothing was
+ * presented" from "a wrong value was presented": the first is not a guess and spends no budget,
+ * the second is and does.
+ */
+export type OperatorSecretVerdict =
+  | { kind: "ok" }
+  | { kind: "throttled"; retryAfterSeconds: number }
+  | { kind: "invalid"; missing: boolean };
+
+/** The `Retry-After` an exhausted `admin` budget advertises (spec §4.5). */
+const ADMIN_RETRY_AFTER_SECONDS = 300;
+
+/**
+ * The **one** check of the operator secret (`x-bluepencil-admin` or the launcher's `?k=`), spec
+ * §2.3: constant-time comparison, with the peer's `admin` budget consulted before and recorded
+ * after it. `adminGate()` and (from Task 7 on) `handleViewerStart()` call only this function;
+ * there is no second comparison site to drift from it.
+ *
+ * A missing value — no `context.adminSecret`, an **empty** `context.adminSecret`, no `presented`
+ * string, or an empty `presented` string — returns `missing: true` **before** the budget is read
+ * (R2-F1): a peer that probes without a value cannot spend the operator's budget (Änderung 2.1,
+ * §4.5/§5.3), and an empty configured secret can never be satisfied by an empty presented value.
+ * A wrong value does spend it, and a correct one clears the peer's failures. The function never
+ * logs or echoes the value.
+ */
+export function verifyOperatorSecret(
+  request: Pick<ServerRequest, "remote">,
+  context: HandlerContext,
+  presented: string | undefined,
+): OperatorSecretVerdict {
+  const expected = context.adminSecret;
+  if (
+    expected === undefined ||
+    expected.length === 0 ||
+    presented === undefined ||
+    presented.length === 0
+  ) {
+    return { kind: "invalid", missing: true };
+  }
+
+  const throttle = context.adminThrottle;
+  if (throttle !== undefined && !throttle.allow(request.remote, "admin")) {
+    return { kind: "throttled", retryAfterSeconds: ADMIN_RETRY_AFTER_SECONDS };
+  }
+
+  if (!matches(expected, presented)) {
+    throttle?.failure(request.remote, "admin");
+    return { kind: "invalid", missing: false };
+  }
+
+  throttle?.success(request.remote, "admin");
+  return { kind: "ok" };
 }
 
 function bodyOf(request: ServerRequest): Record<string, unknown> {
@@ -383,16 +439,35 @@ export function adminGate(request: ServerRequest, context: HandlerContext): Admi
     return { kind: "response", response };
   }
 
+  // R2-F1: an empty configured secret is not a secret. `undefined` above means this hub has no
+  // admin surface (404); an empty string means the surface was requested without a usable
+  // credential — every answer is the same 401 a missing secret gets, nothing is authorized and no
+  // budget is spent. `resolveOptions()` normalises a programmatic `""` to `undefined`, so a real
+  // start never even advertises the surface.
+  if (context.adminSecret.length === 0) {
+    return {
+      kind: "response",
+      response: refusal(
+        context,
+        401,
+        "unauthorized",
+        `missing ${ADMIN_HEADER} — this hub's admin surface is enabled (--admin-secret)`,
+      ),
+    };
+  }
+
   // The page itself is not a secret — it carries no notes and no settings, and the operator types
   // the credential into it. Gating it would make "open the admin page" require curl.
   if (path === prefix && method === "GET") {
     return { kind: "response", response: page(context, request) };
   }
 
-  // Brute-force brake before the comparison, never after: a wrong guess costs the peer its budget,
-  // and a peer that exhausted it learns nothing from the answer except that it must wait. The
-  // `admin` budget is shared with the admin secret's second use on `/notes*` (SEC-03).
-  if (context.adminThrottle !== undefined && !context.adminThrottle.allow(request.remote, "admin")) {
+  // One check, one budget: `verifyOperatorSecret()` owns the constant-time comparison and the
+  // `admin` brake (shared with the launcher and with the admin secret's second use on `/notes*`,
+  // SEC-03). `adminGate` only translates its verdict back into the answers it always gave.
+  const verdict = verifyOperatorSecret(request, context, headerOf(request, ADMIN_HEADER));
+
+  if (verdict.kind === "throttled") {
     return {
       kind: "response",
       response: json(
@@ -404,27 +479,24 @@ export function adminGate(request: ServerRequest, context: HandlerContext): Admi
             message: `too many wrong ${ADMIN_HEADER} attempts from this address — wait before trying again`,
           },
         },
-        { "retry-after": "300" },
+        { "retry-after": String(verdict.retryAfterSeconds) },
       ),
     };
   }
 
-  const presented = headerOf(request, ADMIN_HEADER);
-  if (!matches(context.adminSecret, presented)) {
-    context.adminThrottle?.failure(request.remote, "admin");
+  if (verdict.kind === "invalid") {
     return {
       kind: "response",
       response: refusal(
         context,
         401,
         "unauthorized",
-        presented === undefined
+        verdict.missing
           ? `missing ${ADMIN_HEADER} — this hub's admin surface is enabled (--admin-secret)`
           : `invalid ${ADMIN_HEADER}`,
       ),
     };
   }
-  context.adminThrottle?.success(request.remote, "admin");
 
   return { kind: "route", route: { path, method } };
 }

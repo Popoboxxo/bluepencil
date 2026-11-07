@@ -20,6 +20,11 @@ services:
       # Host loopback only. Widening this (e.g. "0.0.0.0:…") is a deliberate edit that exposes
       # the credential-gated API to the network; see docs/DOCKER.md before you change it.
       - "127.0.0.1:${BLUEPENCIL_PORT:-8787}:8787"
+      # Optional second listener for the viewer (0.14.0+): its own origin, its own port. Commented
+      # out on purpose — a viewer port is never published by default. Uncomment together with the
+      # `command:` example below: the entrypoint binds --host 0.0.0.0, so the viewer needs an
+      # explicit --viewer-origin. See docs/DOCKER.md ("The viewer — a second port").
+      # - "127.0.0.1:${BLUEPENCIL_VIEWER_PORT:-8788}:8788"
     # Hardening defaults (G11): the image writes only to the /data volume and /tmp.
     read_only: true
     tmpfs:
@@ -30,6 +35,8 @@ services:
       - "no-new-privileges:true"
     volumes:
       - bluepencil-notes:/data
+      # Two-port viewer only (see the `command:` example below): the built layer bundles, read-only.
+      # - "./dist:/viewer:ro"
     environment:
       # How the hub introduces itself in `GET {base}/config` — "Unraid" is easier to pick from a list
       # than a container id.
@@ -37,8 +44,19 @@ services:
       # BLUEPENCIL_AUTH_SECRET            # leave unset: generated on the first start, kept in /data
       # BLUEPENCIL_TOKEN_KEY              # literal HMAC key (no file-path lookup) for signed, revocable
       #                                   # tokens — *in addition* to the shared secret, never instead of it
+      # Two-port viewer only: the viewer is an operator surface and needs this secret (>= 16 chars).
+      # BLUEPENCIL_ADMIN_SECRET: "${BLUEPENCIL_ADMIN_SECRET:?set the viewer's operator secret}"
     # Extra flags go straight to the hub: run read-only, use another base path, mirror to Markdown.
     # command: ["--read-only"]
+    #
+    # Two-port viewer (0.14.0+). To turn it on, uncomment this example, the second port mapping
+    # above, the `/viewer` volume entry and `BLUEPENCIL_ADMIN_SECRET` — nothing else is needed, and
+    # none of it is a default. The entrypoint always passes `--host 0.0.0.0`, which is a wildcard
+    # bind, so `--viewer-origin` is mandatory here (`viewer_origin_required` otherwise); a loopback
+    # `--viewer-host 127.0.0.1` would be the other way out.
+    # command: ["--viewer", "--viewer-port", "8788",
+    #           "--viewer-assets", "/viewer", "--viewer-allow", "app.example.com",
+    #           "--viewer-origin", "https://view.example.com"]
 
 volumes:
   bluepencil-notes:

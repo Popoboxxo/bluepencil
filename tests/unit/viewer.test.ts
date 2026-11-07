@@ -11,70 +11,36 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { HandlerContext, ServerRequest } from "../../server/handler";
+import type { HandlerContext } from "../../server/handler";
 import {
-  DEFAULT_VIEWER_TTL_SECONDS,
+  VIEWER_FETCH_TIMEOUT_MS,
   VIEWER_HEADER,
   buildViewDocument,
   createViewerSessions,
   handleViewer,
+  handleViewerStart,
   hostAllowed,
   isViewerRequest,
   sessionCookie,
   targetRefusal,
-  type ViewerOptions,
 } from "../../server/viewer";
 import {
   BOOKMARKLET_TOKEN_MARKER,
   bookmarkletSnippet,
   bookmarkletTextArtifact,
 } from "../../server/viewer-bookmarklet";
+import {
+  BASE,
+  VIEWER_ORIGIN,
+  request,
+  stubFetch,
+  stubResolver,
+  viewerContext,
+  type ViewerFixture,
+} from "./helpers/viewer-harness";
 
-const BASE = "/bluepencil/api";
-
-/** A hub context with the viewer switched on — the store is irrelevant to this door. */
-function viewerContext(
-  overrides: { allow?: readonly string[]; assetsDir?: string; adminSecret?: string } = {},
-): HandlerContext {
-  const assetsDir = overrides.assetsDir ?? mkdtempSync(join(tmpdir(), "bp-viewer-"));
-  const viewer: ViewerOptions = {
-    assetsDir,
-    allow: overrides.allow ?? ["example.com", "*.example.com"],
-    ttlSeconds: DEFAULT_VIEWER_TTL_SECONDS,
-    sessions: createViewerSessions(DEFAULT_VIEWER_TTL_SECONDS),
-  };
-  return {
-    store: { notes: [], environment: "dev" },
-    base: BASE,
-    environment: "dev",
-    adminSecret: overrides.adminSecret ?? "operator-secret-123456",
-    viewer,
-  } as unknown as HandlerContext;
-}
-
-function request(url: string, headers: Record<string, string> = {}): ServerRequest {
-  return { method: "GET", url, headers };
-}
-
-/** A fetch stub that answers with a fixed document and records the URLs it was asked for. */
-function stubFetch(
-  html: string,
-  options: { status?: number; contentType?: string; redirectTo?: string } = {},
-) {
-  const seen: string[] = [];
-  const fetchImpl = (async (input: string | URL | Request) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    seen.push(url);
-    if (options.redirectTo !== undefined) {
-      return new Response(null, { status: 302, headers: { location: options.redirectTo } });
-    }
-    return new Response(html, {
-      status: options.status ?? 200,
-      headers: { "content-type": options.contentType ?? "text/html; charset=utf-8" },
-    });
-  }) as unknown as typeof fetch;
-  return { fetchImpl, seen };
-}
+/** A public address that is neither loopback nor private: the "allowed" DNS answer. */
+const PUBLIC_IP = "93.184.216.34";
 
 describe("viewer allowlist", () => {
   it("matches an exact host and a whole zone, nothing else", () => {
@@ -149,7 +115,8 @@ describe("viewer sessions", () => {
   });
 
   it("sets an HttpOnly cookie scoped to the API base", () => {
-    const cookie = sessionCookie("tok", 3600, BASE);
+    // Target signature (Task 4): the cookie carries its base and its `Secure` flag explicitly.
+    const cookie = sessionCookie("tok", { ttlSeconds: 3600, base: BASE, secure: false });
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain(`Path=${BASE}`);
     expect(cookie).toContain("SameSite=Lax");
@@ -157,10 +124,15 @@ describe("viewer sessions", () => {
 });
 
 describe("viewer door", () => {
-  let context: HandlerContext;
+  let context: ViewerFixture;
 
   beforeEach(() => {
-    context = viewerContext();
+    // Hermetic DNS (R3 F1): every `handleViewer()` fetch in this block passes this stub as
+    // `deps.resolver`, so no case can fall back to the live resolver and depend on the network.
+    // `example.com` is the one host the allowed cases use — including every redirect hop of RT-02,
+    // which stays on that host. Refusals (unlisted host, `127.0.0.1`) still happen before DNS.
+    const { resolver } = stubResolver({ "example.com": [PUBLIC_IP] });
+    context = viewerContext({ resolver });
   });
 
   it("does not exist without --viewer", async () => {
@@ -175,15 +147,39 @@ describe("viewer door", () => {
     expect(unauthorized?.body).toContain("session");
   });
 
-  it("exchanges the admin secret for a session cookie, and refuses a wrong one", async () => {
-    const wrong = await handleViewer(request(`${BASE}/viewer?k=wrong`), context);
-    expect(wrong?.status).toBe(401);
+  it("[RT-01] refuses the legacy ?k= exchange on the viewer surface and mints through the hub launcher", async () => {
+    // R1 F-01: the viewer surface never compares the admin secret. Both a right and a wrong value
+    // are the same dead end, and the message points at the hub launcher, never at {base}/viewer?k=.
+    for (const value of ["operator-secret-123456", "wrong"]) {
+      const legacy = await handleViewer(request(`${BASE}/viewer?k=${value}`), context);
+      expect(legacy?.status).toBe(401);
+      expect(legacy?.headers["set-cookie"]).toBeUndefined();
+      expect(legacy?.body).toContain(`${BASE}/viewer/start`);
+      expect(legacy?.body).not.toContain("/viewer?k=");
+    }
 
-    const ok = await handleViewer(request(`${BASE}/viewer?k=operator-secret-123456`), context);
-    expect(ok?.status).toBe(302);
-    expect(ok?.headers.location).toBe(`${BASE}/viewer`);
-    expect(ok?.headers["set-cookie"]).toContain("HttpOnly");
-    const cookie = String(ok?.headers["set-cookie"]);
+    // The exchange lives on the hub surface only, and shares the fixture's ticket store.
+    const hub = viewerContext({ surface: "hub", tickets: context.viewer!.tickets });
+    const started = handleViewerStart(
+      request(`${BASE}/viewer/start`, { "x-bluepencil-admin": "operator-secret-123456" }),
+      hub,
+    );
+    expect(started?.status).toBe(302);
+    expect(started?.headers["set-cookie"]).toBeUndefined();
+    expect(started?.headers["referrer-policy"]).toBe("no-referrer");
+    expect(started?.headers["cache-control"]).toBe("no-store");
+    const location = new URL(String(started?.headers.location));
+    expect(location.origin).toBe(VIEWER_ORIGIN);
+    expect(location.pathname).toBe(`${BASE}/viewer`);
+    const ticket = location.searchParams.get("ticket");
+    expect(ticket).toMatch(/^[0-9a-f]{48}$/);
+
+    const redeemed = await handleViewer(request(`${BASE}/viewer?ticket=${ticket}`), context);
+    expect(redeemed?.status).toBe(302);
+    expect(redeemed?.headers.location).toBe(`${BASE}/viewer`);
+    expect(redeemed?.headers["referrer-policy"]).toBe("no-referrer");
+    const cookie = String(redeemed?.headers["set-cookie"]);
+    expect(cookie).toContain("HttpOnly");
     // Index-free extraction: `split("…")[1]` is `string | undefined` under noUncheckedIndexedAccess.
     const token = cookie.slice(cookie.indexOf("=") + 1, cookie.indexOf(";"));
     expect(context.viewer!.sessions.verify(token)).toBe(true);
@@ -240,13 +236,13 @@ describe("viewer door", () => {
     const refused = await handleViewer(
       request(`${BASE}/view?url=${encodeURIComponent("http://127.0.0.1:9/x")}`, headers),
       context,
-      { fetchImpl },
+      { fetchImpl, resolver: context.resolver },
     );
     expect(refused?.status).toBe(403);
     expect(seen).toHaveLength(0); // refused before the hub goes anywhere near the network
   });
 
-  it("proxies an allowed target with the layer injected and the target CSP gone", async () => {
+  it("[RT-01] proxies an allowed target with the layer injected and the target CSP gone", async () => {
     const token = context.viewer!.sessions.mint().token;
     const { fetchImpl, seen } = stubFetch(
       `<html><head><meta http-equiv="content-security-policy" content="script-src 'self'"></head><body><h1>hi</h1></body></html>`,
@@ -257,13 +253,15 @@ describe("viewer door", () => {
         host: "hub:8787",
       }),
       context,
-      { fetchImpl },
+      { fetchImpl, resolver: context.resolver },
     );
     expect(seen).toEqual(["https://example.com/page?x=1"]);
     expect(answer?.status).toBe(200);
     expect(answer?.body).toContain("<h1>hi</h1>");
     expect(answer?.body.toLowerCase()).not.toContain("content-security-policy");
-    expect(answer?.body).toContain('endpoint="http://hub:8787/bluepencil/api"');
+    // The endpoint is the *viewer's* origin (AC-5.16), not the `Host` the request arrived on:
+    // a distinct origin is the whole point of the second listener.
+    expect(answer?.body).toContain(`endpoint="${VIEWER_ORIGIN}${BASE}"`);
     expect(answer?.body).toContain('<base href="https://example.com/">');
   });
 
@@ -275,7 +273,7 @@ describe("viewer door", () => {
     const refused = await handleViewer(
       request(`${BASE}/view?url=${encodeURIComponent("https://example.com/")}`, headers),
       context,
-      { fetchImpl: hop.fetchImpl },
+      { fetchImpl: hop.fetchImpl, resolver: context.resolver },
     );
     expect(refused?.status).toBe(403);
     expect(refused?.body).toContain("evil.test");
@@ -289,7 +287,7 @@ describe("viewer door", () => {
     const refused = await handleViewer(
       request(`${BASE}/view?url=${encodeURIComponent("https://example.com/a.pdf")}`, headers),
       context,
-      { fetchImpl: pdf.fetchImpl },
+      { fetchImpl: pdf.fetchImpl, resolver: context.resolver },
     );
     expect(refused?.status).toBe(415);
 
@@ -297,7 +295,7 @@ describe("viewer door", () => {
     const tooBig = await handleViewer(
       request(`${BASE}/view?url=${encodeURIComponent("https://example.com/big")}`, headers),
       context,
-      { fetchImpl: big.fetchImpl },
+      { fetchImpl: big.fetchImpl, resolver: context.resolver },
     );
     expect(tooBig?.status).toBe(413);
   });
@@ -310,10 +308,41 @@ describe("viewer door", () => {
     const answer = await handleViewer(
       request(`${BASE}/view?url=${encodeURIComponent("https://example.com/")}`, { [VIEWER_HEADER]: token }),
       context,
-      { fetchImpl: failing },
+      { fetchImpl: failing, resolver: context.resolver },
     );
     expect(answer?.status).toBe(502);
     expect(answer?.body).toContain("could not fetch");
+  });
+
+  it("bounds every target fetch at eight seconds", async () => {
+    // The timeout is a fetch bound, not a body limit: an aborted fetch is the same
+    // `target_unreachable` path as a DNS failure (RT-02).
+    expect(VIEWER_FETCH_TIMEOUT_MS).toBe(8000);
+    const token = context.viewer!.sessions.mint().token;
+    const aborted = (async () => {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }) as unknown as typeof fetch;
+    const answer = await handleViewer(
+      request(`${BASE}/view?url=${encodeURIComponent("https://example.com/slow")}`, { [VIEWER_HEADER]: token }),
+      context,
+      { fetchImpl: aborted, resolver: context.resolver },
+    );
+    expect(answer?.status).toBe(502);
+    expect(answer?.body).toContain("target_unreachable");
+  });
+
+  it("follows three redirects and refuses the fourth (RT-02)", async () => {
+    const token = context.viewer!.sessions.mint().token;
+    // Every answer is another redirect: the initial fetch plus three followed hops is the budget.
+    const looping = stubFetch("", { redirectTo: "https://example.com/again" });
+    const answer = await handleViewer(
+      request(`${BASE}/view?url=${encodeURIComponent("https://example.com/")}`, { [VIEWER_HEADER]: token }),
+      context,
+      { fetchImpl: looping.fetchImpl, resolver: context.resolver },
+    );
+    expect(answer?.status).toBe(502);
+    expect(answer?.body).toContain("too_many_redirects");
+    expect(looping.seen).toHaveLength(4);
   });
 });
 

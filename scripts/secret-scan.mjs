@@ -54,6 +54,13 @@ export const NON_SECRET_LITERALS = new Map([
   ["x-bluepencil-auth", "protocol header name (src/core/protocol-headers.ts, docs/specs §3.8)"],
   ["WEBSTORE_CLIENT_SECRET", "environment-variable name (scripts/chrome-webstore.mjs ENV)"],
   ["hub-host-check-secret", "unit-test fixture value (tests/unit/hub-host-check.test.ts)"],
+  ["operator-fixture-secret-1", "unit-test fixture value (tests/unit/admin-secret.test.ts)"],
+  ["viewer-secret-123456", "unit-test fixture value (tests/unit/viewer-cors.test.ts)"],
+  ["viewer-dispatch-operator", "unit-test fixture value (tests/unit/viewer-dispatch.test.ts)"],
+  ["viewer-lifecycle-operator", "unit-test fixture value (tests/unit/viewer-lifecycle.test.ts)"],
+  ["viewer-proxy-operator-secret", "unit-test fixture value (tests/unit/viewer-proxy.integration.test.ts)"],
+  ["viewer-session-integration-operator", "unit-test fixture value (tests/unit/viewer-session.integration.test.ts)"],
+  ["operator-secret-123456", "unit-test fixture value (tests/unit/viewer-start.test.ts)"],
 ]);
 
 /**

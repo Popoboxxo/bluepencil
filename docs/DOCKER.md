@@ -269,6 +269,83 @@ The root compose file keeps the version tag so that `docker compose pull` follow
 release line without an edit per release; the digest is the stricter opt-in for a deployment that
 must not move at all.
 
+## The viewer — a second port, off by default
+
+Since 0.14.0 the viewer is a **second listener with its own origin**, not a path on the hub port. It
+is off unless configured, needs its own published port, and needs an explicit origin in this image.
+Nothing about it is a default: the shipped compose file carries the second mapping only as a
+comment, so nothing is published until an operator uncomments it.
+
+```yaml
+services:
+  hub:
+    ports:
+      - "127.0.0.1:${BLUEPENCIL_PORT:-8787}:8787"
+      - "127.0.0.1:${BLUEPENCIL_VIEWER_PORT:-8788}:8788"   # opt-in, loopback only
+    volumes:
+      - bluepencil-notes:/data
+      - "./dist:/viewer:ro"                                # the built layer bundles
+    environment:
+      BLUEPENCIL_ADMIN_SECRET: "${BLUEPENCIL_ADMIN_SECRET:?set the viewer's operator secret}"
+    command: ["--viewer", "--viewer-port", "8788",
+              "--viewer-assets", "/viewer", "--viewer-allow", "app.example.com",
+              "--viewer-origin", "https://view.example.com"]
+```
+
+The same flag set ships as a commented `command:` example in `docker-compose.yml`, next to the
+commented second port mapping. Use both or neither.
+
+**--viewer-origin is required in this image.** `docker/entrypoint.sh` hands the hub `--host
+0.0.0.0`, and the viewer inherits that bind unless `--viewer-host` overrides it. A wildcard bind
+(`0.0.0.0`, `::`, `""`) names no address that a URL could carry, so the hub refuses to start with
+`viewer_origin_required` instead of deriving `http://0.0.0.0:8788`. Give it the public origin
+(`--viewer-origin https://view.example.com`, or `BLUEPENCIL_VIEWER_ORIGIN`), or bind the viewer to
+loopback on purpose with `--viewer-host 127.0.0.1` when a proxy on the same host terminates TLS. No
+origin is ever derived from an unspecified address. The start banner repeats this as soon as
+`BLUEPENCIL_VIEWER_PORT` is set: a viewer port, and the origin it will demand.
+
+**Two ports, two origins.** The hub keeps its port and its credential-gated API; the viewer gets a
+port and an origin of its own, so a proxied page never shares an origin with the notes API. The
+operator still starts from the hub: open `{base}/viewer/start` on the hub origin and the one-time
+ticket moves the browser to the viewer origin. The viewer content paths (`/viewer`,
+`/view`, `/viewer/assets/*`, `/viewer/bookmarklet.txt`) exist only on the viewer port — the
+hub answers them with `404`, even with `--root`.
+
+**Reverse proxy and TLS.** The image has no TLS. Terminate it at the proxy and pass the *public*
+origin, so the launcher and the session cookie name the address a browser can actually open:
+
+```yaml
+# Traefik / Caddy / nginx in front of both ports, TLS terminated there:
+command: ["--viewer", "--viewer-port", "8788",
+          "--viewer-assets", "/viewer", "--viewer-allow", "*.example.com",
+          "--viewer-origin", "https://view.example.com"]
+```
+
+The viewer session cookie is `HttpOnly` and belongs to the viewer origin. If the viewer answers on
+the same hostname as the hub (only the port differs), the two share a cookie jar and the start
+writes `viewer_cookie_shared_host` to `stderr`; prefer a dedicated viewer hostname so a session
+never travels to the hub port. `--cors '*'` is rejected together with `--viewer`, and `--cors` must
+not name the viewer origin. The `HEALTHCHECK` stays on the hub port — the viewer has no separate
+probe.
+
+**Which variables apply** (a flag wins over the environment):
+
+| Variable | Meaning |
+|---|---|
+| `BLUEPENCIL_VIEWER` | turns the viewer on; strict boolean (`true`/`1`), `false`/`0` is off |
+| `BLUEPENCIL_VIEWER_PORT` | **required** when the viewer is on; must not reuse the hub port on the same bind address |
+| `BLUEPENCIL_VIEWER_HOST` | bind address of the second listener; default resolves to `--host` (`0.0.0.0` in this image) |
+| `BLUEPENCIL_VIEWER_ORIGIN` | public origin, e.g. `https://view.example.com`; mandatory for a wildcard bind |
+| `BLUEPENCIL_VIEWER_ASSETS` | directory with the built layer bundles — mount `./dist` read-only |
+| `BLUEPENCIL_VIEWER_ALLOW` | comma-separated hosts the viewer may fetch (`app.example.com`, `*.example.com`) |
+| `BLUEPENCIL_VIEWER_PUBLIC_URL` | deprecated alias for `BLUEPENCIL_VIEWER_ORIGIN` (one release period) |
+
+`--viewer` also requires `--admin-secret` (`BLUEPENCIL_ADMIN_SECRET`), `--viewer-assets` and at
+least one host in `--viewer-allow`. Without them the hub refuses to start rather than run a
+half-configured viewer; the `viewer_origin_required` refusal above is the same contract, one step
+earlier. `--viewer-ttl` (session lifetime, default 8 h, `60..604800`) is flag-only and has no
+environment variable.
+
 ## Hub of Hubs
 
 An aggregating hub reads several leaf hubs over one `/mcp` door; the leaves stay independent stores
