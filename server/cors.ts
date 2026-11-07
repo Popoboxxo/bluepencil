@@ -1,21 +1,31 @@
 /**
- * CORS metadata for the hub's doors — the notes API, the MCP route and the optional admin surface.
+ * CORS metadata for the hub's doors — the notes API, the MCP route and the optional admin surface —
+ * plus the viewer surface's bookmarklet reflection (issue #140).
  *
  * One vocabulary rather than one per route: a browser sends the same preflight for all of them, and
  * two lists that drift apart turn into "the notes API works but the admin route does not" for a
  * reason nobody can see in the network tab.
  *
- * This module imports nothing on purpose. `server/handler.ts` re-exports it, `server/hub.ts` and
- * `server/mcp.ts` import it from there, and `server/admin.ts` imports it directly — keeping the
- * function dependency-free is what makes that last edge safe instead of a runtime cycle.
+ * This module has no runtime imports on purpose. The `ServerRequest` import is type-only and erased
+ * before the module runs, so `server/handler.ts` can re-export it, `server/hub.ts` and
+ * `server/mcp.ts` can import it from there, and `server/admin.ts` can import it directly — that is
+ * what makes the last edge safe instead of a runtime cycle.
  *
- * `preflightResponse` is the one implementation of an `OPTIONS` answer, used by every door that can
- * be reached cross-origin: the notes router, the MCP route, the admin surface and the static site
- * (#102). Each caller names the methods *it* documents, and that list is the preflight's answer —
- * `/mcp` advertises `POST, OPTIONS`, `/health` advertises `GET, HEAD, OPTIONS`. Routing still
- * happens in the caller, so a path that is not part of the API keeps its 404 rather than becoming
- * an empty preflight answer.
+ * `preflightResponse` is the one implementation of an `OPTIONS` answer on the hub, used by every
+ * door that can be reached cross-origin: the notes router, the MCP route, the admin surface and the
+ * static site (#102). Each caller names the methods *it* documents, and that list is the preflight's
+ * answer — `/mcp` advertises `POST, OPTIONS`, `/health` advertises `GET, HEAD, OPTIONS`. Routing
+ * still happens in the caller, so a path that is not part of the API keeps its 404 rather than
+ * becoming an empty preflight answer.
+ *
+ * The viewer surface is deliberately *not* a general CORS surface (spec §2.5): it answers a
+ * preflight only for a bookmarklet that asks with `x-bluepencil-viewer`, and it reflects the calling
+ * origin on `{base}/notes*` answers so that client can read successes and validation errors. No
+ * cookie is ever involved — the token is the credential, so `access-control-allow-credentials` has
+ * no place here.
  */
+
+import type { ServerRequest } from "./handler";
 
 /**
  * Every header any caller of this API actually sends, or the browser drops it before the request
@@ -175,4 +185,171 @@ export function preflightResponse(
     },
     body: "",
   };
+}
+
+/**
+ * The header the bookmarklet carries (mirrors `VIEWER_HEADER` in `server/viewer.ts`).
+ *
+ * Defined here rather than imported so this module keeps its no-runtime-import rule; the two
+ * spellings are pinned together by the viewer tests and by the preflight/answer path.
+ */
+const VIEWER_HEADER = "x-bluepencil-viewer";
+
+/** The method union the whole `{base}/notes*` family documents (spec §2.5 Regel 1). */
+const VIEWER_ALLOW_METHODS = "GET, POST, PATCH, OPTIONS";
+
+/** The bookmarklet sends `content-type` plus its token header; nothing else is advertised. */
+const VIEWER_ALLOW_HEADERS = "Content-Type, X-Bluepencil-Viewer";
+
+/**
+ * The origin a viewer response may reflect, or `null`.
+ *
+ * An `Origin` header is a serialised origin: scheme, host and optional port — never a path, query,
+ * fragment or userinfo. `new URL()` normalises a bare origin to pathname `/`, so the pathname check
+ * rejects `/anything` while accepting the browser's spelling. `null` (the header a sandboxed frame
+ * sends) is not an origin and is refused.
+ */
+function reflectedOrigin(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  const origin = value.trim();
+  if (origin === "") return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  if (parsed.username !== "" || parsed.password !== "") return null;
+  if (parsed.pathname !== "/" || parsed.search !== "" || parsed.hash !== "") return null;
+  return origin;
+}
+
+/** Case-insensitive read of one request header; a repeated header joins with `", "`. */
+function headerValue(
+  headers: Record<string, string | string[] | undefined> | undefined,
+  name: string,
+): string | undefined {
+  if (headers === undefined) return undefined;
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== wanted || value === undefined) continue;
+    return Array.isArray(value) ? value.join(", ") : value;
+  }
+  return undefined;
+}
+
+/** True when a comma-separated `Access-Control-Request-Headers` value names `name`. */
+function requestsHeader(value: string | undefined, name: string): boolean {
+  if (value === undefined) return false;
+  const wanted = name.toLowerCase();
+  return value.split(",").some((entry) => entry.trim().toLowerCase() === wanted);
+}
+
+/**
+ * Path of a request target, never the host — same reading as `requestPath()` in `handler.ts`, kept
+ * local so this module does not depend on the handler at runtime.
+ */
+function pathnameOf(url: string): string {
+  const absolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(url);
+  const target = absolute ? url : `http://localhost${url.startsWith("/") ? "" : "/"}${url}`;
+  try {
+    return new URL(target).pathname;
+  } catch {
+    const [path = ""] = url.split("?");
+    return path;
+  }
+}
+
+/** True for `{base}/notes` and `{base}/notes/…`, false for `{base}/notesx` and other routes. */
+function isNotesPath(url: string, base: string): boolean {
+  const trimmedBase = base.replace(/\/+$/, "");
+  const notes = `${trimmedBase}/notes`;
+  const pathname = pathnameOf(url);
+  return pathname === notes || pathname.startsWith(`${notes}/`);
+}
+
+/**
+ * The bookmarklet's preflight answer, or `null` (spec §2.5 Regel 1, AC-5.21).
+ *
+ * Only the viewer surface uses this, and only for `{base}/notes*`. A browser sends `OPTIONS` without
+ * a credential, so the method/origin/requested-header gate is not an authorization: it selects the
+ * one client that is allowed to *read* the answer. The gate is `x-bluepencil-viewer` in
+ * `Access-Control-Request-Headers` — a plain cross-origin page asking for `content-type` gets `null`
+ * and keeps the viewer's ordinary `405`. There is deliberately no `allowMethods` parameter: the
+ * fixed union above is what every route of the family advertises, and a per-route list would make a
+ * `PATCH` preflight fail on a door that only happened to name `GET, POST`.
+ */
+export function viewerBookmarkletPreflight(
+  method: string | undefined,
+  requestOrigin: string | undefined,
+  requestedHeaders: string | undefined,
+): PreflightAnswer | null {
+  if ((method ?? "").toUpperCase() !== "OPTIONS") return null;
+  const origin = reflectedOrigin(requestOrigin);
+  if (origin === null) return null;
+  if (!requestsHeader(requestedHeaders, VIEWER_HEADER)) return null;
+  return {
+    status: 204,
+    headers: {
+      "access-control-allow-origin": origin,
+      "access-control-allow-methods": VIEWER_ALLOW_METHODS,
+      "access-control-allow-headers": VIEWER_ALLOW_HEADERS,
+      "access-control-max-age": "600",
+      vary: "Origin",
+    },
+    body: "",
+  };
+}
+
+/**
+ * The same origin reflection for an actual (non-`OPTIONS`) response (spec §2.5 Regel 2).
+ *
+ * The bookmarklet must be able to read `200` answers *and* the `400 invalid_query`/
+ * `invalid_payload` refusals the notes routes produce, otherwise its UI shows "network error" for
+ * an input mistake. Only the origin and `vary` are set: no methods, no headers, no credentials.
+ */
+export function viewerBookmarkletCors(requestOrigin: string | undefined): Record<string, string> {
+  const origin = reflectedOrigin(requestOrigin);
+  if (origin === null) return {};
+  return {
+    "access-control-allow-origin": origin,
+    vary: "Origin",
+  };
+}
+
+/**
+ * The subset of `HandlerContext` `responseCorsHeaders()` reads.
+ *
+ * Structural rather than an import of `HandlerContext` so the function stays usable from the pure
+ * handler while the surface field is introduced (Task 6); every `HandlerContext` remains assignable.
+ */
+export interface ResponseCorsContext {
+  /** Normalised API base; `"/"` and `""` both mean "everything is under the base". */
+  readonly base: string;
+  /** `--cors`; read on the hub surface only. */
+  readonly cors?: string;
+  /** `"viewer"` selects bookmarklet reflection; absent or `"hub"` is the hub. */
+  readonly surface?: "hub" | "viewer";
+}
+
+/**
+ * CORS headers for `json()`/`errorResponse()`/`/bundle` (spec §2.5 Regel 3).
+ *
+ * Hub: byte-identical to `corsHeaders(context.cors)` — this is the one place the hub's `--cors`
+ * policy is applied, and the viewer work must not change it.
+ *
+ * Viewer: `context.cors` is never read. Only `{base}/notes*` answers reflect the calling origin, and
+ * never an `OPTIONS`: a preflight's `204` comes from `viewerBookmarkletPreflight()`, and a negative
+ * `405` carries no CORS header at all. Every other viewer route — `bundle`, `sessions`, `health`,
+ * `viewer`, the refusals — stays at `{}`.
+ */
+export function responseCorsHeaders(
+  request: Pick<ServerRequest, "url" | "headers" | "method">,
+  context: ResponseCorsContext,
+): Record<string, string> {
+  if (context.surface !== "viewer") return corsHeaders(context.cors);
+  if (request.method.toUpperCase() === "OPTIONS") return {};
+  if (!isNotesPath(request.url, context.base)) return {};
+  return viewerBookmarkletCors(headerValue(request.headers, "origin"));
 }

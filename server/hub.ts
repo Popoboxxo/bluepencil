@@ -64,12 +64,15 @@ import {
   gateRequest,
   handleRequest,
   hostRefusal,
+  hubViewerPathRefusal,
   isApiPath,
   isLoopbackAddress,
   normalizeBase,
   preflightResponse,
   publicError,
   requestPath,
+  surfaceOf,
+  viewerSurfaceRefusal,
   type AdminThrottle,
   type HandlerContext,
   type NoteStoreState,
@@ -92,12 +95,16 @@ import { asHandlerVerifier, createTokenIssuer } from "./tokens";
 import { devicesPathFor } from "./admin";
 import {
   createViewerSessions,
+  createViewerTickets,
   DEFAULT_VIEWER_TTL_SECONDS,
   handleViewer,
+  handleViewerStart,
   isViewerRequest,
+  isViewerStartRequest,
   MAX_VIEWER_TTL_SECONDS,
   type ViewerOptions,
 } from "./viewer";
+import { createPresence } from "./presence";
 import { selectJournal, type Journal, type JournalRecord, type JournalStatus } from "./journal";
 import { handleMcpRoute, type McpBackendFactoryInput } from "./mcp";
 import { createStoreBackend, type McpBackend } from "../src/mcp/backend";
@@ -128,7 +135,12 @@ export { SECRET_MIN_LENGTH, TOKEN_KEY_MIN_LENGTH } from "./credentials";
 
 /** A start-up safety warning. `code` is stable; `message` is what an operator reads on stderr. */
 export interface StartupWarning {
-  code: "unauthenticated_non_loopback" | "cors_wildcard";
+  code:
+    | "unauthenticated_non_loopback"
+    | "cors_wildcard"
+    | "viewer_cookie_shared_host"
+    | "viewer_non_loopback_insecure"
+    | "viewer_public_url_deprecated";
   message: string;
 }
 
@@ -141,6 +153,98 @@ export interface StartupWarning {
  */
 export function isLoopbackBind(host: string): boolean {
   return isLoopbackAddress(host.trim());
+}
+
+const WILDCARD_BINDS: ReadonlySet<string> = new Set(["", "0.0.0.0", "::", "[::]"]);
+
+/**
+ * The **one** definition of a wildcard (unspecified) bind address (spec §2.4).
+ *
+ * `""` is included on purpose: it is not an empty host, it is the spelling `listen()` turns into
+ * "every interface". Applied only to an **resolved** bind address (`viewer.host ?? host ??
+ * DEFAULT_HOST`), never to `undefined` as "the flag is absent". No origin may ever be derived from
+ * a `true` address — `http://0.0.0.0:<port>` and `http://[::]:<port>` are not reachable origins.
+ */
+export function isWildcardBind(address: string): boolean {
+  return WILDCARD_BINDS.has(address.trim());
+}
+
+/** The stable diagnosis of a start that must not serve (spec §2.4, AC-F20/AC-F23). */
+export type HubStartupErrorCode =
+  | "viewer_origin_required"
+  | "viewer_origin_is_hub_origin"
+  | "cors_viewer_origin"
+  | "cors_wildcard_with_viewer"
+  | "viewer_origin_invalid"
+  | "viewer_ttl_invalid";
+
+/**
+ * A start-up failure raised by `resolveOptions()`/`startHub()` before anything is served.
+ *
+ * Unlike a `parseHubArgs` usage string this is thrown: the programmatic path has no stdout to write
+ * a one-liner to, and the caller has to be able to react to the {@link HubStartupErrorCode}.
+ */
+export class HubStartupError extends Error {
+  readonly code: HubStartupErrorCode;
+
+  constructor(code: HubStartupErrorCode, message: string) {
+    super(message);
+    this.name = "HubStartupError";
+    this.code = code;
+  }
+}
+
+/** A bind address reduced to the spelling two flags have to agree on (`[::1]` vs `::1`). */
+function normalizeBind(address: string): string {
+  const trimmed = address.trim().toLowerCase();
+  return trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.slice(1, -1) : trimmed;
+}
+
+/**
+ * True when two bind addresses denote the **same socket** (spec §5.2, F-04).
+ *
+ * Spelling equality alone is not enough: `""`, `0.0.0.0`, `::` and `[::]` all mean "the
+ * unspecified address", so `--host 0.0.0.0 --viewer-host ""` would collide at `listen()` time
+ * (the second bind fails with `EADDRINUSE`) even though the two strings differ. The wildcard
+ * question is answered by {@link isWildcardBind}, the one definition of that set; everything else
+ * is compared by spelling.
+ */
+function sameBind(a: string, b: string): boolean {
+  if (isWildcardBind(a) && isWildcardBind(b)) return true;
+  return normalizeBind(a) === normalizeBind(b);
+}
+
+/**
+ * The **one** origin comparison form (spec §2.4 rule 5): scheme and host lower-cased, default port
+ * removed, no userinfo, no path/query/fragment. `null` means "not an absolute http(s) origin".
+ *
+ * A trailing `/` is the empty path and is accepted (it is what a browser prints for an origin);
+ * anything else in the path is a configuration error, because the viewer's links and cookies are
+ * built by appending `base` to this value.
+ */
+function normalizeOrigin(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (url.username !== "" || url.password !== "") return null;
+  if (url.pathname !== "" && url.pathname !== "/") return null;
+  if (url.search !== "" || url.hash !== "") return null;
+  const host = url.hostname.toLowerCase();
+  if (host === "") return null;
+  return `${url.protocol}//${host}${url.port === "" ? "" : `:${url.port}`}`;
+}
+
+/** Hostname of an already normalised origin, without brackets/port — for the shared-host warning. */
+function originHostname(origin: string): string | null {
+  const normalized = normalizeOrigin(origin);
+  if (normalized === null) return null;
+  const parsed = new URL(normalized);
+  const host = parsed.hostname.toLowerCase();
+  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
 }
 
 /**
@@ -158,6 +262,16 @@ export function startupWarnings(input: {
   readonly host: string;
   readonly credential: CredentialMode;
   readonly cors: string | null;
+  /**
+   * The resolved viewer, when configured. `host` is the viewer *bind* address, `origin` the public
+   * origin a browser sees, and `usedPublicUrlAlias` whether the deprecated `--viewer-public-url`
+   * spelling was given (it stays a warning for one release period).
+   */
+  readonly viewer?: {
+    readonly host: string;
+    readonly origin: string;
+    readonly usedPublicUrlAlias: boolean;
+  };
 }): StartupWarning[] {
   const warnings: StartupWarning[] = [];
   if (!isLoopbackBind(input.host) && input.credential === "none") {
@@ -178,6 +292,50 @@ export function startupWarnings(input: {
       message: CORS_WILDCARD_WARNING.message,
     });
   }
+  if (input.viewer !== undefined) {
+    const viewerHostname = originHostname(input.viewer.origin);
+    /* §4.7: the cookie is not port-isolated. With a concrete hub bind the two host names decide;
+     * a wildcard hub bind answers under *any* name, so it shares the cookie with every non-loopback
+     * viewer name. */
+    const sharedHost =
+      viewerHostname === null
+        ? false
+        : isWildcardBind(input.host)
+          ? !isLoopbackBind(viewerHostname)
+          : normalizeBind(input.host) === viewerHostname;
+    if (sharedHost) {
+      warnings.push({
+        code: "viewer_cookie_shared_host",
+        message:
+          `WARNING (viewer_cookie_shared_host): the viewer shares its host name with the hub ` +
+          `(hub bind ${input.host || "every interface"}, viewer origin ${input.viewer.origin}). ` +
+          "The bp_viewer cookie is not port-isolated, so the hub port receives it too (and ignores " +
+          "it). Prefer a dedicated viewer host name. This warning is not suppressed by --quiet.",
+      });
+    }
+    if (
+      !isLoopbackBind(input.viewer.host) &&
+      (normalizeOrigin(input.viewer.origin) ?? input.viewer.origin).startsWith("http://")
+    ) {
+      warnings.push({
+        code: "viewer_non_loopback_insecure",
+        message:
+          `WARNING (viewer_non_loopback_insecure): the viewer is bound to ${input.viewer.host || "every interface"} ` +
+          `and its origin is plain http (${input.viewer.origin}), so the session cookie and every ` +
+          "note travel unencrypted. Terminate TLS in front of it or use an https viewer origin. " +
+          "This warning is not suppressed by --quiet.",
+      });
+    }
+    if (input.viewer.usedPublicUrlAlias) {
+      warnings.push({
+        code: "viewer_public_url_deprecated",
+        message:
+          "WARNING (viewer_public_url_deprecated): --viewer-public-url is a deprecated alias for " +
+          "--viewer-origin and will be removed in the next release. Rename the flag. " +
+          "This warning is not suppressed by --quiet.",
+      });
+    }
+  }
   return warnings;
 }
 
@@ -187,6 +345,19 @@ export class StoreFileError extends Error {
     super(message);
     this.name = "StoreFileError";
   }
+}
+
+/** Where the viewer's second listener binds and which origin it advertises (spec §2.4). */
+export interface ViewerListenOptions {
+  /**
+   * Bind address; defaults to the resolved hub bind address (`viewer.host ?? host ?? DEFAULT_HOST`).
+   * A wildcard value — including one inherited from `--host` — makes `origin` mandatory.
+   */
+  host?: string;
+  /** Required whenever the viewer is configured; 0..65535, `0` (ephemeral) allowed. */
+  port: number;
+  /** Public origin; defaults to the bind address plus the actual port, never from a wildcard. */
+  origin?: string;
 }
 
 export interface ServerOptions {
@@ -229,18 +400,19 @@ export interface ServerOptions {
    */
   adminSecret?: string;
   /**
-   * The viewer (`--viewer`): serve a website from this origin with the layer injected, and hand out
-   * the bookmarklet artifact. Off unless configured — and then only with an allowlist, an operator
-   * credential and the directory holding the built layer, because the hub fetches server-side.
+   * The viewer (`--viewer`): serve a website from its own origin with the layer injected, and hand
+   * out the bookmarklet artifact. Off unless configured — and then only with a second listener
+   * (`port`), an allowlist, an operator credential and the directory holding the built layer,
+   * because the hub fetches server-side.
    */
-  viewer?: {
+  viewer?: ViewerListenOptions & {
     /** Directory with the built element bundles (`dist`). */
     assetsDir: string;
     /** Hosts that may be fetched (`example.com`, `*.example.com`). */
     allow: readonly string[];
-    /** Session lifetime in seconds. */
+    /** Session lifetime in seconds (60..604800, also checked programmatically). */
     ttlSeconds: number;
-    /** Public origin, when it differs from the request's `Host`. */
+    /** @deprecated 0.13.0 input alias, normalised onto `origin`; warns for one release period. */
     publicBaseUrl?: string;
   };
   allowEnvMismatch?: boolean;
@@ -297,6 +469,19 @@ export interface HubOptions extends ServerOptions {
   limit?: number;
 }
 
+/**
+ * The viewer options **after** `resolveOptions()` (spec §2.4 rule 1, F-07).
+ *
+ * `host`/`port` are the resolved *bind* pair (`viewer.host ?? host ?? DEFAULT_HOST` and the
+ * configured viewer port, `0` when ephemeral). They live next to the `ViewerOptions` fields
+ * because `startHub()` needs them for the second listener; the handler only ever reads the
+ * `ViewerOptions` half.
+ */
+interface ResolvedViewer extends ViewerOptions {
+  readonly host: string;
+  readonly port: number;
+}
+
 interface ResolvedOptions {
   storePath: string;
   port: number;
@@ -313,7 +498,7 @@ interface ResolvedOptions {
   revokedTokens: ReadonlySet<string> | undefined;
   revokedPath: string | undefined;
   adminSecret: string | undefined;
-  viewer: ViewerOptions | undefined;
+  viewer: ResolvedViewer | undefined;
   mirror: string | undefined;
   cors: string | undefined;
   quiet: boolean;
@@ -336,6 +521,87 @@ interface ResolvedOptions {
   limit: number | undefined;
 }
 
+/**
+ * Builds the one `ViewerOptions` instance a start will ever have (spec §2.4 rule 1, F-07).
+ *
+ * Everything the second listener and the viewer door need is wired here **once**:
+ * `sessions`/`tickets` (never re-created per require), the normalised explicit `origin` (with the
+ * deprecated `publicBaseUrl` alias folded into it), the resolved bind `host`/`port` and the host
+ * gate aliases derived from an explicit origin. Two checks also run here, before any socket exists:
+ *
+ * - `ttlSeconds` is the session lifetime and is bounded programmatically (`60..604800`), not only
+ *   by `parseHubArgs`, because an embedding caller never sees the CLI;
+ * - a wildcard (**resolved**) bind without an explicit origin is `viewer_origin_required` — no
+ *   origin is ever derived from `""`, `0.0.0.0`, `::` or `[::]`, and `port: 0` changes nothing
+ *   about the obligation.
+ *
+ * Failures are `HubStartupError`s and are raised before `activeJournal` is touched (spec §2.4
+ * rule 5), so a refused start leaves a previous process state alone.
+ */
+function resolveViewerOptions(options: HubOptions): ResolvedViewer | undefined {
+  const input = options.viewer;
+  if (input === undefined) return undefined;
+
+  if (
+    !Number.isInteger(input.ttlSeconds) ||
+    input.ttlSeconds < 60 ||
+    input.ttlSeconds > MAX_VIEWER_TTL_SECONDS
+  ) {
+    throw new HubStartupError(
+      "viewer_ttl_invalid",
+      `the viewer session lifetime must be an integer between 60 and ${MAX_VIEWER_TTL_SECONDS} seconds ` +
+        `(got ${JSON.stringify(input.ttlSeconds)})`,
+    );
+  }
+
+  // `origin` wins over the deprecated alias (S2), but both are validated with the same rules and
+  // the alias is kept as a marker so `startHub()` can warn for one release period.
+  const originInput = input.origin ?? input.publicBaseUrl;
+  let origin: string | undefined;
+  if (originInput !== undefined) {
+    const normalized = normalizeOrigin(originInput);
+    if (normalized === null) {
+      throw new HubStartupError(
+        "viewer_origin_invalid",
+        `the viewer origin ${JSON.stringify(originInput)} must be an absolute http(s) origin without ` +
+          "path, query or fragment",
+      );
+    }
+    origin = normalized;
+  }
+
+  // The obligation follows the **resolved** bind, including a wildcard inherited from `--host`
+  // (spec §2.4 rule 1, AC-F6/AC-F23).
+  const host = input.host ?? options.host ?? DEFAULT_HOST;
+  if (isWildcardBind(host) && origin === undefined) {
+    throw new HubStartupError(
+      "viewer_origin_required",
+      `the viewer is bound to a wildcard address (${JSON.stringify(host)}) and has no explicit origin — ` +
+        "set one; an origin is never derived from 0.0.0.0 or [::]",
+    );
+  }
+
+  // A loopback-bound viewer is reached under its configured public name; that name has to pass the
+  // Host gate, which only knows loopback spellings (AC-5.23).
+  const originName = origin === undefined ? undefined : originHostname(origin);
+  const hostAliases = originName === undefined || originName === null ? undefined : [originName];
+
+  return {
+    assetsDir: input.assetsDir,
+    allow: input.allow,
+    ttlSeconds: input.ttlSeconds,
+    origin,
+    ...(input.publicBaseUrl === undefined ? {} : { publicBaseUrl: origin }),
+    host,
+    port: input.port,
+    hostAliases,
+    // Exactly once per start: the sessions and launcher tickets are process state, never
+    // re-created per request (spec §2.4 rules 1/2).
+    sessions: createViewerSessions(input.ttlSeconds),
+    tickets: createViewerTickets(),
+  };
+}
+
 function resolveOptions(options: HubOptions): ResolvedOptions {
   return {
     storePath: options.storePath,
@@ -347,19 +613,16 @@ function resolveOptions(options: HubOptions): ResolvedOptions {
     readOnly: options.readOnly ?? false,
     allowEnvMismatch: options.allowEnvMismatch ?? false,
     authSecret: options.authSecret,
-    adminSecret: options.adminSecret,
-    viewer:
-      options.viewer === undefined
+    // R2-F1: an empty string is not a configured operator secret. Normalise it to `undefined` so a
+    // programmatic `startHub({ adminSecret: "" })` behaves exactly like a hub without an admin
+    // surface: `/admin/*` is 404 and the launcher answers `401 unauthorized` without spending the
+    // `admin` budget. `parseHubArgs()` already refuses an empty `--admin-secret`; this closes the
+    // programmatic path that bypasses it.
+    adminSecret:
+      options.adminSecret === undefined || options.adminSecret.length === 0
         ? undefined
-        : {
-            assetsDir: options.viewer.assetsDir,
-            allow: options.viewer.allow,
-            ttlSeconds: options.viewer.ttlSeconds,
-            ...(options.viewer.publicBaseUrl === undefined
-              ? {}
-              : { publicBaseUrl: options.viewer.publicBaseUrl }),
-            sessions: createViewerSessions(options.viewer.ttlSeconds),
-          },
+        : options.adminSecret,
+    viewer: resolveViewerOptions(options),
     tokenKey: options.tokenKey,
     tokenTtlSeconds: options.tokenTtlSeconds,
     revokedTokens: options.revokedTokens,
@@ -794,8 +1057,12 @@ function earlyRefusal(request: IncomingMessage, context: HandlerContext): Server
   }
   // The viewer is asynchronous (it fetches another site), so the pre-check lets it through to
   // `respond()` instead of asking the synchronous router, which would answer 404 for a path it
-  // does not know. The door itself decides about the credential.
-  if (context.viewer !== undefined && isViewerRequest(url, context)) return null;
+  // does not know. The door itself decides about the credential. The surface gate is normative
+  // (spec §2.1 rule 7): on the hub surface a viewer path must reach `hubViewerPathRefusal()` — as a
+  // 404 — without reading a body or loading the store first.
+  if (surfaceOf(context) === "viewer" && context.viewer !== undefined && isViewerRequest(url, context)) {
+    return null;
+  }
   const gate = gateRequest(minimal, context);
   return gate.kind === "response" ? gate.response : null;
 }
@@ -821,9 +1088,43 @@ async function respond(
     return;
   }
 
+  // Spec §2.1 rules 5/8: the launcher belongs to the hub surface only and runs before the router —
+  // it mints a ticket and answers `302` onto the viewer origin (`handleViewerStart`), and on the
+  // viewer surface the path is refused below. The Host gate already ran, so no foreign name can
+  // spend the admin budget.
+  if (surfaceOf(context) === "hub" && isViewerStartRequest(url, context)) {
+    const remote = request.socket.remoteAddress;
+    const launcher = handleViewerStart(
+      { method, url, headers: request.headers, ...(remote === undefined ? {} : { remote }) },
+      context,
+    );
+    if (launcher !== null) {
+      write(response, launcher);
+      return;
+    }
+  }
+
+  // The surface split is the one security boundary (spec §2.1 rules 5/6). Both refusals are
+  // header-only and no-ops on the other surface; they sit here — before the journal, the `--root`
+  // static fallback and the body-dependent router — so `--root` can never serve an `index.html`
+  // for a viewer path on the hub, and the viewer origin never reaches journal/static/MCP.
+  const viewerPathOnHub = hubViewerPathRefusal({ url }, context);
+  if (viewerPathOnHub !== null) {
+    write(response, viewerPathOnHub);
+    return;
+  }
+  const unservedOnViewer = viewerSurfaceRefusal({ url }, context);
+  if (unservedOnViewer !== null) {
+    write(response, unservedOnViewer);
+    return;
+  }
+
   // The viewer door: asynchronous, so it sits outside the pure router — the same placement as the
   // MCP door. It answers its own 404/401/403/502, so a `null` here means "not a viewer request".
-  if (context.viewer !== undefined && isViewerRequest(url, context)) {
+  // The double gate is normative (spec §2.1 rule 7): only the viewer surface *and* a viewer path
+  // reach `handleViewer()`, so `/health`, `{base}/notes*`, `{base}/sessions` and `{base}/bundle` are
+  // never swallowed and keep running through `gateRequest()`.
+  if (surfaceOf(context) === "viewer" && isViewerRequest(url, context)) {
     const remote = request.socket.remoteAddress;
     const answer = await handleViewer(
       { method, url, headers: request.headers, ...(remote === undefined ? {} : { remote }) },
@@ -835,7 +1136,8 @@ async function respond(
     }
   }
 
-  // The journal answers before the static/API split: it belongs to neither.
+  // The journal answers before the static/API split: it belongs to neither. The viewer surface has
+  // already been refused above, so this line is hub-only by construction.
   if (requestPath(url) === journalPathOf(options.base)) {
     write(response, journalResponse(method, url, journal, options));
     return;
@@ -1279,6 +1581,21 @@ function createAdminThrottle(now: () => number = Date.now): AdminThrottle {
   };
 }
 
+export interface RunningViewer {
+  readonly server: Server;
+  /** The address the socket actually bound (not `--viewer-host`, which may be a name). */
+  readonly host: string;
+  /** The actual port — the ephemeral one when `--viewer-port 0` was requested. */
+  readonly port: number;
+  /** `origin` plus the normalised base path. */
+  readonly url: string;
+  /**
+   * The public origin links and cookies use. Explicit when configured, otherwise derived from the
+   * bind address and port — never from a wildcard address (spec §2.4 rule 6).
+   */
+  readonly origin: string;
+}
+
 export interface RunningServer {
   readonly server: Server;
   readonly host: string;
@@ -1286,12 +1603,148 @@ export interface RunningServer {
   readonly port: number;
   /** Origin plus base path, as a client would call it. */
   readonly url: string;
+  /** Present only when the viewer (`--viewer`) is configured (spec §2.4). */
+  readonly viewer?: RunningViewer;
+  /** Closes both listeners; waits for both, then throws the first error (spec §2.4 rule 8). */
   close(): Promise<void>;
+}
+
+/**
+ * `@internal` test seam for AC-F16 — the current module state of `activeJournal`.
+ *
+ * Not re-exported from `server/index.ts` and not a public contract: a failed start must not leave a
+ * journal behind (spec §2.4 rule 11), and the only direct way to observe that is the module
+ * variable. Tests read it; production code uses {@link flushHubJournal}.
+ */
+export function activeJournalForTests(): Journal | null {
+  return activeJournal;
+}
+
+/** A request handler as `node:http` sees it; the dispatch slot is swapped after the start window. */
+type RequestHandler = (request: IncomingMessage, response: NodeResponse) => void;
+
+/**
+ * The answer both listeners give while `port 0` has its sockets bound but the origins are not
+ * resolved and validated yet (spec §2.4 rule 4, AC-F22).
+ *
+ * Deliberately written without `glueError()`: `service_not_ready` is not part of the documented
+ * `ERROR_CODES` vocabulary (spec §2.9, C10). The answer carries no CORS header, no `Location` and
+ * no `Set-Cookie`.
+ */
+function startWindowResponse(response: NodeResponse): void {
+  const body = JSON.stringify({
+    error: {
+      code: "service_not_ready",
+      message: "the hub is still starting — the listener is not ready yet, retry shortly",
+    },
+  });
+  response.writeHead(503, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+    "retry-after": "1",
+    "content-length": String(Buffer.byteLength(body)),
+  });
+  response.end(body);
+}
+
+/** The dispatch slot's start value: every request is answered `503` (see above). */
+const startWindowHandler: RequestHandler = (_request, response) => startWindowResponse(response);
+
+/**
+ * Binds one server and resolves when it is listening. A start-up failure rejects (the caller closes
+ * what it already bound); after that the error is logged instead of thrown, because an `error`
+ * event with no listener would take the process down.
+ */
+function listenServer(server: Server, port: number, host: string, quiet: boolean): Promise<void> {
+  return new Promise<void>((resolvePromise, rejectPromise) => {
+    const onStartupError = (error: Error): void => rejectPromise(error);
+    server.once("error", onStartupError);
+    server.listen(port, host, () => {
+      server.off("error", onStartupError);
+      server.on("error", (error: Error) => {
+        if (!quiet) process.stderr.write(`bluepencil server: ${oneLine(errorText(error))}\n`);
+      });
+      resolvePromise();
+    });
+  });
+}
+
+/** The live binding, straight from the socket; the configured pair is the fallback. */
+function boundAddress(server: Server, host: string, port: number): { host: string; port: number } {
+  const address = server.address();
+  if (address === null || typeof address === "string") return { host, port };
+  return { host: address.address, port: address.port };
+}
+
+/** Everything the start validation compares (spec §2.4 rule 5). */
+interface ViewerStartValidation {
+  /** True when the operator named the origin, so a wildcard bind is acceptable. */
+  readonly explicitOrigin: boolean;
+  /** The **resolved** viewer bind address the wildcard obligation follows. */
+  readonly viewerHost: string;
+  /** The resolved viewer origin V (explicit or derived from a non-wildcard address). */
+  readonly viewerOrigin: string;
+  /** The hub origin H from the bound address and the actual port. */
+  readonly hubOrigin: string;
+  /** `--cors` as configured; `undefined` means no CORS at all. */
+  readonly cors: string | undefined;
+}
+
+/**
+ * The start validation of spec §2.4 rule 5 — one function, so the pre-`listen()` (fixed ports) and
+ * post-`listen()` (`port 0`) paths cannot drift.
+ *
+ * Every failure that returns here happens after `activeJournal = journal`, so `startHub()`'s catch
+ * resets the module state; no listener is left serving either, because the caller closes what it
+ * bound before rethrowing.
+ */
+function assertViewerStart(input: ViewerStartValidation): void {
+  // Defense in depth: `resolveViewerOptions()` already refuses this before any socket exists. The
+  // check runs on the **resolved** bind, so a wildcard inherited from `--host` is caught too.
+  if (!input.explicitOrigin && isWildcardBind(input.viewerHost)) {
+    throw new HubStartupError(
+      "viewer_origin_required",
+      `the viewer is bound to a wildcard address (${JSON.stringify(input.viewerHost)}) and has no ` +
+        "explicit origin — an origin is never derived from 0.0.0.0 or [::]",
+    );
+  }
+  const viewer = normalizeOrigin(input.viewerOrigin);
+  if (viewer === null) {
+    throw new HubStartupError(
+      "viewer_origin_invalid",
+      `the viewer origin ${JSON.stringify(input.viewerOrigin)} must be an absolute http(s) origin ` +
+        "without path, query or fragment",
+    );
+  }
+  const hub = normalizeOrigin(input.hubOrigin);
+  if (hub !== null && viewer === hub) {
+    throw new HubStartupError(
+      "viewer_origin_is_hub_origin",
+      `the viewer origin ${input.viewerOrigin} is the hub origin — the viewer needs its own origin`,
+    );
+  }
+  if (input.cors === "*") {
+    throw new HubStartupError(
+      "cors_wildcard_with_viewer",
+      "CORS '*' must not be combined with a viewer — the viewer origin could read the hub journal",
+    );
+  }
+  const cors = input.cors === undefined ? null : normalizeOrigin(input.cors);
+  if (cors !== null && cors === viewer) {
+    throw new HubStartupError(
+      "cors_viewer_origin",
+      `CORS must not name the viewer origin (${input.viewerOrigin})`,
+    );
+  }
 }
 
 /**
  * Starts the hub. The store file is read and validated *before* the socket is bound, so a
  * corrupt store rejects here instead of serving an empty set (F9).
+ *
+ * With `--viewer` a second listener is bound (hub first, then viewer). Every failure after
+ * `activeJournal` was set resets it, so a later start never inherits a stale journal
+ * (spec §2.4 rule 11, AC-F16).
  */
 export async function startHub(options: HubOptions): Promise<RunningServer> {
   const resolved = resolveOptions(options);
@@ -1320,6 +1773,23 @@ export async function startHub(options: HubOptions): Promise<RunningServer> {
     },
   });
   activeJournal = journal;
+  try {
+    return await startListeners(resolved, journal, federation, options);
+  } catch (error) {
+    // Normative (spec §2.4 rule 11): a failure after the journal was selected must not leave module
+    // state behind. Every branch below either throws before a socket exists or closes what it bound
+    // before rethrowing.
+    activeJournal = null;
+    throw error;
+  }
+}
+
+async function startListeners(
+  resolved: ResolvedOptions,
+  journal: Journal,
+  federation: HubFederation | undefined,
+  options: HubOptions,
+): Promise<RunningServer> {
   const store = createFileStore({
     ...(resolved.mirror !== undefined ? { mirror: resolved.mirror } : {}),
     storePath: resolved.storePath,
@@ -1347,7 +1817,23 @@ export async function startHub(options: HubOptions): Promise<RunningServer> {
   // adds to both through `revokeToken`.
   const liveRevoked = new Set<string>(resolved.revokedTokens ?? []);
 
-  const context: HandlerContext = {
+  // One presence tracker for the whole process, so a credential accepted on the viewer surface is
+  // visible in the hub's `/admin/status` — it is the same deployment, not a second hub.
+  const presence = createPresence(
+    resolved.now === undefined
+      ? {}
+      : { now: () => new Date(resolved.now!()).getTime() },
+  );
+
+  /** The one persist closure both surfaces share (C2: one store, one journal). */
+  const persist: HandlerContext["persist"] = (state, event) => {
+    store.persist(state);
+    // The note is on disk at this point; a journal failure must never roll it back, so the journal
+    // reports its own problems and leaves the request alone (see `server/journal.ts`).
+    journal.record(describeMutation(state, event));
+  };
+
+  const hubContext: HandlerContext = {
     store: store.state,
     base: resolved.base,
     environment: resolved.environment,
@@ -1407,18 +1893,65 @@ export async function startHub(options: HubOptions): Promise<RunningServer> {
         };
       }
     },
-    ...(resolved.cors !== undefined ? { cors: resolved.cors } : {}),
-    ...(resolved.now !== undefined ? { now: resolved.now } : {}),
-    persist: (state, event) => {
-      store.persist(state);
-      // The note is on disk at this point; a journal failure must never roll it back, so the journal
-      // reports its own problems and leaves the request alone (see `server/journal.ts`).
-      journal.record(describeMutation(state, event));
-    },
+    cors: resolved.cors,
+    now: resolved.now,
+    presence,
+    persist,
+    surface: "hub",
   };
 
-  const server = createServer((request, response) => {
-    respond(request, response, resolved, context, journal, store, federation).catch((error: unknown) => {
+  const viewer = resolved.viewer;
+  /**
+   * The viewer surface is an **explicit allowlist** (spec §2.4 rule 2, C4) — deliberately not
+   * `...hubContext`: `adminSecret`, `tokenIssuer`, `revokeToken`, `devicesPath`, `revocationPath`,
+   * `root`, `registry` and `federation` must be structurally absent, not merely unused. `root` and
+   * `cors` are off here as well, so the static fallback is structurally disabled and no viewer answer
+   * carries hub CORS. `revokedTokens` is the **same** Set reference (`liveRevoked`), so a revocation
+   * through the hub's admin surface takes effect on the viewer origin without a restart (AC-5.32).
+   */
+  const viewerContext: HandlerContext | undefined =
+    viewer === undefined
+      ? undefined
+      : {
+          store: hubContext.store,
+          base: hubContext.base,
+          environment: hubContext.environment,
+          readOnly: hubContext.readOnly,
+          allowEnvMismatch: hubContext.allowEnvMismatch,
+          authSecret: hubContext.authSecret,
+          verifyToken: hubContext.verifyToken,
+          requiredScope: hubContext.requiredScope,
+          revokedTokens: hubContext.revokedTokens,
+          adminThrottle: hubContext.adminThrottle,
+          presence: hubContext.presence,
+          persist: hubContext.persist,
+          version: hubContext.version,
+          appName: hubContext.appName,
+          exportedBy: hubContext.exportedBy,
+          now: hubContext.now,
+          viewer,
+          surface: "viewer",
+          bind: { host: viewer.host, port: viewer.port },
+          hostAliases: viewer.hostAliases,
+          cors: undefined,
+        };
+
+  // The viewer listener gets its own option view: no static root and no CORS, so neither can leak
+  // onto that surface even if a path refusal were ever missed (spec §2.4 rule 2).
+  const viewerResolved: ResolvedOptions | undefined =
+    viewer === undefined ? undefined : { ...resolved, root: undefined, cors: undefined };
+
+  /* Every listener answers `503 service_not_ready` until the dispatch slot is swapped. For fixed
+   * ports that happens **before** `listen()` (origins and validation are known synchronously); for
+   * `port 0` only after both binds and the post-`listen()` validation (spec §2.4 rule 4). */
+  let hubDispatch: RequestHandler = startWindowHandler;
+  let viewerDispatch: RequestHandler = startWindowHandler;
+  const hubServer = createServer((request, response) => hubDispatch(request, response));
+  const viewerServer =
+    viewer === undefined ? undefined : createServer((request, response) => viewerDispatch(request, response));
+
+  const hubHandler: RequestHandler = (request, response) => {
+    respond(request, response, resolved, hubContext, journal, store, federation).catch((error: unknown) => {
       if (response.headersSent) {
         response.end();
         return;
@@ -1430,40 +1963,153 @@ export async function startHub(options: HubOptions): Promise<RunningServer> {
       const failure = publicError(error);
       write(response, glueError(500, failure.code, failure.message, resolved));
     });
-  });
+  };
+  const viewerHandler: RequestHandler = (request, response) => {
+    if (viewerResolved === undefined || viewerContext === undefined) {
+      startWindowResponse(response);
+      return;
+    }
+    // R2-F5: the viewer surface never speaks for the federation. `/mcp` is refused by
+    // `viewerSurfaceRefusal()` before this call, so the federation backend factory would be dead
+    // code here anyway — passing `undefined` keeps the object structurally out of the viewer's
+    // dispatch path instead of relying on that refusal alone.
+    respond(request, response, viewerResolved, viewerContext, journal, store, undefined).catch(
+      (error: unknown) => {
+        if (response.headersSent) {
+          response.end();
+          return;
+        }
+        const failure = publicError(error);
+        write(response, glueError(500, failure.code, failure.message, viewerResolved));
+      },
+    );
+  };
 
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    const onStartupError = (error: Error): void => rejectPromise(error);
-    server.once("error", onStartupError);
-    server.listen(resolved.port, resolved.host, () => {
-      server.off("error", onStartupError);
-      server.on("error", (error: Error) => {
-        if (!resolved.quiet) process.stderr.write(`bluepencil server: ${oneLine(errorText(error))}\n`);
+  /** The explicit origin as it was resolved; `undefined` means "derive from the bind". */
+  const explicitViewerOrigin = viewer?.origin;
+  const bothPortsFixed = resolved.port !== 0 && (viewer === undefined || viewer.port !== 0);
+
+  if (viewer !== undefined && viewerContext !== undefined) {
+    // The Host gate must not run bind-less in the start window, so `bind` is the configured pair
+    // until the socket replaces it (spec §2.4 rule 4).
+    viewerContext.bind = { host: viewer.host, port: viewer.port };
+    viewer.hubOrigin =
+      isLoopbackAddress(resolved.host) ? originOf(resolved.host, resolved.port, "") : undefined;
+  }
+
+  let hubBinding = { host: resolved.host, port: resolved.port };
+  let viewerBinding = viewer === undefined ? undefined : { host: viewer.host, port: viewer.port };
+
+  if (bothPortsFixed) {
+    hubContext.bind = { host: resolved.host, port: resolved.port };
+    if (viewer !== undefined && viewerContext !== undefined) {
+      if (explicitViewerOrigin === undefined) {
+        // Fixed ports: the origin is fully determined by the configured bind and the fixed port,
+        // so it is resolved *before* `listen()` and never re-derived from the socket (§4.9 no. 10).
+        viewer.origin = normalizeOrigin(originOf(viewer.host, viewer.port, "")) ?? undefined;
+      }
+      assertViewerStart({
+        explicitOrigin: explicitViewerOrigin !== undefined,
+        viewerHost: viewer.host,
+        viewerOrigin: viewer.origin ?? originOf(viewer.host, viewer.port, ""),
+        hubOrigin: originOf(resolved.host, resolved.port, ""),
+        cors: resolved.cors,
       });
-      resolvePromise();
-    });
-  });
+    }
+    hubDispatch = hubHandler;
+    viewerDispatch = viewerHandler;
+  }
 
-  const address = server.address();
-  const port = address !== null && typeof address === "object" ? address.port : resolved.port;
-  // FR-6.10: the *live* binding, straight from the socket — this is what a client reads from
-  // `{base}/config`. Deliberately not `--host`: `--host localhost` binds `::1`, and a status display
-  // that repeated the flag would call a network-reachable hub "this machine only".
-  const boundHost = address !== null && typeof address === "object" ? address.address : resolved.host;
-  context.bind = { host: boundHost, port };
+  const bound: Server[] = [];
+  try {
+    await listenServer(hubServer, resolved.port, resolved.host, resolved.quiet);
+    bound.push(hubServer);
+    if (viewerServer !== undefined && viewer !== undefined) {
+      // Hub first, then viewer — a failed second bind closes the first (AC-F12).
+      await listenServer(viewerServer, viewer.port, viewer.host, resolved.quiet);
+      bound.push(viewerServer);
+    }
+
+    const hubAddress = boundAddress(hubServer, resolved.host, resolved.port);
+    hubBinding = hubAddress;
+    // FR-6.10: the *live* binding, straight from the socket — this is what a client reads from
+    // `{base}/config`. Deliberately not `--host`: `--host localhost` binds `::1`, and a status
+    // display that repeated the flag would call a network-reachable hub "this machine only".
+    hubContext.bind = { host: hubAddress.host, port: hubAddress.port };
+    // Without a viewer there is no origin to resolve: the hub may serve the moment it is bound.
+    if (viewerServer === undefined) hubDispatch = hubHandler;
+
+    if (viewerServer !== undefined && viewer !== undefined && viewerContext !== undefined) {
+      const viewerAddress = boundAddress(viewerServer, viewer.host, viewer.port);
+      viewerBinding = viewerAddress;
+
+      if (!bothPortsFixed) {
+        // `port 0` on either side: only the socket knows the actual ports, so the origin and the
+        // whole validation run now — still before the real handler is installed.
+        if (explicitViewerOrigin === undefined) {
+          viewer.origin =
+            normalizeOrigin(originOf(viewerAddress.host, viewerAddress.port, "")) ?? undefined;
+        }
+        assertViewerStart({
+          explicitOrigin: explicitViewerOrigin !== undefined,
+          viewerHost: viewerAddress.host,
+          viewerOrigin: viewer.origin ?? originOf(viewerAddress.host, viewerAddress.port, ""),
+          hubOrigin: originOf(hubAddress.host, hubAddress.port, ""),
+          cors: resolved.cors,
+        });
+        hubDispatch = hubHandler;
+        viewerDispatch = viewerHandler;
+      }
+
+      // The launcher hint names the hub's *bind* origin, and only when that bind is loopback: a
+      // public hub origin behind a proxy is not known to this process (§4.9 no. 9).
+      viewer.hubOrigin = isLoopbackAddress(hubAddress.host)
+        ? originOf(hubAddress.host, hubAddress.port, "")
+        : undefined;
+      viewerContext.bind = { host: viewerAddress.host, port: viewerAddress.port };
+    }
+  } catch (error) {
+    await Promise.allSettled(bound.map((server) => closeServer(server)));
+    throw error;
+  }
+
+  /* The resolved viewer is needed twice below — for the warnings and for the start line — and its
+   * origin is known by now: explicit from `resolveOptions()`, or derived in the fixed/first branch
+   * above. A wildcard bind can never reach this point without an explicit origin. */
+  let runningViewer: RunningViewer | undefined;
+  if (viewer !== undefined && viewerServer !== undefined && viewerBinding !== undefined) {
+    const origin = viewer.origin ?? normalizeOrigin(originOf(viewerBinding.host, viewerBinding.port, ""))!;
+    runningViewer = {
+      server: viewerServer,
+      host: viewerBinding.host,
+      port: viewerBinding.port,
+      origin,
+      url: `${origin}${resolved.base}`,
+    };
+  }
 
   /* G1/SEC-01: the binding is only known now, so the safety warnings are decided here and written
    * before the `--quiet` check below — deliberately. `--quiet` silences progress chatter, not the
    * one line that says this hub hands every note to anyone who can reach the port; a warning that a
    * flag can switch off is not a warning. The decision itself is `startupWarnings()`, pure and
-   * testable without a socket. */
+   * testable without a socket. The viewer half (shared cookie host, plain-http bind, deprecated
+   * alias) is the same list and the same rule (spec §2.4 rule 9, AC-F13). */
   for (const warning of startupWarnings({
-    host: boundHost,
+    host: hubContext.bind?.host ?? hubBinding.host,
     credential: credentialMode({
       ...(resolved.authSecret !== undefined ? { authSecret: resolved.authSecret } : {}),
       ...(tokenIssuer !== undefined ? { verifyToken: tokenIssuer } : {}),
     }),
     cors: resolved.cors ?? null,
+    ...(viewer !== undefined && runningViewer !== undefined
+      ? {
+          viewer: {
+            host: runningViewer.host,
+            origin: runningViewer.origin,
+            usedPublicUrlAlias: viewer.publicBaseUrl !== undefined,
+          },
+        }
+      : {}),
   })) {
     process.stderr.write(`bluepencil server: ${warning.message}\n`);
   }
@@ -1473,32 +2119,45 @@ export async function startHub(options: HubOptions): Promise<RunningServer> {
    * also be `nested_federation`, but `self_reference` is the precise diagnosis). */
   if (federation !== undefined) {
     try {
-      assertNotSelfReference(federation, originOf(boundHost, port, resolved.base));
+      assertNotSelfReference(
+        federation,
+        originOf(hubBinding.host, hubBinding.port, resolved.base),
+      );
     } catch (error) {
-      activeJournal = null;
-      await closeServer(server);
+      await Promise.allSettled(bound.map((server) => closeServer(server)));
       throw error;
     }
   }
+
   if (!resolved.quiet) {
     process.stderr.write(
-      `bluepencil server: "${context.hubName}" on http://${resolved.host}:${port}${resolved.base || "/"} — ` +
-        `${store.state.notes.length} note(s), environment ${resolved.environment}, ` +
+      `bluepencil server: "${hubContext.hubName}" on http://${resolved.host}:${hubBinding.port}${resolved.base || "/"}` +
+        (runningViewer === undefined ? "" : ` — viewer on ${runningViewer.url}`) +
+        ` — ${store.state.notes.length} note(s), environment ${resolved.environment}, ` +
         `${resolved.readOnly ? "read-only" : "read-write"}, ` +
-        `${isLoopbackAddress(boundHost) ? "reachable on this machine only" : `reachable from the network (bound ${boundHost})`}, ` +
+        `${isLoopbackAddress(hubBinding.host) ? "reachable on this machine only" : `reachable from the network (bound ${hubBinding.host})`}, ` +
         `store ${resolved.storePath}\n`,
     );
   }
 
   return {
-    server,
+    server: hubServer,
     host: resolved.host,
-    port,
-    url: `http://${resolved.host}:${port}${resolved.base}`,
-    close: () =>
-      new Promise<void>((resolvePromise, rejectPromise) => {
-        server.close((error) => (error ? rejectPromise(error) : resolvePromise()));
-      }),
+    port: hubBinding.port,
+    url: `http://${resolved.host}:${hubBinding.port}${resolved.base}`,
+    ...(runningViewer === undefined ? {} : { viewer: runningViewer }),
+    close: async () => {
+      const results = await Promise.allSettled(
+        (viewerServer === undefined ? [hubServer] : [hubServer, viewerServer]).map((server) =>
+          closeServer(server),
+        ),
+      );
+      // Both closes are awaited before the first failure surfaces: one failing close must never
+      // leave the other listener running (spec §2.4 rule 8).
+      for (const result of results) {
+        if (result.status === "rejected") throw result.reason;
+      }
+    },
   };
 }
 
@@ -1533,6 +2192,15 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
     "--timeout",
     "--concurrency",
     "--limit",
+    /* Every value-taking viewer flag (AC-F14): a present flag without a value must be diagnosed,
+     * never silently read as "absent" — which would drop the viewer's whole security envelope. */
+    "--viewer-assets",
+    "--viewer-allow",
+    "--viewer-ttl",
+    "--viewer-host",
+    "--viewer-port",
+    "--viewer-origin",
+    "--viewer-public-url",
   ] as const;
   for (const flag of VALUED_FLAGS) {
     if (argv.some((arg) => arg.startsWith(`${flag}=`))) continue;
@@ -1696,12 +2364,155 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
   }
   const adminSecret = adminSecretRaw;
 
-  // The viewer (`--viewer`): an SSRF-capable door, so it exists only as a complete set — an
-  // allowlist, an operator credential and the directory holding the built layer. Every missing piece
-  // is a startup error rather than a half-open feature.
-  const viewerFlag = present("--viewer") || process.env.BLUEPENCIL_VIEWER === "1";
+  // The viewer (`--viewer`): an SSRF-capable door on a second listener, so it exists only as a
+  // complete set — a port, an allowlist, an operator credential and the directory holding the built
+  // layer. Every missing piece is a startup error rather than a half-open feature.
+  //
+  // `--viewer` is a strict boolean (AC-F17): `--viewer=false`/`BLUEPENCIL_VIEWER=0` is "off", and a
+  // non-boolean value is a usage error rather than a silent `true`. The flag wins over the env.
+  const viewerFlagValue = booleanFlag(argv, "--viewer");
+  if (typeof viewerFlagValue === "string") return viewerFlagValue;
+  const viewerEnvValue = process.env.BLUEPENCIL_VIEWER;
+  let viewerFromEnv: boolean | undefined;
+  if (viewerEnvValue !== undefined) {
+    if (viewerEnvValue === "1" || viewerEnvValue === "true") {
+      viewerFromEnv = true;
+    } else if (viewerEnvValue === "0" || viewerEnvValue === "false") {
+      viewerFromEnv = false;
+    } else {
+      return `BLUEPENCIL_VIEWER must be true or false (got ${JSON.stringify(viewerEnvValue)})`;
+    }
+  }
+  const viewerActive = present("--viewer") ? viewerFlagValue === true : viewerFromEnv === true;
+
+  /* Every viewer flag (and its environment twin) is either part of an active viewer or a usage
+   * error — a silently ignored `--viewer-port` is how a deployment believes it runs a separate
+   * origin while it does not (AC-F7). */
+  const VIEWER_VALUE_FLAGS: readonly { flag: string; env?: string }[] = [
+    { flag: "--viewer-assets", env: "BLUEPENCIL_VIEWER_ASSETS" },
+    { flag: "--viewer-allow", env: "BLUEPENCIL_VIEWER_ALLOW" },
+    { flag: "--viewer-ttl" },
+    { flag: "--viewer-host", env: "BLUEPENCIL_VIEWER_HOST" },
+    { flag: "--viewer-port", env: "BLUEPENCIL_VIEWER_PORT" },
+    { flag: "--viewer-origin", env: "BLUEPENCIL_VIEWER_ORIGIN" },
+    { flag: "--viewer-public-url", env: "BLUEPENCIL_VIEWER_PUBLIC_URL" },
+  ];
   let viewer: ServerOptions["viewer"];
-  if (viewerFlag) {
+  if (!viewerActive) {
+    const strayViewerFlag = VIEWER_VALUE_FLAGS.some(
+      ({ flag, env }) => present(flag) || (env !== undefined && process.env[env] !== undefined),
+    );
+    if (strayViewerFlag) return "--viewer-* require --viewer (viewer_flags_without_viewer)";
+  } else {
+    // Port: mandatory, because sharing the hub port is exactly the topology this feature replaces.
+    const viewerPortRaw = get("--viewer-port") ?? process.env.BLUEPENCIL_VIEWER_PORT;
+    if (viewerPortRaw === undefined) {
+      return "--viewer requires --viewer-port <port> (viewer_port_required) — the viewer must not share the hub port";
+    }
+    const viewerPort = Number(viewerPortRaw);
+    if (viewerPortRaw.trim() === "" || !Number.isInteger(viewerPort) || viewerPort < 0 || viewerPort > 65535) {
+      return `--viewer-port must be an integer between 0 and 65535 (got ${JSON.stringify(viewerPortRaw)})`;
+    }
+
+    const ttlRaw = get("--viewer-ttl");
+    let viewerTtl = DEFAULT_VIEWER_TTL_SECONDS;
+    if (ttlRaw !== undefined) {
+      const parsed = Number(ttlRaw);
+      if (
+        ttlRaw.trim() === "" ||
+        !Number.isInteger(parsed) ||
+        parsed < 60 ||
+        parsed > MAX_VIEWER_TTL_SECONDS
+      ) {
+        return `--viewer-ttl must be an integer between 60 and ${MAX_VIEWER_TTL_SECONDS} (got ${JSON.stringify(ttlRaw)}) (viewer_ttl_invalid)`;
+      }
+      viewerTtl = parsed;
+    }
+
+    // The resolved viewer bind: an explicit `--viewer-host` wins, otherwise the hub bind is
+    // inherited — including its wildcard, which triggers the same obligation (AC-F6). `""` is a
+    // real value here (unspecified address), so `??` and not `||` is what keeps the inheritance
+    // honest.
+    const resolvedHubHost = host ?? DEFAULT_HOST;
+    const viewerHostRaw = get("--viewer-host") ?? process.env.BLUEPENCIL_VIEWER_HOST;
+    const resolvedViewerHost = viewerHostRaw ?? resolvedHubHost;
+
+    // Two listeners on one address and one port cannot both bind. `0` is ephemeral and therefore
+    // never a conflict; a different bind address is a different socket (AC-F3/AC-F19). "Different"
+    // is asked semantically (`sameBind`): all wildcard spellings — `""`, `0.0.0.0`, `::`, `[::]` —
+    // mean the same unspecified socket, so spelling-only equality would let the start fail later
+    // at `listen()` with `EADDRINUSE` (F-04).
+    if (viewerPort !== 0 && port !== 0 && viewerPort === port && sameBind(resolvedViewerHost, resolvedHubHost)) {
+      return "--viewer-port must differ from --port on the same bind address (viewer_port_conflict)";
+    }
+
+    // Raw `--cors`, read before `corsOriginPolicy` because the viewer changes what is allowed.
+    const corsRaw = present("--cors") ? get("--cors") : undefined;
+    if (corsRaw !== undefined && corsRaw.trim() === "*") {
+      return "--cors '*' must not be combined with --viewer (cors_wildcard_with_viewer)";
+    }
+
+    // Origin and its deprecated alias. Both go through the one origin form; equal values are
+    // accepted, different values are a usage error instead of a coin toss (S1).
+    const originRaw = get("--viewer-origin") ?? process.env.BLUEPENCIL_VIEWER_ORIGIN;
+    const publicRaw = get("--viewer-public-url") ?? process.env.BLUEPENCIL_VIEWER_PUBLIC_URL;
+    let explicitOrigin: string | undefined;
+    let originLabel = "--viewer-origin";
+    if (originRaw !== undefined) {
+      const normalized = normalizeOrigin(originRaw);
+      if (normalized === null) {
+        return "--viewer-origin must be an absolute http(s) origin without path, query or fragment (viewer_origin_invalid)";
+      }
+      explicitOrigin = normalized;
+    }
+    if (publicRaw !== undefined) {
+      const normalized = normalizeOrigin(publicRaw);
+      if (normalized === null) {
+        return "--viewer-public-url must be an absolute http(s) origin without path, query or fragment (viewer_origin_invalid)";
+      }
+      if (explicitOrigin !== undefined && explicitOrigin !== normalized) {
+        return "--viewer-origin and --viewer-public-url disagree (viewer_origin_conflict)";
+      }
+      explicitOrigin = normalized;
+      if (originRaw === undefined) originLabel = "--viewer-public-url";
+    }
+
+    // No origin is ever derived from an unspecified address; with a wildcard bind the operator has
+    // to name the public origin. This holds for `--viewer-port 0` as well (AC-F6).
+    if (isWildcardBind(resolvedViewerHost) && explicitOrigin === undefined) {
+      return "--viewer-origin is required when the viewer bind is a wildcard address (viewer_origin_required)";
+    }
+
+    // The viewer origin is known at parse time when it is explicit, or when the port is fixed and
+    // the bind is concrete. Otherwise (`--viewer-port 0`) the post-`listen()` check applies.
+    const viewerOriginCandidate =
+      explicitOrigin ??
+      (viewerPort !== 0 && !isWildcardBind(resolvedViewerHost)
+        ? (normalizeOrigin(originOf(resolvedViewerHost, viewerPort, "")) ?? undefined)
+        : undefined);
+
+    // "Hub origin" is the bind origin when it is knowable, plus any concrete `--cors` origin: both
+    // are names this process answers under, so the viewer must not reuse either (AC-F5/AC-F21).
+    // Precedence: the bind origin is a hard identity clash; a concrete `--cors` origin names the
+    // viewer origin (`cors_viewer_origin`) unless the deprecated alias was the spelling used, in
+    // which case the alias is answering a hub origin (AC-F21).
+    const hubBindOrigin =
+      port !== 0 && !isWildcardBind(resolvedHubHost)
+        ? (normalizeOrigin(originOf(resolvedHubHost, port, "")) ?? undefined)
+        : undefined;
+    const corsOrigin =
+      corsRaw !== undefined && corsRaw.trim() !== "*" ? normalizeOrigin(corsRaw.trim()) : null;
+    if (viewerOriginCandidate !== undefined) {
+      if (viewerOriginCandidate === hubBindOrigin) {
+        return `${originLabel} must differ from the hub origin (viewer_origin_is_hub_origin)`;
+      }
+      if (corsOrigin !== null && corsOrigin === viewerOriginCandidate) {
+        return originLabel === "--viewer-public-url"
+          ? `${originLabel} must differ from the hub origin (viewer_origin_is_hub_origin)`
+          : "--cors must not name the viewer origin (cors_viewer_origin)";
+      }
+    }
+
     const assetsRaw = get("--viewer-assets") ?? process.env.BLUEPENCIL_VIEWER_ASSETS;
     if (assetsRaw === undefined || assetsRaw.length === 0) {
       return "--viewer requires --viewer-assets <dir> (the directory with the built layer bundles)";
@@ -1721,24 +2532,16 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
     if (adminSecret === undefined) {
       return "--viewer requires --admin-secret: the viewer is an operator surface";
     }
-    const ttlRaw = get("--viewer-ttl");
-    let viewerTtl = DEFAULT_VIEWER_TTL_SECONDS;
-    if (ttlRaw !== undefined) {
-      const parsed = Number(ttlRaw);
-      if (!Number.isInteger(parsed) || parsed < 60 || parsed > MAX_VIEWER_TTL_SECONDS) {
-        return `--viewer-ttl must be an integer between 60 and ${MAX_VIEWER_TTL_SECONDS} seconds`;
-      }
-      viewerTtl = parsed;
-    }
-    const publicRaw = get("--viewer-public-url") ?? process.env.BLUEPENCIL_VIEWER_PUBLIC_URL;
-    if (publicRaw !== undefined && !/^https?:\/\//.test(publicRaw)) {
-      return "--viewer-public-url must be an absolute http(s) URL";
-    }
     viewer = {
+      ...(viewerHostRaw === undefined ? {} : { host: viewerHostRaw }),
+      port: viewerPort,
+      ...(explicitOrigin === undefined ? {} : { origin: explicitOrigin }),
+      ...(publicRaw === undefined || explicitOrigin === undefined
+        ? {}
+        : { publicBaseUrl: explicitOrigin }),
       assetsDir: resolve(assetsRaw),
       allow,
       ttlSeconds: viewerTtl,
-      ...(publicRaw === undefined ? {} : { publicBaseUrl: publicRaw.replace(/\/+$/, "") }),
     };
   }
 
@@ -1859,8 +2662,12 @@ Usage:
     [--journal-coalesce <ms>] [--journal-author "Name <mail>"] [--journal-subject "<template>"]
     [--app "<text>"] [--registry <path>] [--include-self|--no-self] [--allow-write] [--allow-insecure]
     [--timeout <ms>] [--concurrency <1..16>] [--limit <1..1000>]
+    [--viewer --viewer-port <port> --viewer-assets <dir> --viewer-allow <host[,host]>]
+    [--viewer-host <host>] [--viewer-origin <url>] [--viewer-ttl <seconds>] [--viewer-public-url <url>]
       env: BLUEPENCIL_APP, BLUEPENCIL_REGISTRY, BLUEPENCIL_AUTH_SECRET, BLUEPENCIL_ADMIN_SECRET,
-           BLUEPENCIL_JOURNAL (backend), BLUEPENCIL_JOURNAL_AUTHOR, BLUEPENCIL_JOURNAL_SUBJECT
+           BLUEPENCIL_JOURNAL (backend), BLUEPENCIL_JOURNAL_AUTHOR, BLUEPENCIL_JOURNAL_SUBJECT,
+           BLUEPENCIL_VIEWER, BLUEPENCIL_VIEWER_PORT, BLUEPENCIL_VIEWER_HOST, BLUEPENCIL_VIEWER_ORIGIN,
+           BLUEPENCIL_VIEWER_PUBLIC_URL, BLUEPENCIL_VIEWER_ASSETS, BLUEPENCIL_VIEWER_ALLOW
       a flag wins over the env; without an author the commits carry the repository's identity,
       and the journal status reports which identity is in use
 
@@ -1946,6 +2753,18 @@ Binding (G1): a bind other than loopback without --auth-secret/--token-key is al
 LAN and lab setups keep working — but it prints a warning on stderr that --quiet does not suppress,
 because the notes, the journal location and the author identity are readable by anyone who can
 reach the port.
+
+Viewer (issue #140): --viewer starts a SECOND listener on its own origin. It requires
+--viewer-port (0..65535; the viewer must not share the hub port), --viewer-assets, --viewer-allow
+and --admin-secret. --viewer-host defaults to the hub bind address. A wildcard bind ("", 0.0.0.0,
+::, [::]) — explicit or inherited from --host — requires an explicit --viewer-origin; no origin is
+ever derived from an unspecified address. --viewer-origin must be a bare http(s) origin (no path,
+query or fragment) and must differ from the hub origin. --viewer-public-url is a deprecated alias
+with the same rules and prints a warning for one release period. --viewer-ttl is 60..604800
+seconds (default 28800). --cors '*' and a --cors equal to the viewer origin are refused with
+--viewer. Every viewer flag without an active --viewer is a usage error, and a viewer flag without
+a value is diagnosed, never read as absent. Viewer warnings (shared host name, non-loopback plain
+http, deprecated alias) are not suppressed by --quiet.
 
 Journal (FR-18): the hub keeps a history of every accepted mutation. --journal auto (default)
 commits through the surrounding git work tree when there is one (staged paths, empty diffs skipped,

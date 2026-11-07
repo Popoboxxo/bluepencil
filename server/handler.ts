@@ -77,7 +77,12 @@ import { canonicalNote } from "../src/data/canonical";
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { validateNote } from "../src/data/schema";
 import { AUTH_HEADER_SECRET, AUTH_HEADER_TOKEN } from "../src/core/protocol-headers";
-import { corsHeaders, preflightResponse } from "./cors";
+import {
+  corsHeaders,
+  preflightResponse,
+  responseCorsHeaders,
+  viewerBookmarkletPreflight,
+} from "./cors";
 import { errorText, oneLine } from "./text";
 import { presenceOf, type PresenceTracker } from "./presence";
 import { credentialMode } from "./credentials";
@@ -87,10 +92,17 @@ import { credentialMode } from "./credentials";
 // bundle). `adminGate` is the header-only half: it decides whether this request is an admin request
 // and whether it may proceed, before anything reads a body (SEC-08).
 import { adminGate, handleAdmin } from "./admin";
-import { viewerAuthorized, type ViewerOptions } from "./viewer";
+import { viewerAuthorized, viewerSessionRefusalMessage, type ViewerOptions } from "./viewer";
 
 // Re-exported so the existing imports from `./handler` keep working; the implementation lives in
 // `server/cors.ts`, which imports nothing and can therefore be used from `server/admin.ts` too.
+//
+// `responseCorsHeaders()` takes the structural `ResponseCorsContext` from `server/cors.ts` rather
+// than this module's `HandlerContext`, because that module has no runtime imports by design. The two
+// cannot drift: `HandlerContext` satisfies `ResponseCorsContext` structurally (`base`, `cors` and
+// `surface` are the whole contract), so every call below type-checks without a cast. Converging the
+// exported signature on `HandlerContext` itself is a change to `server/cors.ts` (R1 finding F-06)
+// and deliberately not made from this file.
 export { corsHeaders, preflightResponse };
 
 /** Version reported by `GET {base}/health` — the same string every other artifact reports (FR-19). */
@@ -188,6 +200,15 @@ export interface ServerResponse {
 }
 
 /**
+ * The part of a request the CORS answer reads (spec §2.5 rule 3): the target (is this
+ * `{base}/notes*`?), the method (never an `OPTIONS`) and the `Origin` header.
+ *
+ * Deliberately narrower than `ServerRequest`: a response helper that answers with CORS metadata has
+ * no reason to read a body or a credential, and this type makes that a compile-time property.
+ */
+type CorsRequest = Pick<ServerRequest, "url" | "headers" | "method">;
+
+/**
  * The in-memory note set of one running hub. It is the source of truth while the process runs
  * and is reloaded from the store file at startup (`server/index.ts`); a mutation replaces the
  * array (never mutates it in place), which is what makes a rolled-back write cheap.
@@ -248,6 +269,24 @@ export interface AdminThrottle {
   success(remote: string | undefined, kind?: ThrottleKind): void;
 }
 
+/**
+ * Which listener answered this request (spec §2.1, D3).
+ *
+ * `startHub()` binds two listeners from one `baseContext` and marks only the viewer one; everything
+ * else — an embedded host, a pure unit test, the 0.13.0 single-listener hub — is the hub. The
+ * surface is the one security switch of 0.14.0: `authorize()` and the two path refusals branch on
+ * it, and nothing else does.
+ */
+export type HubSurface = "hub" | "viewer";
+
+/**
+ * The surface this context belongs to. Total and stateless: only the literal `"viewer"` selects the
+ * viewer, so a missing (0.13.0) or unexpected value can never fall into a third, ungated state.
+ */
+export function surfaceOf(context: HandlerContext): HubSurface {
+  return context.surface === "viewer" ? "viewer" : "hub";
+}
+
 /** Everything the pure handler needs: the set, the deployment settings and the persist hook. */
 export interface HandlerContext {
   store: NoteStoreState;
@@ -297,6 +336,11 @@ export interface HandlerContext {
    * right one: an empty list is a working deployment, not a broken one.
    */
   revokedTokens?: ReadonlySet<string>;
+  /**
+   * Which listener this context belongs to (spec §2.1). Set by `startHub` on the viewer listener;
+   * absent — an embedded host, a unit test, the 0.13.0 single-listener hub — means the hub.
+   */
+  surface?: HubSurface;
   /**
    * The admin surface's own credential (`--admin-secret`); absent means this hub has no admin
    * surface at all — the routes answer 404 rather than a guarded page.
@@ -581,6 +625,50 @@ export function normalizeBase(base: string): string {
 }
 
 /**
+ * Placeholder origin for `normalizeSurfacePath()`: a request target may be a path or an absolute
+ * URL, and only the path matters here. The host is never dereferenced — it exists so `new URL` can
+ * parse a relative target.
+ */
+const SURFACE_URL_BASE = "http://hub.invalid";
+
+/**
+ * The one path normalisation behind both surface refusals (spec §2.1 rule 4).
+ *
+ * Order matters and is the security property: the path is parsed, the query is dropped, the path is
+ * percent-decoded **exactly once**, and only then are `.`/`..` resolved and empty segments dropped.
+ * Decoding after resolution would let `%2e%2e` walk past a prefix check; decoding twice would turn
+ * `%252e%252e` into `..` after the same check. The result always starts with `/` and never contains
+ * a `.` or `..` segment.
+ *
+ * `null` only when the URL part cannot be parsed at all (a malformed absolute URL or a stray `%`).
+ * Both refusals decide what `null` means for their surface; this function does not guess.
+ */
+export function normalizeSurfacePath(url: string): string | null {
+  let pathname: string;
+  try {
+    pathname = new URL(url, SURFACE_URL_BASE).pathname;
+  } catch {
+    return null;
+  }
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  const segments: string[] = [];
+  for (const segment of decoded.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") {
+      segments.pop();
+      continue;
+    }
+    segments.push(segment);
+  }
+  return `/${segments.join("/")}`;
+}
+
+/**
  * Path of a request target, never the host: a target like `//evil.example/notes` is a path on this
  * server (it is not protocol-relative in an HTTP request line), which keeps the router honest.
  */
@@ -727,6 +815,7 @@ export function hostRefusal(
       `Host ${JSON.stringify(host)} is not a loopback name — this hub is bound to ${bind.host} and ` +
         "answers only localhost, 127.0.0.0/8, [::1] and configured aliases",
       context,
+      refusalRequest(request.headers),
     );
   }
   return null;
@@ -742,7 +831,7 @@ export function hostRefusal(
  * `listen()`, so a status display reading this is right about "this machine only" versus "reachable
  * from the network" even when `--host localhost` bound `::1` instead of `127.0.0.1`.
  */
-function configResponse(context: HandlerContext): ServerResponse {
+function configResponse(context: HandlerContext, request: CorsRequest): ServerResponse {
   // One helper decides which credentials exist (`server/credentials.ts`). `/config` deliberately
   // keeps its three-value vocabulary (`none` | `secret` | `token`) because it is the pre-credential
   // probe clients parse — `src/federation/client.ts` accepts exactly those three — so a hub that
@@ -770,16 +859,34 @@ function configResponse(context: HandlerContext): ServerResponse {
           : { host: bind.host, port: bind.port, loopbackOnly: isLoopbackAddress(bind.host) },
     },
     context,
+    request,
   );
 }
 
-function json(status: number, payload: unknown, context: HandlerContext): ServerResponse {
+/**
+ * The request shape of a refusal that ran before the router knew a target — `hostRefusal()` and the
+ * two surface refusals.
+ *
+ * Such an answer must never reflect a viewer origin: it is not a `{base}/notes*` response, and the
+ * surface refusals run before that decision is made. On the hub, `responseCorsHeaders()` still reads
+ * `context.cors`, so the `--cors` vocabulary of these answers is byte-identical to 0.13.0.
+ */
+function refusalRequest(headers: ServerRequest["headers"] = {}): CorsRequest {
+  return { url: "", method: "GET", headers };
+}
+
+function json(
+  status: number,
+  payload: unknown,
+  context: HandlerContext,
+  request: CorsRequest,
+): ServerResponse {
   return {
     status,
     headers: {
       "content-type": JSON_CONTENT_TYPE,
       "cache-control": "no-store",
-      ...corsHeaders(context.cors),
+      ...responseCorsHeaders(request, context),
     },
     body: JSON.stringify(payload),
   };
@@ -790,13 +897,14 @@ function errorResponse(
   code: ServerErrorCode,
   message: string,
   context: HandlerContext,
+  request: CorsRequest,
 ): ServerResponse {
   return {
     status,
     headers: {
       "content-type": JSON_CONTENT_TYPE,
       "cache-control": "no-store",
-      ...corsHeaders(context.cors),
+      ...responseCorsHeaders(request, context),
     },
     body: errorBody(code, message),
   };
@@ -832,11 +940,15 @@ export function publicError(error: unknown): { code: ServerErrorCode; message: s
 }
 
 /** Maps a thrown refusal/validation failure onto the documented answer. */
-function toErrorResponse(error: unknown, context: HandlerContext): ServerResponse {
+function toErrorResponse(
+  error: unknown,
+  context: HandlerContext,
+  request: CorsRequest,
+): ServerResponse {
   const { code, message } = publicError(error);
   // An unexpected failure is a 500; the two recognised refusals keep the status they always had.
   const status = error instanceof HttpError ? error.status : code === "internal_error" ? 500 : 400;
-  return errorResponse(status, code, message, context);
+  return errorResponse(status, code, message, context, request);
 }
 
 /**
@@ -846,6 +958,7 @@ function toErrorResponse(error: unknown, context: HandlerContext): ServerRespons
  */
 function applyMutation(
   context: HandlerContext,
+  request: CorsRequest,
   mutate: () => ServerResponse,
   event?: MutationEvent | (() => MutationEvent),
 ): ServerResponse {
@@ -855,7 +968,7 @@ function applyMutation(
     response = mutate();
   } catch (error) {
     context.store.notes = previous;
-    return toErrorResponse(error, context);
+    return toErrorResponse(error, context, request);
   }
   if (context.persist) {
     try {
@@ -865,7 +978,7 @@ function applyMutation(
       // The medium failed. The caller learns only that this was an internal error; the path and the
       // fs wording go to stderr (SEC-09), because a response body is cached, proxied and logged.
       const failure = publicError(error);
-      return errorResponse(500, failure.code, failure.message, context);
+      return errorResponse(500, failure.code, failure.message, context, request);
     }
   }
   return response;
@@ -1192,15 +1305,24 @@ function assertEnvironment(noteEnvironment: Environment, context: HandlerContext
  * The endpoints (contract §3)
  * ---------------------------------------------------------------------------------------------- */
 
-function health(context: HandlerContext): ServerResponse {
-  return json(200, { ok: true, status: "ok", version: context.version ?? SERVER_VERSION }, context);
+function health(context: HandlerContext, request: CorsRequest): ServerResponse {
+  return json(
+    200,
+    { ok: true, status: "ok", version: context.version ?? SERVER_VERSION },
+    context,
+    request,
+  );
 }
 
-function listNotes(query: URLSearchParams, context: HandlerContext): ServerResponse {
+function listNotes(
+  query: URLSearchParams,
+  context: HandlerContext,
+  request: CorsRequest,
+): ServerResponse {
   const filter = filterFromQuery(query);
   // One filter predicate for UI, CLI, MCP and the hub (FR-15.3), then the shared review order.
   const matching = sortForReview(filterNotes(context.store.notes, filter));
-  return json(200, { notes: matching.map(canonicalNote) }, context);
+  return json(200, { notes: matching.map(canonicalNote) }, context, request);
 }
 
 /** `createBundle` derives the sessions from the notes' `sessionRef` — the one implementation. */
@@ -1222,7 +1344,12 @@ function bundleOf(context: HandlerContext) {
  * a 404 unless the caller named that environment explicitly (NFR-18 keeps *writes* strict; reading
  * stays opt-in per environment).
  */
-function readNote(id: string, query: URLSearchParams, context: HandlerContext): ServerResponse {
+function readNote(
+  id: string,
+  query: URLSearchParams,
+  context: HandlerContext,
+  request: CorsRequest,
+): ServerResponse {
   const note = context.store.notes.find((candidate) => candidate.id === id);
   if (note === undefined) {
     refuse(404, "not_found", `no note with id ${JSON.stringify(id)}`);
@@ -1240,7 +1367,7 @@ function readNote(id: string, query: URLSearchParams, context: HandlerContext): 
       refuse(404, "not_found", `note ${JSON.stringify(id)} is not part of the ${wanted} environment`);
     }
   }
-  return json(200, { note: canonicalNote(note) }, context);
+  return json(200, { note: canonicalNote(note) }, context, request);
 }
 
 function createNoteFromBody(request: ServerRequest, context: HandlerContext): ServerResponse {
@@ -1259,7 +1386,7 @@ function createNoteFromBody(request: ServerRequest, context: HandlerContext): Se
   // a usable origin, so `"file:///x"` is a 400 instead of a note that silently belongs to no site.
   const origin = payload.origin === undefined ? undefined : originField(payload.origin);
   let created = "";
-  return applyMutation(context, () => {
+  return applyMutation(context, request, () => {
     if (requested !== undefined) assertEnvironment(requested, context);
     const draft: NoteDraft = {
       ...(payload as unknown as NoteDraft),
@@ -1279,7 +1406,7 @@ function createNoteFromBody(request: ServerRequest, context: HandlerContext): Se
     }
     context.store.notes = [...context.store.notes, note];
     created = note.id;
-    return json(200, { note: canonicalNote(note) }, context);
+    return json(200, { note: canonicalNote(note) }, context, request);
   }, () => ({ op: "create", noteId: created, ...(actor === undefined ? {} : { actor }) }));
 }
 
@@ -1287,7 +1414,7 @@ function patchNote(id: string, request: ServerRequest, context: HandlerContext):
   const patch = patchFromBody(readJsonObject(request));
   const note = findNote(context, id);
   const actor = actorOf(request);
-  return applyMutation(context, () => {
+  return applyMutation(context, request, () => {
     assertEnvironment(note.environment, context);
     const next = applyPatch(note, patch, context.now ? context.now() : undefined);
     // Promotion (FR-14.8): an accepted write never leaves a second environment behind.
@@ -1297,7 +1424,7 @@ function patchNote(id: string, request: ServerRequest, context: HandlerContext):
       throw new BluepencilValidationError(issues);
     }
     context.store.notes = context.store.notes.map((candidate) => (candidate.id === id ? next : candidate));
-    return json(200, { note: canonicalNote(next) }, context);
+    return json(200, { note: canonicalNote(next) }, context, request);
   }, { op: "update", noteId: id, ...(actor === undefined ? {} : { actor }) });
 }
 
@@ -1305,7 +1432,7 @@ function appendMessageToNote(id: string, request: ServerRequest, context: Handle
   const payload = readJsonObject(request);
   const note = findNote(context, id);
   const actor = actorOf(request, payload);
-  return applyMutation(context, () => {
+  return applyMutation(context, request, () => {
     assertEnvironment(note.environment, context);
     const message = messageFromBody(payload, context);
     // Append-only: the shared model helper extends the thread and bumps `updatedAt` (FR-3.3).
@@ -1316,7 +1443,7 @@ function appendMessageToNote(id: string, request: ServerRequest, context: Handle
       throw new BluepencilValidationError(issues);
     }
     context.store.notes = context.store.notes.map((candidate) => (candidate.id === id ? next : candidate));
-    return json(200, { note: canonicalNote(next) }, context);
+    return json(200, { note: canonicalNote(next) }, context, request);
   }, { op: "message", noteId: id, ...(actor === undefined ? {} : { actor }) });
 }
 
@@ -1341,7 +1468,7 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
   const filter = rawFilter !== undefined ? filterFromBody(rawFilter) : null;
 
   let removedCount = 0;
-  return applyMutation(context, () => {
+  return applyMutation(context, request, () => {
     const selected =
       ids !== null
         ? context.store.notes.filter((note) => (ids as string[]).includes(note.id))
@@ -1364,7 +1491,7 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
     const removed = context.store.notes.length - remaining.length;
     context.store.notes = remaining;
     removedCount = removed;
-    return json(200, { removed }, context);
+    return json(200, { removed }, context, request);
   }, () => ({ op: "bulk-delete", ...(removedCount === 0 ? {} : { removed: removedCount }), ...(actor === undefined ? {} : { actor }) }));
 }
 
@@ -1374,7 +1501,11 @@ function bulkDelete(request: ServerRequest, context: HandlerContext): ServerResp
  * It names no secret, no kind and no attempt count — the only useful fact is "wait". `Retry-After`
  * is the window the budget names, so a client can act on it instead of guessing.
  */
-function throttledResponse(kind: ThrottleKind, context: HandlerContext): ServerResponse {
+function throttledResponse(
+  kind: ThrottleKind,
+  context: HandlerContext,
+  request: CorsRequest,
+): ServerResponse {
   const budget = THROTTLE_BUDGETS[kind];
   const seconds = Math.ceil(budget.windowMs / 1000);
   return {
@@ -1383,13 +1514,99 @@ function throttledResponse(kind: ThrottleKind, context: HandlerContext): ServerR
       "content-type": JSON_CONTENT_TYPE,
       "cache-control": "no-store",
       "retry-after": String(seconds),
-      ...corsHeaders(context.cors),
+      ...responseCorsHeaders(request, context),
     },
     body: errorBody(
       "too_many_attempts",
       `too many failed credential checks from this address — wait ${seconds}s before trying again`,
     ),
   };
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * Surface refusals (spec §2.1 rules 5/6/9/10)
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * True for a viewer *content* route when written as a leading-slash path, in either spelling
+ * (`{base}/…` as sliced by `pathWithin`, or the unprefixed form). False for everything else,
+ * including the hub-side launcher `{base}/viewer/start`, which must stay reachable.
+ */
+function isViewerContentPath(path: string | null): boolean {
+  if (path === null) return false;
+  if (path === "/viewer/start") return false;
+  return (
+    path === "/viewer" ||
+    path === "/view" ||
+    path === "/viewer/bookmarklet.txt" ||
+    path.startsWith("/viewer/assets/")
+  );
+}
+
+/**
+ * 404 on the hub surface for the viewer content routes, so `--root` can never serve an `index.html`
+ * under a viewer path (spec §2.1 rule 9).
+ *
+ * Both spellings are refused: `{base}/viewer…` (which the viewer listener answers) and the
+ * unprefixed `/viewer…` (which reaches the static fallback). The launcher `{base}/viewer/start` is
+ * deliberately not refused. The check is header-only: no body read, no store load, idempotent.
+ *
+ * Returns `null` on the viewer surface and for every other path.
+ */
+export function hubViewerPathRefusal(
+  request: Pick<ServerRequest, "url">,
+  context: HandlerContext,
+): ServerResponse | null {
+  if (surfaceOf(context) !== "hub") return null;
+  const path = normalizeSurfacePath(request.url ?? "");
+  if (path === null) return null;
+  const base = normalizeBase(context.base);
+  if (!isViewerContentPath(pathWithin(path, base)) && !isViewerContentPath(path)) return null;
+  return errorResponse(404, "not_found", `unknown endpoint ${path}`, context, refusalRequest());
+}
+
+/**
+ * 404 on the viewer surface for every route the viewer origin must not have (spec §2.1 rule 10):
+ * `{base}/admin*`, `{base}/mcp`, `{base}/journal`, `{base}/config`, `{base}/viewer/start`, and any
+ * path outside `{base}` (which is what keeps the `--root` static fallback structurally off).
+ *
+ * The viewer API — shell, `/view`, assets, bookmarklet, `notes*`, `sessions`, `bundle`, `health` — is
+ * left to the router. `{base}` itself is neither refused here nor a viewer route; the router's
+ * unknown-path 404 answers it. Prefix matches use a segment boundary via `pathWithin`.
+ *
+ * Returns `null` on the hub surface and for allowed viewer paths.
+ */
+export function viewerSurfaceRefusal(
+  request: Pick<ServerRequest, "url">,
+  context: HandlerContext,
+): ServerResponse | null {
+  if (surfaceOf(context) !== "viewer") return null;
+  const path = normalizeSurfacePath(request.url ?? "");
+  // Fail closed: an unparseable target is not a viewer route.
+  if (path === null) {
+    return errorResponse(
+      404,
+      "not_found",
+      "unknown endpoint — the viewer serves only its own routes",
+      context,
+      refusalRequest(),
+    );
+  }
+  const rest = pathWithin(path, normalizeBase(context.base));
+  if (rest === null) {
+    return errorResponse(404, "not_found", `unknown endpoint ${path}`, context, refusalRequest());
+  }
+  const segments = rest.split("/").filter((segment) => segment !== "");
+  const head = segments[0] ?? "";
+  const refused =
+    head === "admin" ||
+    (head === "mcp" && segments.length === 1) ||
+    (head === "journal" && segments.length === 1) ||
+    (head === "config" && segments.length === 1) ||
+    (head === "viewer" && segments.length === 2 && segments[1] === "start");
+  return refused
+    ? errorResponse(404, "not_found", `unknown endpoint ${path}`, context, refusalRequest())
+    : null;
 }
 
 /**
@@ -1405,6 +1622,15 @@ function throttledResponse(kind: ThrottleKind, context: HandlerContext): ServerR
  * operator already holds, so note handling stays implemented exactly once. It is deliberately not a
  * client credential on the MCP door (which never opts in) and it does not configure authentication:
  * a hub with no client credential still has no gate, and the admin surface does not turn one on.
+ * On the viewer surface it is never honoured (spec §2.1 rule 2.4): the admin secret guards a hub
+ * surface that the viewer origin does not have.
+ *
+ * **The surface is the security switch (spec §2.1 rule 2/3, AC-5.10/5.11).** On `"viewer"` a valid
+ * viewer session is accepted, an unconfigured client credential is a fail-closed `401` (the hub's
+ * "open by default" does not travel), and the credential procedure is otherwise the one below — with
+ * `context.revokedTokens` (the same live set as the hub) and `context.requiredScope`. On `"hub"`
+ * `viewerAuthorized()` is never consulted, so a `bp_viewer` cookie or `x-bluepencil-viewer` header
+ * authorizes nothing on the hub port.
  *
  * **Every** comparison runs through the injected throttle (SEC-03, SEC-07, G2): the admin secret on
  * `/notes*` uses the same `admin` budget as `/admin/*`, the shared secret its own `secret` budget,
@@ -1428,19 +1654,27 @@ export function authorize(
   options?: { allowAdminSecret?: boolean },
 ): ServerResponse | null {
   const method = (request.method ?? "GET").toUpperCase();
+  const surface = surfaceOf(context);
   const verifier = context.verifyToken;
   const secret = context.authSecret;
   const adminSecret = context.adminSecret;
   const presentedToken = bearerToken(request);
   const secretAttempt = typeof secret === "string" && secret.length > 0;
   // The gate exists only when a credential was configured. An admin secret alone is not one: it
-  // guards the admin routes, not the notes a client reads.
-  if (verifier === undefined && !secretAttempt) return null;
-
-  // The viewer's session token authorizes the note routes: the layer inside a proxied page has to
-  // write with the session its page was served under. It deliberately does not open the MCP door
-  // (that credential belongs to a client) and never the admin routes (their own header decides).
-  if (!(request.url ?? "").includes("/mcp") && viewerAuthorized(request, context)) {
+  // guards the admin routes, not the notes a client reads. This is the *hub* rule; the viewer
+  // surface is fail-closed and branches below.
+  if (surface === "viewer") {
+    // The viewer's session is the primary key on the viewer origin: the layer inside a proxied page
+    // has to write with the session its page was served under. Cookie and bookmarklet header both
+    // count. The hub deliberately does not consult this (AC-5.11): the cookie is not port-isolated,
+    // so it *will* arrive on the hub port and must authorize nothing there.
+    if (viewerAuthorized(request, context)) return null;
+    // Fail-closed (AC-5.10): the viewer origin must not be open just because no `--auth-secret` /
+    // `--token-key` was configured. This runs before the hub's "no credential → open" return.
+    if (verifier === undefined && !secretAttempt) {
+      return errorResponse(401, "unauthorized", viewerSessionRefusalMessage(context), context, request);
+    }
+  } else if (verifier === undefined && !secretAttempt) {
     return null;
   }
 
@@ -1457,7 +1691,7 @@ export function authorize(
   // A signed token is verified first and on its own: an invalid token is refused rather than
   // retried as a secret, so a device cannot downgrade from "my token was revoked" to "try a secret".
   if (presentedToken !== undefined && verifier !== undefined) {
-    if (!allowed("token")) return throttledResponse("token", context);
+    if (!allowed("token")) return throttledResponse("token", context, request);
     const verdict = verifier(presentedToken, required, context.revokedTokens ?? EMPTY_REVOKED);
     if (!verdict.ok) {
       // Only a credential that failed authentication spends the budget. `insufficient_scope` means
@@ -1470,6 +1704,7 @@ export function authorize(
         refusal.code,
         `${refusal.advice} — the token was refused because it is ${verdict.reason}`,
         context,
+        request,
       );
     }
     throttle?.success(request.remote, "token");
@@ -1483,7 +1718,10 @@ export function authorize(
 
   const presented = headerValue(request.headers, AUTH_HEADER_SECRET);
   const adminAttempt =
-    options?.allowAdminSecret === true && typeof adminSecret === "string" && adminSecret.length > 0;
+    surface === "hub" &&
+    options?.allowAdminSecret === true &&
+    typeof adminSecret === "string" &&
+    adminSecret.length > 0;
 
   if (presented === undefined) {
     // Nothing to compare: a missing header is not a guess and does not spend a budget. The message
@@ -1494,12 +1732,14 @@ export function authorize(
           "unauthorized",
           `missing ${AUTH_HEADER_SECRET} — this hub requires authentication (--auth-secret)`,
           context,
+          request,
         )
       : errorResponse(
           401,
           "unauthorized",
           `missing ${AUTH_HEADER_TOKEN}: Bearer <token> — this hub requires a signed token (--token-key)`,
           context,
+          request,
         );
   }
 
@@ -1507,12 +1747,12 @@ export function authorize(
   // matched, so an exhausted admin budget cannot refuse a correct client secret. `secretsMatch` is
   // the constant-time comparison; its result is not logged either way.
   if (adminAttempt && secretsMatch(adminSecret as string, presented)) {
-    if (!allowed("admin")) return throttledResponse("admin", context);
+    if (!allowed("admin")) return throttledResponse("admin", context, request);
     throttle?.success(request.remote, "admin");
     return null;
   }
   if (secretAttempt && secretsMatch(secret as string, presented)) {
-    if (!allowed("secret")) return throttledResponse("secret", context);
+    if (!allowed("secret")) return throttledResponse("secret", context, request);
     throttle?.success(request.remote, "secret");
     // The shared secret got in. Stamped per kind, never per client: every browser holding this one
     // string is indistinguishable here, and `presence.ts` says so on the page.
@@ -1522,8 +1762,8 @@ export function authorize(
 
   // Nothing matched. An exhausted budget answers 429 instead of another 401, so a peer learns to
   // stop instead of continuing to spend comparisons; otherwise the attempt is counted per kind.
-  if (secretAttempt && !allowed("secret")) return throttledResponse("secret", context);
-  if (adminAttempt && !allowed("admin")) return throttledResponse("admin", context);
+  if (secretAttempt && !allowed("secret")) return throttledResponse("secret", context, request);
+  if (adminAttempt && !allowed("admin")) return throttledResponse("admin", context, request);
   if (secretAttempt) throttle?.failure(request.remote, "secret");
   if (adminAttempt) throttle?.failure(request.remote, "admin");
 
@@ -1534,6 +1774,7 @@ export function authorize(
       ? `invalid ${AUTH_HEADER_SECRET} — this hub requires authentication (--auth-secret)`
       : `missing ${AUTH_HEADER_TOKEN}: Bearer <token> — this hub requires a signed token (--token-key)`,
     context,
+    request,
   );
 }
 
@@ -1551,7 +1792,7 @@ export function handleRequest(request: ServerRequest, context: HandlerContext): 
   try {
     return routeRequest(request, context);
   } catch (error) {
-    return toErrorResponse(error, context);
+    return toErrorResponse(error, context, request);
   }
 }
 
@@ -1581,8 +1822,10 @@ export type GateResult =
  * reads a body only when it returns `{ kind: "route" }`. The router calls it too, so the order is
  * one implementation rather than a second copy that can drift:
  *
- *   Host check (SEC-02, always first) → admin gate (header-only) → unknown path 404 → CORS
- *   preflight → `/config` and `/health` → credential check → route.
+ *   Host check (SEC-02, always first) → hub viewer-path refusal (hub) → viewer surface refusal
+ *   (viewer) → admin gate (hub, header-only) → unknown path 404 → CORS preflight (the viewer answers
+ *   its `OPTIONS` here and never reaches the credential check) → `/config` and `/health` → credential
+ *   check → route.
  *
  * Everything returned as a response is body-independent by construction. The credential check is
  * called here and *only* here for the notes API, which is what makes "auth before body/store" a
@@ -1598,16 +1841,34 @@ export function gateRequest(request: ServerRequest, context: HandlerContext): Ga
   if (refusedHost !== null) {
     return { kind: "response", response: refusedHost };
   }
+
+  const surface = surfaceOf(context);
+
+  // The surface split (spec §2.1 rules 5/6) is the one security boundary, so its two refusals run
+  // before anything that could answer a route: the admin gate, the unknown-path table, the
+  // preflight and the two public probes. Each refusal is a no-op on the other surface.
+  const viewerPathOnHub = hubViewerPathRefusal(request, context);
+  if (viewerPathOnHub !== null) {
+    return { kind: "response", response: viewerPathOnHub };
+  }
+  const unservedOnViewer = viewerSurfaceRefusal(request, context);
+  if (unservedOnViewer !== null) {
+    return { kind: "response", response: unservedOnViewer };
+  }
+
   const base = normalizeBase(context.base);
   const { pathname, query } = parseRequestUrl(request.url);
   const method = (request.method ?? "GET").toUpperCase();
   const rest = pathWithin(pathname, base);
+  // The admin surface exists on the hub listener only (spec §2.1 rule 6). The viewer refusal above
+  // has already answered every `{base}/admin*` request, so this guard is defence in depth: a second
+  // path must not be able to reach the operator surface by missing the first one.
   // The admin surface decides its own existence — `adminGate` reports `none` unless
   // `--admin-secret` is configured — so it is asked before this router's own table: a route that
   // can be switched off must not be listed in a table that cannot, or it would announce itself on a
   // hub that has no admin surface at all. Its gate is header-only; the body-dependent dispatch
   // (`handleAdmin`) runs after the glue has read the body.
-  if (rest !== null) {
+  if (surface === "hub" && rest !== null) {
     const admin = adminGate(request, context);
     if (admin.kind === "response") {
       return { kind: "response", response: admin.response };
@@ -1622,8 +1883,44 @@ export function gateRequest(request: ServerRequest, context: HandlerContext): Ga
   if (allow === null) {
     return {
       kind: "response",
-      response: errorResponse(404, "not_found", `unknown endpoint ${pathname} — the API lives under ${base || "/"}`, context),
+      response: errorResponse(
+        404,
+        "not_found",
+        `unknown endpoint ${pathname} — the API lives under ${base || "/"}`,
+        context,
+        request,
+      ),
     };
+  }
+  // The viewer surface has no general CORS and, above all, never answers an `OPTIONS` from
+  // `authorize()` (spec §2.1 rule 11): a browser sends the preflight without a credential, so a
+  // `401` here could only block the bookmarklet without protecting anything. Only the bookmarklet's
+  // own requested header earns the `204`; every other `OPTIONS` on a known viewer route is a `405`
+  // with the route's documented methods and no CORS headers at all.
+  if (surface === "viewer" && method === "OPTIONS") {
+    // Only the `{base}/notes*` family has a bookmarklet preflight. `bundle`, `sessions` and `health`
+    // are known viewer routes with no cross-origin caller, so even a request that mimics the
+    // bookmarklet's headers gets the ordinary `405` (spec §2.1 rule 11).
+    const viewerPreflight =
+      segments[0] === "notes"
+        ? viewerBookmarkletPreflight(
+            method,
+            headerValue(request.headers, "origin"),
+            headerValue(request.headers, "access-control-request-headers"),
+          )
+        : null;
+    if (viewerPreflight !== null) {
+      return { kind: "response", response: viewerPreflight };
+    }
+    const negative = errorResponse(
+      405,
+      "method_not_allowed",
+      `${method} is not allowed on ${pathname} — documented method(s): ${allow.join(", ")}`,
+      context,
+      request,
+    );
+    negative.headers.allow = allow.join(", ");
+    return { kind: "response", response: negative };
   }
   // The CORS preflight (#98, #99, #102) is answered before every credential check and before the
   // method table below — and only for a path the table already knows, so an arbitrary path keeps
@@ -1647,11 +1944,12 @@ export function gateRequest(request: ServerRequest, context: HandlerContext): Ga
         "method_not_allowed",
         `${method} is not allowed on ${pathname} — documented method(s): GET`,
         context,
+        request,
       );
       response.headers.allow = "GET";
       return { kind: "response", response };
     }
-    return { kind: "response", response: configResponse(context) };
+    return { kind: "response", response: configResponse(context, request) };
   }
   // The liveness probe is public for the same reason (#109), and for the container runtime's: a
   // healthcheck that has to carry a credential turns "is this hub alive" into a 401 on every
@@ -1665,11 +1963,12 @@ export function gateRequest(request: ServerRequest, context: HandlerContext): Ga
         "method_not_allowed",
         `${method} is not allowed on ${pathname} — documented method(s): GET, HEAD`,
         context,
+        request,
       );
       response.headers.allow = "GET, HEAD";
       return { kind: "response", response };
     }
-    return { kind: "response", response: health(context) };
+    return { kind: "response", response: health(context, request) };
   }
   // Authentication comes before the method check and before any route, and that placement is the
   // security property rather than a style choice: an unauthenticated caller must not be able to
@@ -1721,7 +2020,7 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
     if (adminResponse !== null) {
       return adminResponse;
     }
-    return errorResponse(404, "not_found", `unknown endpoint ${pathname}`, context);
+    return errorResponse(404, "not_found", `unknown endpoint ${pathname}`, context, request);
   }
   if (!allow.includes(method)) {
     const response = errorResponse(
@@ -1729,6 +2028,7 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
       "method_not_allowed",
       `${method} is not allowed on ${pathname} — documented method(s): ${allow.join(", ")}`,
       context,
+      request,
     );
     response.headers.allow = allow.join(", ");
     return response;
@@ -1739,6 +2039,7 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
       "read_only",
       "this hub runs read-only (--read-only) — writes are refused",
       context,
+      request,
     );
   }
 
@@ -1747,33 +2048,33 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   const first = segments[0];
   if (first === "notes") {
     if (segments.length === 1) {
-      return method === "GET" ? listNotes(query, context) : createNoteFromBody(request, context);
+      return method === "GET" ? listNotes(query, context, request) : createNoteFromBody(request, context);
     }
     if (segments.length === 2) {
       const second = segments[1] ?? "";
       if (second === "bulk-delete") return bulkDelete(request, context);
-      return method === "GET" ? readNote(second, query, context) : patchNote(second, request, context);
+      return method === "GET" ? readNote(second, query, context, request) : patchNote(second, request, context);
     }
     return appendMessageToNote(segments[1] ?? "", request, context);
   }
   if (first === "sessions") {
     try {
-      return json(200, { sessions: bundleOf(context).sessions }, context);
+      return json(200, { sessions: bundleOf(context).sessions }, context, request);
     } catch (error) {
-      return toErrorResponse(error, context);
+      return toErrorResponse(error, context, request);
     }
   }
   if (first === "bundle") {
     try {
       return {
         status: 200,
-        headers: { "content-type": JSON_CONTENT_TYPE, "cache-control": "no-store", ...corsHeaders(context.cors) },
+        headers: { "content-type": JSON_CONTENT_TYPE, "cache-control": "no-store", ...responseCorsHeaders(request, context) },
         body: bundleToJson(bundleOf(context), { pretty: true }),
       };
     } catch (error) {
-      return toErrorResponse(error, context);
+      return toErrorResponse(error, context, request);
     }
   }
   // Unreachable: `allowedMethods` already rejected anything else.
-  return errorResponse(404, "not_found", `unknown endpoint ${pathname}`, context);
+  return errorResponse(404, "not_found", `unknown endpoint ${pathname}`, context, request);
 }
