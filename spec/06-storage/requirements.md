@@ -256,3 +256,138 @@ requires-trace-from: []
 Optional admin surface on the hub: --admin-secret / BLUEPENCIL_ADMIN_SECRET (at least 16 characters) enables {base}/admin and {base}/admin/, with status, devices and revoke routes; without the flag every admin path is the router's ordinary 404; every admin route except GET {base}/admin is gated by the x-bluepencil-admin header, and refusals and OPTIONS advertise that header in CORS; the admin secret is accepted as a second credential on /notes* only (never /mcp, /sessions or /bundle) and does not turn authentication on; minting requires --token-key; revocation is live and durable through an atomic write to --revoked-tokens; a corrupt devices.json answers 500 registry_unreadable without being overwritten, reports devicesError on status and still applies revocation; admin authentication is throttled at 10 failures per remote per 5 minutes (429 with Retry-After: 300); the page is served with cache-control: no-store, x-frame-options: DENY, content-security-policy: frame-ancestors 'none' and referrer-policy: no-referrer; mint and revoke remain allowed under --read-only while note writes answer 403; the page is translated (en/de)
 
 *Acceptance criteria:* Starting without `--admin-secret` leaves `{base}/admin` at the router's 404; with a 16-character secret `{base}/admin` and `{base}/admin/` serve the page, and status/devices/revoke answer only for `x-bluepencil-admin` (advertised on refusals and `OPTIONS`); on a token-only hub the admin secret edits `/notes*` while `/mcp` refuses it, and a hub with no client credential stays ungated; minting without `--token-key` is refused; a revoked id is cut off immediately and survives a restart when `--revoked-tokens` is set; a corrupt `devices.json` yields 500 `registry_unreadable`, `devicesError`, no overwrite and still-applied revocation; 10 failures in 5 minutes yield 429 with `Retry-After: 300`; the page response carries the four headers; mint and revoke work under `--read-only` while a note write is 403; both `en` and `de` render
+
+## FR-6.17 The viewer runs on an origin of its own: --viewer starts a second HTTP listener with its…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+The viewer runs on an origin of its own: --viewer starts a second HTTP listener with its own host, port and origin; the viewer content routes (/viewer, /view, /viewer/assets/*, /viewer/bookmarklet.txt) are not reachable on the hub port and answer 404 there, even when --root is configured; the operator entry point is the hub launcher {base}/viewer/start?k= (plus x-bluepencil-admin), which hands the browser to the viewer origin with a one-time ticket, and no viewer content is served before viewer.origin is resolved
+
+*Acceptance criteria:* With `--viewer` the launcher on the hub origin redirects to the viewer origin and the shell is served there; every viewer content path on the hub port answers 404, also with `--root`; `viewer.port`/`viewer.origin` report the actual listener and `viewer.url` is origin + base; AC-5.1, AC-5.2, AC-5.4, AC-5.5, AC-5.29
+
+## FR-6.18 One store, one journal, two surfaces: notes written through the viewer origin are visibl…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+One store, one journal, two surfaces: notes written through the viewer origin are visible without a restart on the hub's /notes, /bundle, /journal and /mcp; there is exactly one store instance and one journal instance; the hub and the viewer /bundle agree on status, content type and body, and their headers may differ only by hub CORS
+
+*Acceptance criteria:* A note created under the viewer origin appears immediately in the hub's `/notes`, `/bundle` and journal; no second store or journal instance exists; both `/bundle` answers agree on status, content-type and body; AC-5.6, AC-5.7, AC-5.8, AC-5.33
+
+## FR-6.19 The viewer origin serves a minimal route set: the viewer surface serves the shell, view,…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+The viewer origin serves a minimal route set: the viewer surface serves the shell, view, the assets, the bookmarklet, notes*, sessions, bundle and health; it does not serve admin*, mcp, journal, config, viewer/start or the --root static files; assets are session-free and are served before the session check
+
+*Acceptance criteria:* Every unsupported route answers 404 on the viewer origin while its supported counterpart works; an asset request succeeds without a session cookie; `{base}/viewer/start` answers 404 on the viewer origin; AC-5.9, AC-5.14, AC-5.15
+
+## FR-6.20 Fail-closed authorisation per surface: note routes on the viewer origin require a viewer…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+Fail-closed authorisation per surface: note routes on the viewer origin require a viewer session or a client credential and answer 401 without either, also when no --auth-secret is configured; the hub port never accepts a viewer session; a revoked device token is refused on both surfaces
+
+*Acceptance criteria:* A viewer note request without session and credential is 401; a client credential alone opens the viewer route; a `bp_viewer` cookie on the hub port changes nothing; a revoked token answers `token_revoked` on both surfaces; AC-5.3, AC-5.10, AC-5.11, AC-5.13, AC-5.32
+
+## FR-6.21 The admin secret is exchanged, never exposed to the viewer: the operator secret is verif…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+The admin secret is exchanged, never exposed to the viewer: the operator secret is verified on the hub origin only (constant-time comparison, throttled) and traded for a short-lived, single-use viewer ticket; the viewer origin never sees the secret
+
+*Acceptance criteria:* A missing or wrong secret is refused (a missing header does not spend the throttle budget) and never reaches the viewer origin; a valid secret answers a redirect carrying only a ticket; the ticket is single-use, expires after its TTL and contains no secret; AC-5.4, AC-5.5, AC-5.12
+
+## FR-6.22 The viewer cookie is scoped and hardened: bp_viewer is HttpOnly, SameSite=Lax, Path=<bas…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+The viewer cookie is scoped and hardened: bp_viewer is HttpOnly, SameSite=Lax, Path=<base> and Secure on https; a viewer host name equal to the hub host name is warned about on stderr
+
+*Acceptance criteria:* The `Set-Cookie` header carries exactly these attributes (`Secure` only on https) and page script cannot read the cookie; a shared host name prints `viewer_cookie_shared_host`, also with `--quiet`; AC-5.13
+
+## FR-6.23 Viewer targets are SSRF-checked: a proxied target is checked by metadata host name, DNS…
+
+```attr
+prio: P0
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+Viewer targets are SSRF-checked: a proxied target is checked by metadata host name, DNS resolution and address class before it is fetched; loopback, link-local, metadata and reserved addresses are always refused, private ranges only with an exact allowlist entry; a resolver error fails closed; every redirect hop is checked again
+
+*Acceptance criteria:* Each refused class answers its stable viewer-local code and fetches nothing; a private target works only with an exact allowlist entry; a failing resolver refuses the request; a redirect to a forbidden address is refused on the hop; AC-5.17, AC-5.18, AC-5.19, AC-5.20, AC-5.30, AC-5.31
+
+## FR-6.24 Viewer start-up validation is a usage error, not a late failure: --viewer without --view…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+Viewer start-up validation is a usage error, not a late failure: --viewer without --viewer-port, the same port on the same bind address, an invalid origin, a viewer origin equal to the hub origin, a value-carrying viewer flag without a value, an invalid TTL, --cors '*' (or a viewer origin in --cors) together with --viewer, and viewer flags without --viewer are usage errors that fail before any request is served
+
+*Acceptance criteria:* Each case fails with its stable message or code (`viewer_port_required`, `viewer_port_conflict`, `viewer_origin_invalid`, `viewer_origin_is_hub_origin`, `… requires a value`, `viewer_ttl_invalid`, `cors_wildcard_with_viewer`, `viewer_flags_without_viewer`) and leaves no listener open; AC-F1–AC-F9, AC-F14–AC-F21
+
+## FR-6.25 Two listeners, one lifecycle: RunningServer reports both listeners and closes both; a fa…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+Two listeners, one lifecycle: RunningServer reports both listeners and closes both; a failed second bind or a post-listen() origin conflict leaves no running listener and no stale journal; viewer.origin is resolved before the first served request and the start window answers 503 service_not_ready
+
+*Acceptance criteria:* `close()` closes both ports and a restart on the same ports succeeds; a busy viewer port makes `startHub` throw with the hub listener closed and no stale journal; a launcher request during the start window answers 503 and a fixed port never serves an undefined origin; AC-5.1, AC-F10, AC-F11, AC-F12, AC-F16, AC-F22

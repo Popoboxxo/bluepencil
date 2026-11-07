@@ -14,7 +14,7 @@ shared by UI, CLI, hub and MCP.
 
 | Section | What you find |
 |---|---|
-| [Status](#status) | What `0.13.0` contains — and what it honestly does not |
+| [Status](#status) | What `0.14.0` contains — and what it honestly does not |
 | [Why the name](#why-the-name) | Where the metaphor comes from |
 | [Quick start](#quick-start) | Build, artifact table, one `init()` call, the runtime handle |
 | [The pieces](#the-pieces) | Browser layer, five adapters, store, hub, two agent doors |
@@ -32,12 +32,15 @@ shared by UI, CLI, hub and MCP.
 
 ## Status
 
-**`0.13.0`** — the review layer, the headless data library and the CLI/MCP surfaces are on `main`.
-This release adds the **hub viewer**: `--viewer` serves a website from the hub's own origin with the
-layer already injected, so a page can be reviewed without installing the extension. The bookmarklet
-becomes a versioned artifact (`GET {base}/viewer/bookmarklet.txt`) for the pages a proxy cannot carry,
-not a pasted snippet. Note routes accept a viewer session (an HttpOnly cookie, or
-`x-bluepencil-viewer` for the bookmarklet); the MCP door and the admin routes never do.
+**`0.14.0`** — the review layer, the headless data library and the CLI/MCP surfaces are on `main`.
+The **hub viewer** (`--viewer`, issue #140 AC 5) serves a website from its **own dedicated origin** —
+a second listener next to the hub — with the layer already injected, so a page can be reviewed
+without installing the extension. Viewer content (`/viewer`, `/view`, the assets and the bookmarklet)
+is not reachable on the hub port, even with `--root`; the operator entry point is the hub launcher
+`{base}/viewer/start?k=`. The bookmarklet becomes a versioned artifact
+(`GET {base}/viewer/bookmarklet.txt`) for the pages a proxy cannot carry, not a pasted snippet.
+Viewer note routes accept a viewer session (an HttpOnly cookie, or `x-bluepencil-viewer` for the
+bookmarklet); the hub port ignores it, and the MCP door and the admin routes never accept it.
 What is in the tree:
 
 - **The layer** — core model, anchoring (now including **transient container reveal**), capture,
@@ -58,9 +61,10 @@ What is in the tree:
   `BLUEPENCIL_ADMIN_SECRET`): mint and revoke per-device tokens, read status and devices, and edit
   notes through a notes-only bridge. It is off by default and answers the ordinary 404 without the
   flag.
-- **The hub viewer (`0.13.0`)** — `--viewer` serves a site from the hub's own origin with the layer
-  injected, so a review needs no extension; it stays off unless `--viewer-assets`, `--viewer-allow`
-  and `--admin-secret` are all set. The bookmarklet ships as a versioned artifact at
+- **The hub viewer** — `--viewer` serves a site from its own dedicated origin (a second listener),
+  not the hub port, with the layer injected, so a review needs no extension; it stays off unless
+  `--viewer-assets`, `--viewer-allow` and `--admin-secret` are all set, and `--viewer` needs an
+  explicit `--viewer-port`. The bookmarklet ships as a versioned artifact at
   `GET {base}/viewer/bookmarklet.txt`, for the pages a proxy cannot carry.
 - **The extension** — a **Chromium MV3 extension** that mounts the layer in pages you do not build
   yourself, with its settings reaching the layer and its rounds kept in the extension's own storage.
@@ -74,17 +78,19 @@ What is in the tree:
 
 ### Known gaps
 
-- **The viewer.** A proxied page runs on the hub's origin, so its JavaScript can do what the layer
-  can — the viewer is an operator surface (own session, allowlist, admin gate), not a sandbox.
-  Viewer sessions live in memory and end on restart, and the bookmarklet's token is readable by the
-  page being annotated while the session lives.
+- **The viewer.** A proxied page runs on the viewer's origin, so its JavaScript can use the viewer
+  session same-origin — the viewer is an operator surface (own session, allowlist, admin gate), not
+  a sandbox. The session cookie is not port-isolated: a viewer that shares the hub's host name warns
+  (`viewer_cookie_shared_host`), and true cookie isolation needs a separate host name. Viewer
+  sessions live in memory and end on restart, and the bookmarklet's token is readable by the page
+  being annotated while the session lives.
 - **Federation.** There is **no cross-instance session merge** (each note keeps its own session);
   the aggregate is always bounded by `limit`; the extension has **one hub profile**, not a list;
   hubs older than `0.10` are not federatable and are refused with `federates_missing`, never
   silently reported as "no notes"; and `unverified` appears only when a peer's `/config` omits
   `app` — a missing `federates` is a start error, not a warning.
 - **Distribution.** No npm publish — install from the tag
-  (`npm i github:Popoboxxo/bluepencil#v0.13.0`; the `prepare` script builds `dist/` during
+  (`npm i github:Popoboxxo/bluepencil#v0.14.0`; the `prepare` script builds `dist/` during
   install) or use the release artifacts: loader, layer, package tarball, the MV3 browser
   extension, one `SHA256SUMS` over all of them, and the hub image on
   `ghcr.io/popoboxxo/bluepencil` ([docs/DOCKER.md](docs/DOCKER.md)).
@@ -396,7 +402,7 @@ process: `/notes` for the page, `/mcp` for the agent, `/config` to describe it w
 ```yaml
 services:
   hub:
-    image: ghcr.io/popoboxxo/bluepencil:0.13.0
+    image: ghcr.io/popoboxxo/bluepencil:0.14.0
     ports: ["127.0.0.1:8787:8787"]
     volumes: ["bluepencil-notes:/data"]
     environment:
@@ -488,7 +494,7 @@ docker run -i --rm --network bluepencil-federation \
   --env-file .env \
   --no-healthcheck \
   -v "$PWD/instances.json:/etc/bluepencil/instances.json:ro" \
-  ghcr.io/popoboxxo/bluepencil:0.13.0 bluepencil-federator \
+  ghcr.io/popoboxxo/bluepencil:0.14.0 bluepencil-federator \
   --registry /etc/bluepencil/instances.json --read-only --allow-insecure
 ```
 
@@ -789,11 +795,11 @@ flowchart LR
 
   subgraph beforeTag["before the tag"]
     scan["npm run secret-scan"] --> spec["npm run spec / spec:check"]
-    spec --> pre["release-preflight --tag v0.13.0"]
+    spec --> pre["release-preflight --tag v0.14.0"]
   end
 
   subgraph cut["release.yml"]
-    tag["tag v0.13.0"] --> rel["verify on the tagged commit"]
+    tag["tag v0.14.0"] --> rel["verify on the tagged commit"]
     rel --> assets["4 assets + one SHA256SUMS"]
     assets --> pub["publish + attest"]
     pub --> store["dispatch chrome-webstore.yml"]
@@ -857,7 +863,7 @@ tagged commit, builds the assets and publishes them — no manual upload steps.
   release's own extension zip to the Chrome Web Store (a release published with `GITHUB_TOKEN` does
   not start workflow runs, so the dispatch is explicit).
 
-Install without npm: `npm i github:Popoboxxo/bluepencil#v0.13.0`. The full procedure, failure modes
+Install without npm: `npm i github:Popoboxxo/bluepencil#v0.14.0`. The full procedure, failure modes
 and the store workflow are in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Documentation

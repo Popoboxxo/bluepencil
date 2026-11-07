@@ -93,6 +93,6 @@ is the one worth engineering against.
 
 ## Coverage today
 
-171 requirements (149 functional, 22 non-functional), all `status: approved`. Priority split:
-101 P0, 58 P1, 12 P2. Nine have no `verify` method yet; `npm run spec` names them on every run so
-the gap stays visible instead of being silently dropped.
+180 requirements (158 functional, 22 non-functional), all `status: approved`. Priority split:
+106 P0, 62 P1, 12 P2. Eighteen have no `verify` method yet; `npm run spec` names them on every
+run so the gap stays visible instead of being silently dropped.

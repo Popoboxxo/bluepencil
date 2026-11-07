@@ -1,4 +1,11 @@
-# The hub (and the federator) as a container: one volume, one port, nothing to install.
+# The hub (and the federator) as a container: one volume, one published port, nothing to install.
+#
+# The published port is the **hub** only. Since 0.14.0 the viewer is a second listener on its own
+# origin with an operator-chosen port (`--viewer-port` / `BLUEPENCIL_VIEWER_PORT`). That port is not
+# exposed here on purpose: a viewer without an explicit `--viewer-origin` cannot start in this image
+# (the entrypoint binds `--host 0.0.0.0`, a wildcard address, so the hub refuses the start with
+# `viewer_origin_required`), and a viewer exposed by default is the silent surface this release
+# removes. The two-port mapping lives in `docker-compose.yml` (commented out) and `docs/DOCKER.md`.
 #
 # The runtime stage deliberately has no `node_modules`. `dist/server.js` and `dist/federator.js` are
 # bundles of the whole service (the build calls them dependency-free), so "does the image start" is
@@ -60,6 +67,8 @@ ENV BLUEPENCIL_STORE=/data/notes.bluepencil.json \
     BLUEPENCIL_BASE=/api/v1/bluepencil
 
 VOLUME ["/data"]
+# The hub port, and only the hub port: the viewer's port is dynamic and never a default (see the
+# header comment and the commented second mapping in docker-compose.yml).
 EXPOSE 8787
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \

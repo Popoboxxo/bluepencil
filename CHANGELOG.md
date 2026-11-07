@@ -1,3 +1,67 @@
+## [0.14.0] - 2026-11-07
+
+### Changed
+
+- **Breaking: `--viewer` runs on its own listener and requires `--viewer-port`.** The hub no longer
+  serves viewer content from its own port: `/viewer`, `/view`, `/viewer/assets/*` and
+  `/viewer/bookmarklet.txt` answer `404` on the hub port, even with `--root`. `--viewer` without an
+  explicit `--viewer-port` is a usage error (`viewer_port_required`), and a viewer port equal to the
+  hub port on the same bind address is refused when both are non-zero (`viewer_port_conflict`).
+  Migration for a concrete bind is one flag: add `--viewer-port <port>`.
+- **Breaking: the operator entry point moved.** `{base}/viewer?k=<secret>` is gone; the launcher is
+  `{base}/viewer/start?k=<secret>` on the hub origin, which mints a one-time ticket and answers
+  `302` onto the viewer origin. The old link is `404 not_found` — there is deliberately no redirect
+  that would write the secret into a `Location` header. Existing bookmarklets that point at the hub
+  origin must be re-issued from the viewer shell.
+- **Breaking: `--viewer-public-url` now means the viewer listener origin.** It is a deprecated alias
+  for `--viewer-origin`; an alias that names the hub origin is rejected (`viewer_origin_is_hub_origin`),
+  and a value that disagrees with `--viewer-origin` is `viewer_origin_conflict`. The start warns with
+  `viewer_public_url_deprecated`; rename the flag before the next release.
+- **Breaking: `--cors '*'` is refused together with `--viewer`** (`cors_wildcard_with_viewer`), and a
+  `--cors` entry naming the viewer origin is a configuration error (`cors_viewer_origin`). A wildcard
+  would let viewer code read the hub journal, `/config` and `/health`. A resolved viewer bind on a
+  wildcard address — including an inherited `--host`, as in the Docker entrypoint — requires an
+  explicit `--viewer-origin` (`viewer_origin_required`); no origin is derived from an unspecified
+  address.
+- A missing `x-bluepencil-admin` header no longer spends the `admin` brute-force budget. Only a
+  wrong value counts as a failure; an absent or empty value is `401` without consuming one, so a
+  peer that probes without a value cannot lock the operator out.
+
+### Added
+
+- **A second viewer listener.** `--viewer-host`, `--viewer-port` and `--viewer-origin` (or
+  `BLUEPENCIL_VIEWER_HOST`/`_PORT`/`_ORIGIN`) configure a listener separate from the hub. It reuses
+  the one store, journal and note set; `RunningServer.viewer` reports the bound address and resolved
+  origin, and `close()` closes both listeners. A failed second bind leaves neither listener running
+  and no stale journal; `viewer.origin` is resolved before the first served request, and the start
+  window answers `503 service_not_ready`.
+- **One-time tickets and surface-scoped authorization.** The hub launcher mints a single-use ticket
+  (60 s TTL) and redirects onto the viewer origin. Authorization routes by surface: the hub port
+  ignores a viewer session, and viewer note routes are fail-closed without a viewer session or a
+  client credential. The viewer surface serves no `/admin`, `/journal`, `/config`, static `--root`
+  files or `/mcp`. Session refusals point at `{hubOrigin}{base}/viewer/start` when the hub origin is
+  publicly reachable; without one — unset, or only the internal bind origin behind a loopback
+  reverse proxy — they say "open the hub launcher" without constructing a URL, and never mention
+  `{base}/viewer?k=`.
+- **`--viewer-origin` with post-`listen()` validation.** The explicit origin is validated as an
+  absolute http(s) origin without a path, query or fragment. Once both listeners are bound, the hub
+  and viewer origins are compared; equal origins, a `--cors` entry naming the viewer origin and a
+  `port 0` collision are refused. `viewer.origin` is authoritative for links and for the session
+  cookie's `Secure` flag.
+- **SSRF checks on every hop.** Metadata host names are refused before the allowlist and before any
+  DNS lookup; each resolved address is classified, and every non-public class is refused except a
+  private address whose host has an exact allowlist entry — loopback, link-local, metadata, reserved
+  and invalid are always refused. Every redirect hop is checked again (at most three are followed),
+  a wildcard never covers a private address, and a resolver failure fails closed. A refused target
+  maps to a documented refusal, never a `500`.
+
+### Security
+
+- **A revoked device token is refused on the viewer surface too.** Viewer-`/notes`, `/bundle` and
+  `/sessions` answer `401 token_revoked`, like the hub. The viewer context holds the **same** live
+  revocation set by reference, so a revocation through `/admin/devices/revoke` takes effect on both
+  surfaces immediately — no copy, no restart.
+
 ## [0.13.0] - 2026-11-06
 
 ### Added
