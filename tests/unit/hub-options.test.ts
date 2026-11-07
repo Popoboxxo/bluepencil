@@ -11,10 +11,10 @@
  *   - `/notes` stays the local single-environment contract without `instance` fields (T22, T54).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as nodeRequest } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DEFAULT_BASE_PATH, HUB_APP_NAME } from "../../server/handler";
 import {
   SECRET_MIN_LENGTH,
@@ -302,6 +302,54 @@ describe("parseHubArgs — strict boolean flags (F-04)", () => {
   it("parses --allow-env-mismatch=false and --quiet=false", () => {
     expect(optionsOf(parse(["--allow-env-mismatch=false"])).allowEnvMismatch).toBe(false);
     expect(optionsOf(parse(["--quiet=false"])).quiet).toBe(false);
+  });
+});
+
+describe("viewer flags (issue #140, plan Task 5)", () => {
+  /** A throwaway `dist`-shaped directory; the parser only checks that the element bundle exists. */
+  function assetsDir(): string {
+    const dir = join(dirname(tempStorePath()), "assets");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "bluepencil.element.min.js"), "// stub\n");
+    return dir;
+  }
+
+  it("accepts a complete viewer set and carries the listener options", () => {
+    const assets = assetsDir();
+    const parsed = optionsOf(
+      parseHubArgs([
+        "--store",
+        "notes.json",
+        "--port",
+        "0",
+        "--viewer",
+        "--viewer-port",
+        "8788",
+        "--viewer-assets",
+        assets,
+        "--viewer-allow",
+        "example.com",
+        "--admin-secret",
+        SHARED,
+        "--viewer-origin",
+        "https://view.example.com",
+      ]),
+    );
+
+    expect(parsed.viewer).toMatchObject({
+      port: 8788,
+      origin: "https://view.example.com",
+      assetsDir: assets,
+      allow: ["example.com"],
+    });
+    // The deprecated alias is normalised onto `origin` and is absent when it was not used.
+    expect("publicBaseUrl" in (parsed.viewer ?? {})).toBe(false);
+  });
+
+  it("still refuses a viewer without a viewer port (AC-F1)", () => {
+    expect(String(parseHubArgs(["--store", "notes.json", "--viewer"]))).toContain(
+      "viewer_port_required",
+    );
   });
 });
 

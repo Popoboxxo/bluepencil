@@ -112,6 +112,34 @@ function declares(block: string, key: string, value: string): boolean {
   return listItems(block, key).includes(value);
 }
 
+/**
+ * Every `# command: [...]` example in a service body, joined into one string each.
+ *
+ * Compose examples are shipped as comments so that the default stays untouched; a multi-line flow
+ * sequence continues on following `#` lines. Only the comment block that starts with `command:` is
+ * collected — the next non-comment line ends it, and so does a closing `]`.
+ */
+function commentedCommands(block: string): string[] {
+  const lines = block.split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const start = /^\s*#\s*command:\s*(\[.*)$/.exec(lines[i] ?? "");
+    if (start === null) continue;
+    const parts = [start[1] ?? ""];
+    let closed = (start[1] ?? "").trimEnd().endsWith("]");
+    while (!closed && i + 1 < lines.length) {
+      i += 1;
+      const continuation = /^\s*#\s?(.*)$/.exec(lines[i] ?? "");
+      if (continuation === null) break;
+      const text = continuation[1] ?? "";
+      parts.push(text);
+      closed = text.trimEnd().endsWith("]");
+    }
+    out.push(parts.join(" ").replace(/\s+/g, " ").trim());
+  }
+  return out;
+}
+
 describe("AC-J01 — the compose default publishes on host loopback", () => {
   const root = read(ROOT_COMPOSE);
   const hub = services(root).get("hub");
@@ -127,6 +155,70 @@ describe("AC-J01 — the compose default publishes on host loopback", () => {
     const doc = read(DOCKER_DOC);
     expect(doc).toMatch(/Widening is an explicit edit/);
     expect(doc).toMatch(/0\.0\.0\.0:\$\{BLUEPENCIL_PORT:-8787\}:8787/);
+  });
+});
+
+describe("AC-F6 — the viewer is a second port, and never a default", () => {
+  const root = read(ROOT_COMPOSE);
+  const hub = services(root).get("hub") ?? "";
+
+  it("documents the second mapping as a comment, not as a published port", () => {
+    // The viewer listener has its own origin (0.14.0), so it needs its own published port. It stays
+    // commented out: a container that exposes a second port without the operator asking for it is
+    // exactly the silent exposure this assertion pins.
+    expect(root).toMatch(
+      /^\s*#\s*-\s*"127\.0\.0\.1:\$\{BLUEPENCIL_VIEWER_PORT:-8788\}:8788"\s*$/m,
+    );
+    expect(declares(hub, "ports", "127.0.0.1:${BLUEPENCIL_VIEWER_PORT:-8788}:8788")).toBe(false);
+  });
+
+  it("publishes the hub port and nothing else", () => {
+    expect(listItems(hub, "ports")).toEqual(["127.0.0.1:${BLUEPENCIL_PORT:-8787}:8787"]);
+  });
+
+  it("ships no active command and no active viewer env, so the default start has no viewer", () => {
+    expect(hub).not.toMatch(/^ {4}command:/m);
+    expect(hub).not.toMatch(/^ {6}BLUEPENCIL_VIEWER[A-Z_]*:/m);
+  });
+
+  it("shows a command example that pins --viewer-origin for the wildcard bind", () => {
+    // `docker/entrypoint.sh` always passes `--host 0.0.0.0`; that wildcard bind makes
+    // `--viewer-origin` mandatory (viewer_origin_required), so an example without it would be an
+    // example that does not start.
+    const examples = commentedCommands(hub);
+    const viewer = examples.find((example) => /--viewer(\s|"|$)/.test(example));
+    expect(viewer, "a commented `command:` example for the two-port viewer").toBeDefined();
+    expect(viewer ?? "").toContain("--viewer-port");
+    expect(viewer ?? "").toMatch(/--viewer-origin\W+https:\/\//);
+    for (const example of examples) {
+      if (!/--viewer(\s|"|$)/.test(example)) continue;
+      // Either an explicit origin or an explicit loopback bind — anything else is refused at start.
+      expect(
+        /--viewer-origin/.test(example) || /--viewer-host\s+"?127\.0\.0\.1/.test(example),
+        `example "${example}" makes the viewer bind non-wildcard`,
+      ).toBe(true);
+    }
+  });
+
+  it("documents the two-port shape, the origin obligation and the viewer env names", () => {
+    const doc = read(DOCKER_DOC);
+    // The second port, verbatim from the compose file, and the reason it is opt-in.
+    expect(doc).toContain("127.0.0.1:${BLUEPENCIL_VIEWER_PORT:-8788}:8788");
+    expect(doc).toMatch(/--viewer-origin is required/);
+    // Reverse proxy / TLS: the origin is what the launcher advertises, so https belongs to the proxy.
+    expect(doc).toMatch(/--viewer-origin https:\/\//);
+    // The env names an operator sets in Compose or compose .env.
+    for (const name of [
+      "BLUEPENCIL_VIEWER",
+      "BLUEPENCIL_VIEWER_PORT",
+      "BLUEPENCIL_VIEWER_HOST",
+      "BLUEPENCIL_VIEWER_ORIGIN",
+      "BLUEPENCIL_VIEWER_ASSETS",
+      "BLUEPENCIL_VIEWER_ALLOW",
+    ]) {
+      expect(doc, `docs/DOCKER.md names ${name}`).toContain(name);
+    }
+    expect(doc).toMatch(/viewer_cookie_shared_host/);
   });
 });
 

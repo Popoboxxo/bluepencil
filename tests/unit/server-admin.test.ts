@@ -11,8 +11,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseServerArgs, startServer, type ServerOptions } from "../../server/index";
-import { handleAdmin } from "../../server/admin";
-import type { HandlerContext } from "../../server/handler";
+import { adminGate, handleAdmin, verifyOperatorSecret } from "../../server/admin";
+import type { AdminThrottle, HandlerContext } from "../../server/handler";
 
 const ADMIN = "admin-fixture-secret-1";
 const CLIENT_CREDENTIAL = "hub-fixture-secret-1";
@@ -645,6 +645,177 @@ describe("failed admin-secret checks are throttled per remote", () => {
       });
       expect(refused.status).toBe(401);
     }
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * RT-04 (spec §2.3, §4.5, §5.3): the `verifyOperatorSecret` refactor keeps every status code and
+ * text, but changes what spends the `admin` budget — a *wrong* value does, a *missing* one does not.
+ * The launcher (Task 7) calls the same function with its `?k=` value; both doors share one budget.
+ *
+ * This block is the canonical unit definition of RT-04. The RT-04 copy in
+ * `viewer-surface.integration.test.ts` is only the wire re-observation of this contract.
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("operator-secret verification and the shared admin budget (RT-04)", () => {
+  it("[FR-6.16] a missing x-bluepencil-admin is 401 and spends no budget", async () => {
+    const { port } = await serve({ adminSecret: ADMIN });
+
+    // Far more than a whole budget: none of these is a guess, so none may count.
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const missing = await call(port, `${API}/admin/status`);
+      expect(missing.status).toBe(401);
+      expect((missing.json.error as Record<string, unknown> | undefined)?.code).toBe("unauthorized");
+    }
+
+    // The first *wrong* value is therefore still the first failure: ten are admitted, no 429 yet.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const wrong = await call(port, `${API}/admin/status`, {
+        headers: { "x-bluepencil-admin": `wrong-${attempt}` },
+      });
+      expect(wrong.status).toBe(401);
+    }
+
+    // The eleventh guess is the one that finds the budget exhausted — with the unchanged answer.
+    const throttled = await call(port, `${API}/admin/status`, {
+      headers: { "x-bluepencil-admin": "wrong-after-budget" },
+    });
+    expect(throttled.status).toBe(429);
+    expect(throttled.headers.get("retry-after")).toBe("300");
+    expect((throttled.json.error as Record<string, unknown> | undefined)?.code).toBe("too_many_attempts");
+  });
+
+  it("[FR-6.16] a wrong value spends budget; a missing one stays 401 even when exhausted", async () => {
+    const { port } = await serve({ adminSecret: ADMIN });
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const wrong = await call(port, `${API}/admin/status`, {
+        headers: { "x-bluepencil-admin": `wrong-${attempt}` },
+      });
+      expect(wrong.status).toBe(401);
+    }
+    const throttled = await call(port, `${API}/admin/status`, {
+      headers: { "x-bluepencil-admin": "wrong-after-budget" },
+    });
+    expect(throttled.status).toBe(429);
+
+    // Missing is not a guess: it is checked before the brake (spec §2.3 rule 2 before rule 3), so
+    // it keeps the same 401/hint it has always answered with and does not become a 429.
+    const missing = await call(port, `${API}/admin/status`);
+    expect(missing.status).toBe(401);
+    expect(JSON.stringify(missing.json)).toContain("x-bluepencil-admin");
+  });
+
+  it("[FR-6.16] /admin/* and the launcher share one admin budget", () => {
+    // The launcher (Task 7) is another caller of `verifyOperatorSecret()` with its `?k=` value. The
+    // sharing is the contract "one secret, one budget": five wrong header values plus five wrong
+    // launcher values are ten failures, and the eleventh attempt through either door is throttled.
+    let failures = 0;
+    const throttle: AdminThrottle = {
+      allow: (_remote, kind = "admin") => kind !== "admin" || failures < 10,
+      failure: (_remote, kind = "admin") => {
+        if (kind === "admin") failures += 1;
+      },
+      success: (_remote, kind = "admin") => {
+        if (kind === "admin") failures = 0;
+      },
+    };
+    const context: HandlerContext = {
+      store: { notes: [] },
+      base: API,
+      environment: "dev",
+      adminSecret: ADMIN,
+      adminThrottle: throttle,
+    };
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const gate = adminGate(
+        {
+          method: "GET",
+          url: `${API}/admin/status`,
+          headers: { "x-bluepencil-admin": `wrong-${attempt}` },
+          remote: "203.0.113.5",
+        },
+        context,
+      );
+      expect(gate.kind).toBe("response");
+      if (gate.kind === "response") expect(gate.response.status).toBe(401);
+    }
+    expect(failures).toBe(5);
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect(verifyOperatorSecret({ remote: "203.0.113.5" }, context, `wrong-k-${attempt}`)).toEqual({
+        kind: "invalid",
+        missing: false,
+      });
+    }
+    expect(failures).toBe(10);
+
+    // Either door now reports the shared exhaustion.
+    expect(verifyOperatorSecret({ remote: "203.0.113.5" }, context, "wrong-k-after")).toEqual({
+      kind: "throttled",
+      retryAfterSeconds: 300,
+    });
+    const gate = adminGate(
+      {
+        method: "GET",
+        url: `${API}/admin/status`,
+        headers: { "x-bluepencil-admin": "wrong-after" },
+        remote: "203.0.113.5",
+      },
+      context,
+    );
+    expect(gate.kind).toBe("response");
+    if (gate.kind === "response") {
+      expect(gate.response.status).toBe(429);
+      expect(gate.response.headers["retry-after"]).toBe("300");
+    }
+  });
+  it("[FR-6.16] an empty programmatic admin secret never authorizes and never spends budget (R2-F1)", async () => {
+    // Hand-built context: `adminGate` treats the empty secret as missing. Every gated route is the
+    // ordinary 401, no route is returned, and the `admin` brake is not even read.
+    const calls: string[] = [];
+    const throttle: AdminThrottle = {
+      allow: () => {
+        calls.push("allow");
+        return true;
+      },
+      failure: () => {
+        calls.push("failure");
+      },
+      success: () => {
+        calls.push("success");
+      },
+    };
+    const context: HandlerContext = {
+      store: { notes: [] },
+      base: API,
+      environment: "dev",
+      adminSecret: "",
+      adminThrottle: throttle,
+    };
+
+    for (const headers of [{ "x-bluepencil-admin": "" }, { "x-bluepencil-admin": "wrong" }, {}]) {
+      const gate = adminGate(
+        { method: "GET", url: `${API}/admin/status`, headers, remote: "203.0.113.5" },
+        context,
+      );
+      expect(gate.kind).toBe("response");
+      if (gate.kind === "response") {
+        expect(gate.response.status).toBe(401);
+        expect(gate.response.body).toContain("unauthorized");
+      }
+    }
+    expect(calls).toEqual([]);
+
+    // The real programmatic start normalises `""` to `undefined`: the surface is not configured at
+    // all, so `/admin/*` is the router's ordinary 404 and never advertises itself.
+    const { port } = await serve({ adminSecret: "" });
+    const status = await call(port, `${API}/admin/status`);
+    expect(status.status).toBe(404);
+    expect((status.json.error as Record<string, unknown> | undefined)?.code).toBe("not_found");
+    const page = await call(port, `${API}/admin`, { headers: { "x-bluepencil-admin": "" } });
+    expect(page.status).toBe(404);
   });
 });
 

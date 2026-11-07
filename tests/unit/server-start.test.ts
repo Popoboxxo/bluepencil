@@ -593,3 +593,88 @@ describe("credential floors and CORS rules at the process boundary (AC-D07…AC-
     expect(outcome.stderr).toContain("every origin");
   });
 });
+
+describe("dual listener lifecycle at the process boundary (plan Task 9)", () => {
+  /** A port that was free a moment ago; the child is expected to release it again. */
+  async function freePort(): Promise<number> {
+    const probe = createServer();
+    await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", () => resolve()));
+    const address = probe.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    return port;
+  }
+
+  /** True when nothing listens on `port` any more — the proof that a start left no half-open state. */
+  async function isFree(port: number): Promise<boolean> {
+    const probe = createServer();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        probe.once("error", reject);
+        probe.listen(port, "127.0.0.1", () => resolve());
+      });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      await new Promise<void>((resolve) => probe.close(() => resolve()));
+    }
+  }
+
+  /** A complete, valid viewer command line; the assets stub lives in the shared temp dir. */
+  function viewerArgs(
+    storePath: string,
+    hubPort: number,
+    viewerPort: number,
+    host = "127.0.0.1",
+  ): string[] {
+    writeFileSync(path("bluepencil.element.min.js"), "// stub\n");
+    return [
+      "--store",
+      storePath,
+      "--port",
+      String(hubPort),
+      "--host",
+      host,
+      "--journal",
+      "none",
+      "--viewer",
+      "--viewer-port",
+      String(viewerPort),
+      "--viewer-assets",
+      tempDir as string,
+      "--viewer-allow",
+      "example.com",
+      "--admin-secret",
+      "server-start-operator-secret",
+      "--quiet",
+    ];
+  }
+
+  it("exits 1 when the viewer bind fails and leaves the hub listener closed (AC-F12)", async () => {
+    const hubPort = await freePort();
+    const taken = createServer();
+    peers.push(taken);
+    await new Promise<void>((resolve) => taken.listen(0, "127.0.0.1", () => resolve()));
+    const takenAddress = taken.address();
+    const takenPort =
+      typeof takenAddress === "object" && takenAddress !== null ? takenAddress.port : 0;
+
+    const outcome = await runHub(viewerArgs(path("lifecycle-store.json"), hubPort, takenPort));
+
+    expect(outcome.code).toBe(1);
+    expect(outcome.stderr).toContain("EADDRINUSE");
+    expect(await isFree(hubPort)).toBe(true);
+  });
+
+  it("exits 1 with viewer_origin_required before any bind (AC-F23)", async () => {
+    const hubPort = await freePort();
+    const outcome = await runHub(
+      viewerArgs(path("lifecycle-wildcard.json"), hubPort, 0, "0.0.0.0"),
+    );
+
+    expect(outcome.code).toBe(1);
+    expect(outcome.stderr).toContain("viewer_origin_required");
+    expect(await isFree(hubPort)).toBe(true);
+  });
+});
