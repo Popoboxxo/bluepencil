@@ -19,7 +19,7 @@ Without compose:
 docker run -d --name bluepencil-hub \
   -p 127.0.0.1:8787:8787 -v bluepencil-notes:/data \
   --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
-  ghcr.io/popoboxxo/bluepencil:0.12.0
+  ghcr.io/popoboxxo/bluepencil:0.15.0
 docker logs bluepencil-hub | head -20
 ```
 
@@ -230,7 +230,7 @@ The shipped `docker-compose.yml` is closed by default:
 - **The published port is loopback.** `ports: ["127.0.0.1:${BLUEPENCIL_PORT:-8787}:8787"]` renders
   to `127.0.0.1:8787:8787`; `docker compose config` shows it. Nothing outside this machine can
   reach the hub until you change that line.
-- **The image is pinned to an exact version** (`ghcr.io/popoboxxo/bluepencil:0.12.0`), never
+- **The image is pinned to an exact version** (`ghcr.io/popoboxxo/bluepencil:0.15.0`), never
   `:latest`, so a restart does not silently change the code under an operator.
 - **The container runs hardened:** `read_only: true`, `tmpfs: ["/tmp"]`,
   `cap_drop: ["ALL"]`, `security_opt: ["no-new-privileges:true"]`. The only writable paths are the
@@ -256,8 +256,8 @@ reproducible across platforms while a digest also freezes the exact image bytes.
 deployment, resolve and pin the digest:
 
 ```sh
-docker buildx imagetools inspect ghcr.io/popoboxxo/bluepencil:0.12.0
-# image: ghcr.io/popoboxxo/bluepencil:0.12.0
+docker buildx imagetools inspect ghcr.io/popoboxxo/bluepencil:0.15.0
+# image: ghcr.io/popoboxxo/bluepencil:0.15.0
 # digest: sha256:<64 hex>
 ```
 
