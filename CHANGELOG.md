@@ -1,4 +1,4 @@
-## [0.15.0] - unreleased
+## [0.15.0] - 2026-11-08
 
 ### Added
 
@@ -40,6 +40,33 @@
   contract.** Without `Host: $http_host` and `X-Forwarded-Proto: $scheme` the comparison basis
   disagrees with the browser and **both** browser entries answer `403`. See `docs/VIEWER.md`
   ("Reverse proxy (nginx)").
+
+### Verified
+
+- Every gate of `npm run verify` was run and passed: `typecheck` and `typecheck:ext`, `build`,
+  `build:ext`, `verify:sync` (dist matches `extension/dist`, version `0.15.0`), the size guard (Core
+  40.6 of 44.7 kB, IIFE 44.4 of 45.9 kB, element 47.4 of 49.1 kB, attach loader 4.1 of 8.0 kB,
+  min+gzip — all `ok`) and `smoke:components -- --no-docker` with 14 passed and the docker leg
+  skipped by the flag. They were not run as one `npm run verify`: that command stops in its unit
+  step (next bullet), so the chain after it was run separately.
+- **The unit step is the one gate that does not pass at the default worker count on this machine.**
+  `npm run test` ends with `2752/2755` and three `Test timed out in 5000ms`; the same suite run as
+  `npx vitest run --maxWorkers=4` ends with **2755/2755 in 121 files**. The three timeouts are jsdom
+  scheduling on a loaded host, not an assertion failure, and they reproduce on `main` unless the
+  worker count is capped.
+- `npm run secret-scan` — 626 files, no credentials and no review data. `npm run spec` writes 185
+  requirements into 21 documents and `npm run spec:check` answers `185 total, 185 valid, 0 invalid,
+  0 parse errors`.
+- On PR #145 the `verify`, `parity`, `spec`, `install` and `image` jobs are green; `bump` is green on
+  its pull-request run (the job runs only there) and `docker-smoke` is skipped by design.
+  `release-preflight --tag v0.15.0` passes against these notes.
+
+### Known gaps
+
+- **Viewer sessions and launcher tickets live in memory.** A hub restart ends every viewer session
+  and every ticket not yet redeemed (`server/viewer.ts`). That is deliberate — a restart is also a
+  revocation — but an operator who restarts the hub in the middle of a review re-enters through the
+  launcher page. Unchanged since 0.13.0.
 
 ## [0.14.0] - 2026-11-07
 
