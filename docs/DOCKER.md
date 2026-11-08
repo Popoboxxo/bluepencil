@@ -120,7 +120,7 @@ chmod 0600 bluepencil.env
 
 docker run -d --name bluepencil-hub -p 127.0.0.1:8787:8787 -v bluepencil-notes:/data \
   --env-file bluepencil.env \
-  ghcr.io/popoboxxo/bluepencil:0.11.6
+  ghcr.io/popoboxxo/bluepencil:0.15.0
 ```
 
 The same two credentials can be exported into the shell and passed with `-e` instead of through
@@ -133,7 +133,7 @@ set -a; . ./bluepencil.env; set +a
 docker run -d --name bluepencil-hub -p 127.0.0.1:8787:8787 -v bluepencil-notes:/data \
   -e BLUEPENCIL_ADMIN_SECRET \
   -e BLUEPENCIL_TOKEN_KEY \
-  ghcr.io/popoboxxo/bluepencil:0.11.6
+  ghcr.io/popoboxxo/bluepencil:0.15.0
 ```
 
 The shared secret is deliberately absent here: the entrypoint generates it into the volume and
@@ -417,7 +417,7 @@ docker run -i --rm --network bluepencil-federation \
   --env-file .env \
   --no-healthcheck \
   -v ./instances.json:/etc/bluepencil/instances.json:ro \
-  ghcr.io/popoboxxo/bluepencil:0.10.3 bluepencil-federator \
+  ghcr.io/popoboxxo/bluepencil:0.15.0 bluepencil-federator \
   --registry /etc/bluepencil/instances.json --read-only --allow-insecure
 ```
 
