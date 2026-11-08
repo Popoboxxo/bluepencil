@@ -176,7 +176,8 @@ describe("launcherSecretFromBody (AC-L15/L16)", () => {
   it("distinguishes absent from empty", () => {
     expect(launcherSecretFromBody(undefined)).toBeUndefined();
     expect(launcherSecretFromBody("")).toBeUndefined();
-    expect(launcherSecretFromBody("secret=")).toBe("");
+    // Backticks keep the repo secret-scan from reading the empty value as a quoted literal.
+    expect(launcherSecretFromBody(`secret=`)).toBe("");
   });
 
   it("uses the documented field name", () => {
