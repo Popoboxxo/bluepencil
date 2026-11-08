@@ -390,8 +390,91 @@ describe("the admin page's controls", () => {
       "devices-status",
       "notes-body-rows",
       "notes-status",
+      "viewer-row",
+      "open-viewer",
+      "viewer-status",
+      "viewer-note",
     ];
     const missing = ids.filter((id) => h.dom.window.document.getElementById(id) === null);
     expect(missing).toEqual([]);
+  });
+
+  /**
+   * The viewer control's initial state is part of the security story: the static markup ships it
+   * `disabled`, so it cannot be clicked before `renderOverview()` decided about readiness (CR-8).
+   */
+  it("[AC-L23] ships the viewer control disabled in the static markup", () => {
+    const markup = renderAdminHtml(englishStrings());
+    const button = /<button[^>]*id="open-viewer"[^>]*>/.exec(markup)?.[0] ?? "";
+    expect(button).not.toBe("");
+    expect(button).toContain("disabled");
+  });
+
+  /**
+   * `admin-viewer-control.test.ts` cannot stub the navigation — JSDOM makes `Location.assign` and
+   * `window.location` non-configurable — so the destination expression is pinned here as a string.
+   * Swapping it for `location.href = …` or `window.open(…)` fails this check; the mocked launcher
+   * answer alone would not notice.
+   */
+  it("[AC-L24] navigates with exactly location.assign(body.url)", () => {
+    const html = renderAdminHtml(englishStrings());
+    expect(html).toContain("location.assign(body.url)");
+    expect(html).not.toContain("location.href = body.url");
+    expect(html).not.toContain("window.open(body.url");
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * The launcher strings (FR-6.30, spec §5.8) — one table for both pages
+ * ---------------------------------------------------------------------------------------------- */
+
+/** The fourteen keys the launcher page and the admin control read. */
+const LAUNCHER_KEYS = [
+  "launcherTitle",
+  "launcherHeading",
+  "launcherHelp",
+  "launcherSubmit",
+  "launcherInvalidSecret",
+  "launcherThrottled",
+  "launcherForbidden",
+  "launcherBodyTooLarge",
+  "launcherUnsupportedBody",
+  "launcherViewerOff",
+  "launcherViewerPending",
+  "launcherViewerAt",
+  "launcherOpening",
+  "launcherError",
+] as const;
+
+/** The page's visible text: the inline runtime script is not a user-visible string. */
+function visibleMarkup(strings: Strings): string {
+  return renderAdminHtml(strings).replace(/<script>[\s\S]*?<\/script>/, "");
+}
+
+describe("the launcher strings in the shared admin table", () => {
+  it("ships all fourteen keys in both languages", () => {
+    for (const lang of ["en", "de"] as const) {
+      const table = ADMIN_STRINGS[lang] as unknown as Record<string, unknown>;
+      for (const key of LAUNCHER_KEYS) {
+        expect(typeof table[key], `${lang}.${key}`).toBe("string");
+        expect(String(table[key]).length, `${lang}.${key}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("keeps the placeholders the two renderers substitute", () => {
+    expect(ADMIN_STRINGS.en.launcherThrottled).toContain("{seconds}");
+    expect(ADMIN_STRINGS.de.launcherThrottled).toContain("{seconds}");
+    expect(ADMIN_STRINGS.en.launcherViewerAt).toContain("{origin}");
+    expect(ADMIN_STRINGS.de.launcherViewerAt).toContain("{origin}");
+    expect(ADMIN_STRINGS.en.launcherError).toContain("{message}");
+    expect(ADMIN_STRINGS.de.launcherError).toContain("{message}");
+  });
+
+  it("renders no raw launcher key as visible text", () => {
+    for (const lang of ["en", "de"] as const) {
+      const markup = visibleMarkup(ADMIN_STRINGS[lang]);
+      for (const key of LAUNCHER_KEYS) expect(markup, `${lang}: ${key}`).not.toContain(key);
+    }
   });
 });

@@ -26,15 +26,22 @@
  *   - `0/0` and one port on two bind addresses are accepted and really bind (AC-F19);
  *   - the deprecated alias may not point at the hub origin (AC-F21), and a scheme-different
  *     origin on the same host and port stays distinct because origins compare scheme-sensitively;
- *   - the start window answers only `503 service_not_ready` (or refuses the connection) and the
- *     launcher then redirects with an absolute `{viewer.origin}` location (AC-F22);
+ *   - the start window answers `503 service_not_ready` (or refuses the connection), a request that
+ *     arrives after the window gets the regular launcher answer, and afterwards the launcher
+ *     redirects with an absolute `{viewer.origin}` location (AC-F22). The window is a wall-clock
+ *     200 ms, so a wire test may only require *either* answer; "only 503 inside the window" is
+ *     pinned deterministically at handler level (`viewer-start.test.ts`, AC-L18);
  *   - the Docker/entrypoint pattern (`--host 0.0.0.0 --viewer`) demands an explicit origin before
  *     any bind and never derives `http://0.0.0.0:<port>` (AC-F6, AC-F23).
  *
  * Hermetic: every socket is loopback (or the wildcard bind the Docker case itself prescribes on an
  * ephemeral port), every request goes to `127.0.0.1`/`127.0.0.2` and no test talks to an external
  * host. The start window of AC-F22 is widened by deferring the **second** `listen()` call, so the
- * assertion is a real observation of the production window instead of a race.
+ * requests observe the production window instead of racing a tick. Widening does not close the
+ * race: the window is a wall-clock 200 ms in the very process that has to schedule these requests,
+ * so under full-suite load a request can arrive *after* the window closed. IT-45 therefore accepts
+ * the documented pair — `503 service_not_ready` *or* the regular launcher answer — and still pins
+ * the exact shape of whichever one it observes.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -988,8 +995,19 @@ describe("IT-45 — the start window and the launcher redirect (AC-F22)", () => 
     }
   });
 
-  it("answers only 503 service_not_ready in the ephemeral start window, then 302 with an absolute location", async () => {
+  it("answers 503 service_not_ready in the ephemeral start window, then 302 with an absolute location", async () => {
     // Widens the real window (`port 0`: hub bound, viewer not yet, dispatch still the 503 handler).
+    //
+    // Why the tolerance below is not a weakened assertion: the widened window is a wall-clock
+    // 200 ms, while these requests are written by the same event loop that has to schedule them.
+    // Under the full parallel suite that loop can be starved for longer than 200 ms; the second
+    // `listen()` then wins, and the request arrives *after* the window — a late request, not a
+    // wrong answer. So each answer is classified by the phase it demonstrably belongs to: a `503`
+    // must carry the exact start-window shape, and anything else must be the documented regular
+    // launcher answer on the resolved viewer origin (never a 401/403/415/405, never a redirect
+    // without an origin, never a ticket-less redirect). "Only 503 inside the window" stays pinned
+    // deterministically at handler level (`viewer-start.test.ts`: "answers 503 for a POST during
+    // the start window", AC-L18) — this case is the complementary wire observation.
     const tracker = trackListens({ delaySecondListenMs: 200 });
     try {
       const inFlight = startHub({
@@ -1003,35 +1021,85 @@ describe("IT-45 — the start window and the launcher redirect (AC-F22)", () => 
         viewer: viewerOptions({ port: 0 }),
       });
       const hubPort = await tracker.firstBound;
-      const duringStart = await Promise.all(
-        [1, 2, 3, 4, 5, 6].map(() =>
-          exchange(hubPort, `${BASE}/viewer/start?k=${OPERATOR}`, {}),
-        ),
-      );
+      const postAttempt = exchange(hubPort, `${BASE}/viewer/start`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `secret=${OPERATOR}`,
+      });
+      const duringStart = await Promise.all([
+        ...[1, 2, 3, 4, 5].map(() => exchange(hubPort, `${BASE}/viewer/start?k=${OPERATOR}`, {})),
+        postAttempt,
+      ]);
 
-      let answered = 0;
-      for (const entry of duringStart) {
-        // "503 or no connection" is the documented pair; a 302 without an origin is the failure.
-        if (entry.error !== undefined) continue;
-        answered += 1;
-        const answer = entry.answer as Answer;
+      // The answers are already fixed at this point; the viewer origin is only known once the second
+      // bind is up, and it is exactly what a "late" answer has to name.
+      const server = await inFlight;
+      servers.push(server);
+      const viewer = viewerOf(server);
+
+      /** The AC-F22 window answer: JSON, retryable, no redirect, no cookie. */
+      const expectStartWindowAnswer = (answer: Answer): void => {
         expect(answer.status).toBe(503);
         expect(errorCode(answer)).toBe("service_not_ready");
         expect(answer.headers.location).toBeUndefined();
         expect(answer.headers["set-cookie"]).toBeUndefined();
         expect(answer.headers["cache-control"]).toBe("no-store");
         expect(answer.headers["retry-after"]).toBe("1");
+        expect(String(answer.headers["content-type"])).toContain("application/json");
+      };
+
+      /**
+       * The regular GET launcher answer (JSON format, `?k=` secret): a redirect onto the resolved
+       * viewer origin carrying a fresh ticket — the same destination the post-start case asserts.
+       */
+      const expectLauncherRedirect = (answer: Answer): void => {
+        expect(answer.status).toBe(302);
+        const location = answer.headers.location;
+        expect(typeof location).toBe("string");
+        expect(String(location).startsWith(`${viewer.origin}${BASE}/viewer?ticket=`)).toBe(true);
+        expect(answer.headers["cache-control"]).toBe("no-store");
+        expect(answer.headers["referrer-policy"]).toBe("no-referrer");
+        expect(answer.headers["set-cookie"]).toBeUndefined();
+      };
+
+      let answered = 0;
+      for (const entry of duringStart.slice(0, 5)) {
+        // "503 or no connection" is the documented pair; a connection failure is not an answer.
+        if (entry.error !== undefined) continue;
+        answered += 1;
+        const answer = entry.answer as Answer;
+        if (answer.status === 503) expectStartWindowAnswer(answer);
+        else expectLauncherRedirect(answer);
       }
-      // The hub was bound before the requests were sent, so at least one reached the window.
+      // The hub was bound before the requests were sent, so at least one round trip must complete.
+      // Whether it lands inside the 200 ms window is not asserted: that is the load-dependent part.
       expect(answered).toBeGreaterThan(0);
 
-      const server = await inFlight;
-      servers.push(server);
+      // The POST is the last entry. Inside the window it must be the same 503 (the origin gate runs
+      // before the body rules and before the secret, so never a 401/415). After the window the
+      // documented regular answer for `POST` + form body + JSON format is `200 {"url": …}` — also
+      // never a refusal of the correct secret.
+      const posted = duringStart[duringStart.length - 1];
+      if (posted !== undefined && posted.answer !== undefined) {
+        if (posted.answer.status === 503) {
+          expectStartWindowAnswer(posted.answer);
+        } else {
+          expect(posted.answer.status).toBe(200);
+          const payload = JSON.parse(posted.answer.text) as { url?: unknown };
+          expect(typeof payload.url).toBe("string");
+          expect(String(payload.url).startsWith(`${viewer.origin}${BASE}/viewer?ticket=`)).toBe(
+            true,
+          );
+          expect(posted.answer.headers["cache-control"]).toBe("no-store");
+          expect(posted.answer.headers["set-cookie"]).toBeUndefined();
+        }
+      }
+
       const afterStart = await launcher(hubPort);
       expect(afterStart.status).toBe(302);
       expect(
         String(afterStart.headers.location).startsWith(
-          `${viewerOf(server).origin}${BASE}/viewer?ticket=`,
+          `${viewer.origin}${BASE}/viewer?ticket=`,
         ),
       ).toBe(true);
     } finally {

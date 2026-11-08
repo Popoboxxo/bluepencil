@@ -26,6 +26,11 @@ import {
   type ServerResponse,
 } from "../../server/handler";
 import { DEFAULT_HOST, parseServerArgs, startServer } from "../../server/index";
+import {
+  createViewerSessions,
+  createViewerTickets,
+  type ViewerOptions,
+} from "../../server/viewer";
 
 const BASE = DEFAULT_BASE_PATH;
 
@@ -312,5 +317,33 @@ describe("--name", () => {
     // Absent means "use the hostname", not "empty entry in a picker".
     const absent = parseServerArgs(["--store", "notes.json"]);
     expect((absent as { name?: string }).name).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * FR-6.29 — `/config` stays credential-free and viewer-free
+ *
+ * The viewer is a hub capability reported on the **authenticated** `/admin/status` only. A viewer
+ * field here would describe the operator surface to every anonymous probe, which is exactly what
+ * the requirement forbids.
+ * ---------------------------------------------------------------------------------------------- */
+
+function viewerOptions(): ViewerOptions {
+  return {
+    assetsDir: "dist",
+    allow: ["example.com"],
+    ttlSeconds: 3600,
+    origin: "https://view.example.com",
+    sessions: createViewerSessions(3600),
+    tickets: createViewerTickets(),
+  };
+}
+
+describe("GET {base}/config — never names the viewer (FR-6.29, AC-L21)", () => {
+  it("carries no viewer key, with and without a configured viewer", () => {
+    expect(Object.prototype.hasOwnProperty.call(configOf(), "viewer")).toBe(false);
+    const withViewer = configOf({ viewer: viewerOptions() });
+    expect(Object.prototype.hasOwnProperty.call(withViewer, "viewer")).toBe(false);
+    expect(JSON.stringify(withViewer)).not.toContain("view.example.com");
   });
 });

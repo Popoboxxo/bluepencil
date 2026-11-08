@@ -101,7 +101,10 @@ import {
   handleViewerStart,
   isViewerRequest,
   isViewerStartRequest,
+  launcherDeclaresBody,
+  launcherHeadRefusal,
   MAX_VIEWER_TTL_SECONDS,
+  VIEWER_LAUNCHER_MAX_BODY_BYTES,
   type ViewerOptions,
 } from "./viewer";
 import { createPresence } from "./presence";
@@ -1088,20 +1091,50 @@ async function respond(
     return;
   }
 
-  // Spec §2.1 rules 5/8: the launcher belongs to the hub surface only and runs before the router —
-  // it mints a ticket and answers `302` onto the viewer origin (`handleViewerStart`), and on the
-  // viewer surface the path is refused below. The Host gate already ran, so no foreign name can
-  // spend the admin budget.
+  // Spec §2.1 rules 5/8 and §5.3: the launcher belongs to the hub surface only and runs before the
+  // router. The header-only gates run before anything is read off the socket (405/503/403/415/413
+  // cost no body and no budget), then the body is read with the **existing** reader and its own
+  // 8 KiB limit, then the same handler that a unit test calls directly.
   if (surfaceOf(context) === "hub" && isViewerStartRequest(url, context)) {
     const remote = request.socket.remoteAddress;
+    const launcherRequest = {
+      method,
+      url,
+      headers: request.headers,
+      ...(remote === undefined ? {} : { remote }),
+    };
+    const refused = launcherHeadRefusal(launcherRequest, context);
+    if (refused !== null) {
+      write(response, refused);
+      return;
+    }
+    // Only a POST that declares a body gets a read; a body-less POST (the admin button) behaves
+    // exactly like a GET with a header. The predicate is the launcher's own, so the read decision
+    // and the media-type/size gates can never disagree (spec §5.1 rule 6).
+    const declaresBody = launcherDeclaresBody(request);
+    let body: string | undefined;
+    if (method === "POST" && declaresBody) {
+      try {
+        body = await readBody(request, VIEWER_LAUNCHER_MAX_BODY_BYTES);
+      } catch {
+        // `readBody()` destroys the socket on a streamed overshoot and on a broken transport; a
+        // destroyed socket cannot carry an answer, and there is no second read on this socket.
+        if (!response.writableEnded && !response.destroyed) response.end();
+        return;
+      }
+    }
     const launcher = handleViewerStart(
-      { method, url, headers: request.headers, ...(remote === undefined ? {} : { remote }) },
+      { ...launcherRequest, ...(body === undefined ? {} : { body }) },
       context,
     );
     if (launcher !== null) {
       write(response, launcher);
       return;
     }
+    // The launcher answers or consumes the body itself and returns; it never falls through to the
+    // journal, the static site, earlyRefusal() or the router's readBody().
+    if (!response.writableEnded && !response.destroyed) response.end();
+    return;
   }
 
   // The surface split is the one security boundary (spec §2.1 rules 5/6). Both refusals are

@@ -1244,3 +1244,21 @@ spec-id: SPEC-viewer-origin
 ```
 
 Der Plan referenziert diesen Wert unverändert. Das Design (`docs/specs/2026-11-06-viewer-origin-design.md`) trägt denselben Anker; diese Spec ist die normative Fassung, das Design bleibt Begründungsbeleg.
+
+## 13. Revision 2026-11-08 (Issue #144)
+
+> Datiert Nachtrag, **kein** Umschreiben. Der Fließtext oben bleibt als Beleg des Standes vom 2026-11-07 unverändert. Verbindlich für den Launcher-Einstieg ist ab 2026-11-08 `docs/specs/2026-11-08-viewer-launcher-entry.md` (`spec-id: SPEC-viewer-launcher-entry`). Alles, was dort nicht genannt ist, gilt hier unverändert.
+
+Hintergrund: Issue #144 (Varianten C + B) ergänzt eine Launcher-Seite (HTML-Formular) und einen Admin-Einstieg. Das revidiert die frühere Entscheidung E3 („`?k=` + Header, kein POST-Formular", Review 2026-11-06 §4). Die Begründung steht in der neuen Spec §2.
+
+**Welche Aussagen dieser Spec dadurch überholt sind (nur diese):**
+
+| Stelle | Bisher | Ab 2026-11-08 | Warum |
+|---|---|---|---|
+| **§2.2 Regel 4** (`handleViewerStart()`) | Der Launcher ist implizit `GET`; Secret aus `x-bluepencil-admin` oder `?k=`; Antwort `302` | `GET` **und** `POST`. `POST` mit `application/x-www-form-urlencoded` liest dasselbe Feld aus dem Body und antwortet `303`; mit `Accept: application/json` stattdessen `200 {"url": …}`. `?k=` bleibt für `GET`; auf einem `POST` wird `?k=` nicht gelesen. Gates in dieser Reihenfolge: `405` → `503` → `403` (CSRF) → `415` → `413` → Body → `verifyOperatorSecret()` | FR-6.17, FR-6.26, FR-6.27, FR-6.28 |
+| **§2.8, Zeile 582** (`GET /viewer/start?k=…` in der Routen-Matrix) | Eine Zeile für `GET`, Status `302`, Secret „admin throttle, operator secret (hub only)" | Zwei Pfade: `GET` (`200` HTML-Seite ohne Secret / `302` mit gültigem Secret) und `POST` (`303` Formular, `200` JSON, `401`/`403`/`413`/`415`/`429`). `Allow: GET, POST` für alle anderen Verben. Übrige Spalten unverändert | dito |
+| **AC-5.4** | „… danach ohne beides → `401 unauthorized`" | Eingeengt: Mit einem `Accept`, das `text/html` ausdrücklich präferiert, und **ohne** präsentiertes Secret antwortet der Launcher `200` mit dem Formular (kein Budgetverbrauch). Für jedes andere `Accept` (inkl. `*/*` und fehlendem Header) bleibt es bei `401 unauthorized`. Der Header gewinnt weiterhin über `?k=`; `302`, `referrer-policy: no-referrer`, `cache-control: no-store` und „kein `Set-Cookie`" bleiben unverändert | FR-6.26, AC-L01, AC-L03 |
+| **AC-5.9** | Viewer-Fläche: `GET /viewer/start` → `404` | Unverändert `404`, gilt jetzt auch für `POST` (der Pfad bleibt auf der Viewer-Fläche gesperrt) | FR-6.17 |
+| **§7** (Test-/AC-Matrix des Launchers) | UT/IT für `GET`-only | Ergänzt um die Fälle der neuen Spec §9; `UT-20` bleibt gültig | — |
+
+**Nicht betroffen:** D1–D12, §1.4 A5 (Viewer setzt `--admin-secret` voraus), die Oberflächentrennung (§2.1), Tickets (§2.2 Regeln 1/6), SSRF (§2.2 Regeln 10–14), CLI/Listener (§2.4) und die CORS-Regeln (§2.5). E1, E2, E4, E5 und S1–S3 bleiben in Kraft; nur **E3** ist `superseded`.

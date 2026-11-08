@@ -10,8 +10,12 @@ npm run spec:ls         # table of every node
 npm run spec:stats      # attribute-value breakdown
 ```
 
-`npm run spec:check` is part of `npm run verify` and runs in CI, so a broken
-requirement block fails the build instead of waiting for a human to notice.
+`npm run spec:check` is **not** part of `npm run verify` — it is its own CI job (`spec` in
+[`.github/workflows/ci.yml`](../.github/workflows/ci.yml)). Locally it needs the `reqmd` binary on
+`PATH`: the CI job downloads `reqmd-linux-amd64` from the pinned `v0.2-alpha` GitHub release and
+checks a hard-coded SHA-256 before using it, so install that same pinned binary if you want to run
+the check yourself. Either way it gates the build: a broken requirement block fails CI instead of
+waiting for a human to notice.
 
 ## What reqmd is
 
@@ -28,7 +32,7 @@ errors, **2** parse error.
 | `03-note-model/` | FR-3.x | note fields, enums, thread, sessions, schema version |
 | `04-presentation/` | FR-4.x | markers, list panel, done-note visibility, counters |
 | `05-collaboration/` | FR-5.x | intent, feedback-only mode, decision protocol |
-| `06-storage/` | FR-6.x | adapter interface, built-in adapters, atomicity, MCP tool group |
+| `06-storage/` | FR-6.x | adapter interface, built-in adapters, atomicity, hub auth and tokens, viewer origin, launcher page, MCP tool group |
 | `07-export/` | FR-7.x | Markdown/JSON export, diffability |
 | `08-lifecycle/` | FR-8.x | single and bulk deletion, sessions, retention, audit |
 | `09-permissions/` | FR-9.x | host decides, admin-only in live systems, XSS, no telemetry |
@@ -63,9 +67,10 @@ counts as coverage), `disposition` (`implemented`/`deferred`/`rejected`), `versi
 `verify` (`Test`/`Review`/`Inspection`/`Analysis`/`Demonstration`), `trace`,
 `requires-trace-from`, `reqmd-suppress`, `external`.
 
-Every requirement carries `verify:` — the method is derived from the acceptance criteria in
-the source table, not guessed. A requirement whose criteria are measurable in a test gets
-`Test`; criteria that need a demonstration or a reading get `Demonstration`/`Inspection`.
+Not every requirement carries `verify:` yet (see *Coverage today*), but wherever it is present the
+method is derived from the acceptance criteria in the source table, not guessed. A requirement
+whose criteria are measurable in a test gets `Test`; criteria that need a demonstration or a
+reading get `Demonstration`/`Inspection`.
 
 ## Two decisions worth knowing
 
@@ -93,6 +98,6 @@ is the one worth engineering against.
 
 ## Coverage today
 
-180 requirements (158 functional, 22 non-functional), all `status: approved`. Priority split:
-106 P0, 62 P1, 12 P2. Eighteen have no `verify` method yet; `npm run spec` names them on every
+185 requirements (163 functional, 22 non-functional), all `status: approved`. Priority split:
+106 P0, 67 P1, 12 P2. Twenty-three have no `verify` method yet; `npm run spec` names them on every
 run so the gap stays visible instead of being silently dropped.

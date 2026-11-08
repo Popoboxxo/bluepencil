@@ -140,7 +140,9 @@ describe("publicOrigin", () => {
   });
 
   it("falls back to 127.0.0.1 when the request carries no Host", () => {
-    expect(publicOrigin(request(`${BASE}/viewer`), derivedViewer())).toBe("http://127.0.0.1");
+    // Built literally on purpose: the shared `request()` helper now defaults a Host header.
+    const bodyless: ReturnType<typeof request> = { method: "GET", url: `${BASE}/viewer`, headers: {} };
+    expect(publicOrigin(bodyless, derivedViewer())).toBe("http://127.0.0.1");
   });
 
   it("trusts X-Forwarded-Proto: https from a loopback peer", () => {

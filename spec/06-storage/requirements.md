@@ -268,9 +268,9 @@ version: 1
 requires-trace-from: []
 ```
 
-The viewer runs on an origin of its own: --viewer starts a second HTTP listener with its own host, port and origin; the viewer content routes (/viewer, /view, /viewer/assets/*, /viewer/bookmarklet.txt) are not reachable on the hub port and answer 404 there, even when --root is configured; the operator entry point is the hub launcher {base}/viewer/start?k= (plus x-bluepencil-admin), which hands the browser to the viewer origin with a one-time ticket, and no viewer content is served before viewer.origin is resolved
+The viewer runs on an origin of its own: --viewer starts a second HTTP listener with its own host, port and origin; the viewer content routes (/viewer, /view, /viewer/assets/*, /viewer/bookmarklet.txt) are not reachable on the hub port and answer 404 there, even when --root is configured; the operator entry point is the hub launcher {base}/viewer/start, reached three equivalent ways — a browser form POST carrying the secret in the body (FR-6.26, FR-6.27), the x-bluepencil-admin request header, or ?k= in the query for scripts and compatibility (FR-6.21) — each of which hands the browser to the viewer origin with a one-time ticket, and no viewer content is served before viewer.origin is resolved
 
-*Acceptance criteria:* With `--viewer` the launcher on the hub origin redirects to the viewer origin and the shell is served there; every viewer content path on the hub port answers 404, also with `--root`; `viewer.port`/`viewer.origin` report the actual listener and `viewer.url` is origin + base; AC-5.1, AC-5.2, AC-5.4, AC-5.5, AC-5.29
+*Acceptance criteria:* With `--viewer` the launcher on the hub origin redirects to the viewer origin and the shell is served there, whether the secret arrived in the form body, in the header or as `?k=`; every viewer content path on the hub port answers 404, also with `--root`; `viewer.port`/`viewer.origin` report the actual listener and `viewer.url` is origin + base; AC-5.1, AC-5.2, AC-5.4, AC-5.5, AC-5.29
 
 ## FR-6.18 One store, one journal, two surfaces: notes written through the viewer origin are visibl…
 
@@ -328,9 +328,9 @@ version: 1
 requires-trace-from: []
 ```
 
-The admin secret is exchanged, never exposed to the viewer: the operator secret is verified on the hub origin only (constant-time comparison, throttled) and traded for a short-lived, single-use viewer ticket; the viewer origin never sees the secret
+The admin secret is exchanged, never exposed to the viewer: the operator secret is verified on the hub origin only (constant-time comparison, throttled) and traded for a short-lived, single-use viewer ticket; it travels in a request body (the launcher form POST) or in the x-bluepencil-admin header, never in a URL, in Location, in Referer, in browser history or in a log; the viewer origin never sees the secret. The request body and the header are the recommended, URL-free transports; the ?k= query parameter stays as a named, documented compatibility path for scripts, on which the secret deliberately travels in the URL, accepting the residual risks of browser history, Referer and access logs. New surfaces (the launcher form, the admin UI) must not use ?k=
 
-*Acceptance criteria:* A missing or wrong secret is refused (a missing header does not spend the throttle budget) and never reaches the viewer origin; a valid secret answers a redirect carrying only a ticket; the ticket is single-use, expires after its TTL and contains no secret; AC-5.4, AC-5.5, AC-5.12
+*Acceptance criteria:* A missing or wrong secret is refused (a missing value does not spend the throttle budget) and never reaches the viewer origin; a valid secret answers a redirect carrying only a ticket; the ticket is single-use, expires after its TTL and contains no secret; on the form and header paths the secret occurs in no URL, `Location`, `Referer`, history entry or log line; on the documented `?k=` compatibility path the secret appears only in the request URL of that path, never in `Location`, a response body or a log line written by bluepencil; AC-5.4, AC-5.5, AC-5.12
 
 ## FR-6.22 The viewer cookie is scoped and hardened: bp_viewer is HttpOnly, SameSite=Lax, Path=<bas…
 
@@ -391,3 +391,78 @@ requires-trace-from: []
 Two listeners, one lifecycle: RunningServer reports both listeners and closes both; a failed second bind or a post-listen() origin conflict leaves no running listener and no stale journal; viewer.origin is resolved before the first served request and the start window answers 503 service_not_ready
 
 *Acceptance criteria:* `close()` closes both ports and a restart on the same ports succeeds; a busy viewer port makes `startHub` throw with the hub listener closed and no stale journal; a launcher request during the start window answers 503 and a fixed port never serves an undefined origin; AC-5.1, AC-F10, AC-F11, AC-F12, AC-F16, AC-F22
+
+## FR-6.26 The launcher is a page a browser can use, not a URL to hand-edit: a GET {base}/viewer/st…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+The launcher is a page a browser can use, not a URL to hand-edit: a GET {base}/viewer/start whose Accept explicitly prefers text/html answers 200 with a plain HTML form — exactly one type="password" field for the secret, autocomplete="off", <form method="post"> against the same path, no JavaScript required and no external asset; a request that does not ask for HTML (Accept: application/json or */*, as curl sends) keeps the JSON 401 unauthorized of FR-6.21, and a valid ?k= or x-bluepencil-admin keeps the 302; a method other than GET and POST answers 405 with Allow: GET, POST; without --viewer the route stays the router's ordinary 404
+
+*Acceptance criteria:* A browser-style GET without a secret returns 200 HTML with exactly one password field, `autocomplete="off"` and a POST form, and that form is usable with scripting disabled; curl's `Accept: */*` still gets JSON 401; a valid `?k=` and a valid header still answer 302; `PUT` and `DELETE` answer 405 with `Allow: GET, POST`; a hub without `--viewer` answers 404; the page references no external asset
+
+## FR-6.27 The form trades the secret for a trip to the viewer and nothing else: a POST {base}/view…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+The form trades the secret for a trip to the viewer and nothing else: a POST {base}/viewer/start with application/x-www-form-urlencoded verifies the body value through the same verifyOperatorSecret() as the header (constant-time, shared admin throttle budget, 429 with Retry-After); success answers 303 with a Location on the viewer origin carrying a fresh single-use ticket and with Referrer-Policy: no-referrer and Cache-Control: no-store; failure answers 401 with the form again, one generic message, no Location, no echo of the submitted value and no Set-Cookie; a missing or empty value spends no throttle budget and a hub without an operator secret refuses every submission; a request that explicitly asks for JSON (Accept: application/json) with a valid secret answers 200 {"url": "…"} instead of a redirect; the body read is size-limited and only the single field is parsed
+
+*Acceptance criteria:* A valid body value answers 303 to the viewer origin whose `Location` carries only a ticket that works once; a wrong value answers 401 with the form and neither echoes the value nor sets a cookie; a missing field answers 401 and consumes no budget; ten wrong values in five minutes answer 429 with `Retry-After`; `Accept: application/json` with a valid secret answers 200 with `{url}` and no `Location`; an oversized body is refused without being buffered
+
+## FR-6.28 The launcher page cannot be framed and its POST cannot be driven cross-site: every HTML…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+The launcher page cannot be framed and its POST cannot be driven cross-site: every HTML answer of {base}/viewer/start carries X-Frame-Options: DENY, Content-Security-Policy: frame-ancestors 'none', Referrer-Policy: no-referrer and Cache-Control: no-store; a POST whose Origin header is present and does not match the hub origin, or that carries Sec-Fetch-Site: cross-site, is refused with 403 before the operator secret is verified and before the throttle budget is touched
+
+*Acceptance criteria:* The form response carries the four headers; a cross-origin POST answers 403 and mints no ticket; a request with `Sec-Fetch-Site: cross-site` answers 403 even with a correct secret; a same-origin POST and a request without `Origin` (curl) still work
+
+## FR-6.29 The admin surface opens the viewer without putting the secret in a URL: the authenticate…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+The admin surface opens the viewer without putting the secret in a URL: the authenticated GET {base}/admin/status additionally reports viewer: {enabled: boolean, origin: string \| null} — never in the credential-free {base}/config; the admin page offers a visible "open viewer" control with an accessible name, keyboard reachable and disabled while viewer.enabled is false; activating it fetches the launcher with x-bluepencil-admin and Accept: application/json, then calls location.assign(url); the secret appears in no URL, history entry, Referer or log
+
+*Acceptance criteria:* `/admin/status` carries `viewer.enabled` and `viewer.origin` for an authenticated request, and `/config` carries no viewer field; with `--viewer` the control is enabled, keyboard reachable and accessible, and activating it lands on the viewer origin after redeeming a ticket; with `--viewer` off the control is disabled and fires no request; the navigated URL carries a ticket and no secret
+
+## FR-6.30 The launcher speaks the same two languages as the admin page: every string on the launch…
+
+```attr
+prio: P1
+origin: N
+milestone: "M5b"
+status: approved
+version: 1
+requires-trace-from: []
+```
+
+The launcher speaks the same two languages as the admin page: every string on the launcher page — field label, submit button, help text and the message shown after a refused attempt — comes from the existing admin translation table (server/admin-i18n.ts) with en and de chosen by Accept-Language exactly as on {base}/admin, and the page declares the matching lang
+
+*Acceptance criteria:* `Accept-Language: de` renders German text with `lang="de"`, `en` renders English; a refused POST re-renders in the same language; both variants are complete — no untranslated string and no raw key on the page

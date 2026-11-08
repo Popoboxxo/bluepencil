@@ -836,3 +836,18 @@ spec-id: SPEC-viewer-origin
 ```
 
 Dieser Wert wird von `concept-specifier` unverändert in die Spec übernommen; der Plan referenziert ihn. Das Design selbst implementiert keinen Code.
+
+## Revision 2026-11-08 (Issue #144)
+
+> Datiert Nachtrag. Der Text oben bleibt als Beleg des Standes vom 2026-11-06 **unverändert**; geändert wird nur, was hier ausdrücklich als entschieden benannt ist.
+
+**Offene Frage 3 („Secret-Transport am Launcher", §13.3) ist entschieden.** Die Empfehlung vom 2026-11-06 lautete: `?k=` bleibt (Kompatibilität), `x-bluepencil-admin` wird die dokumentierte Empfehlung, „optional zusätzlich ein POST-Formular auf der Hub-Origin". Entschieden am 2026-11-08 mit Issue #144 (Varianten C + B): **das POST-Formular auf der Hub-Origin ist im Scope**; `?k=` bleibt und wird **nicht** deprecated.
+
+Begründung in Kürze (vollständig in der neuen Spec, §2):
+
+- Seit 0.14.0 ist `{base}/viewer/start` der **einzige** Einstieg auf der Hub-Origin — der alte Link `{base}/viewer?k=<secret>` ist `404`. `?k=` ist damit nicht mehr der Kompatibilitäts-Notbehelf, sondern der einzige Weg, den ein Browser gehen kann.
+- Damit landet das Secret regelhaft in Adresszeile, History, `Referer` und Access-Logs — genau das Restrisiko, das die damalige Empfehlung als Ausnahme benannt hatte.
+- Der `401`-Pfad des Launchers ist JSON („set an `x-bluepencil-admin` header"), für einen Browser also eine Sackgasse ohne Weg zur Anmeldung.
+- Das Sicherheitsdelta ist neutral bis positiv: das Secret reist im Body statt in der URL, bleibt auf der Hub-Origin, wird von derselben Funktion (`verifyOperatorSecret()`) mit demselben `admin`-Budget geprüft, und die Antwort trägt weiter `referrer-policy: no-referrer` und `cache-control: no-store`. Neu hinzu kommt ein CSRF-Gate (`Origin`/`Sec-Fetch-Site`) und ein 8-KiB-Body-Limit.
+
+Verbindlich ist `docs/specs/2026-11-08-viewer-launcher-entry.md` (`spec-id: SPEC-viewer-launcher-entry`). **Unverändert** bleiben D1–D12 sowie die offenen Fragen 1, 2, 4 und 5.

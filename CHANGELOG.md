@@ -1,3 +1,46 @@
+## [0.15.0] - unreleased
+
+### Added
+
+- **The launcher page: the browser entry point of the viewer (issue #144).** `GET {base}/viewer/start`
+  with `Accept` preferring HTML and no secret answers `200` with a server-rendered form — one
+  `<input type="password" name="secret">`, a `POST`, no JavaScript, no external asset, strings from
+  the shared admin table (`en`/`de`). The secret travels in the request **body**, so it no longer
+  needs to appear in a URL; a valid submission answers `303` to
+  `<viewer-origin><base>/viewer?ticket=…` with `no-referrer` and `no-store` and no `Set-Cookie`. A
+  `POST` with `Accept: application/json` answers `200 {"url": …}` instead of a redirect.
+- **An "Open viewer" control in `{base}/admin`.** The Overview panel gets a button that posts once to
+  `{base}/viewer/start` with `x-bluepencil-admin` and navigates to the returned one-time URL. It is
+  disabled while the viewer is not configured or its origin is not resolved yet, and names the reason
+  as text.
+- **`viewer: { enabled, origin }` on `{base}/admin/status`.** `origin` is the resolved public viewer
+  origin or `null`; the start window reports `{enabled: true, origin: null}`. The credential-free
+  `/config` deliberately carries no viewer field.
+
+### Changed
+
+- **`{base}/viewer/start` accepts `GET` and `POST`.** Anything else is `405` with
+  `Allow: GET, POST` (previously `Allow: GET`, with `POST` also `405`).
+- **`?k=` is no longer the recommended browser entry.** It stays supported on `GET` as the named
+  compatibility path for scripts (FR-6.21); a browser uses the launcher page or the admin control.
+- **A `POST` is gated before the secret is read:** a foreign `Origin`, `Origin: null`, several
+  `Origin` values or `Sec-Fetch-Site: cross-site` is `403`; a declared body that is not
+  `application/x-www-form-urlencoded` is `415`; a declared `content-length` above 8 KiB is `413`.
+  None of these spends `admin` budget or mints a ticket. A missing secret still spends nothing — an
+  HTML client gets the form (`200`), every other client the unchanged `401` JSON.
+
+### Security
+
+- **The operator secret no longer has to travel in a URL.** On the launcher page it stays in the form
+  body, on the admin page in a request header, so it is absent from the address bar, history, the
+  `Referer` and proxy access logs. The launcher page carries `x-frame-options: DENY`, a CSP with
+  `default-src 'none'`, `form-action 'self'` and `frame-ancestors 'none'`, plus `referrer-policy:
+  no-referrer` and `cache-control: no-store` on every answer.
+- **The `Origin`/`Sec-Fetch-Site` gate is fail-closed, and the reverse proxy must meet the documented
+  contract.** Without `Host: $http_host` and `X-Forwarded-Proto: $scheme` the comparison basis
+  disagrees with the browser and **both** browser entries answer `403`. See `docs/VIEWER.md`
+  ("Reverse proxy (nginx)").
+
 ## [0.14.0] - 2026-11-07
 
 ### Changed

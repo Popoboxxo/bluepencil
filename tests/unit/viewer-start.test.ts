@@ -188,19 +188,20 @@ describe("handleViewerStart — operator secret to ticket (AC-5.4)", () => {
   });
 });
 
-describe("handleViewerStart — method gate (R2-F4)", () => {
-  it("answers 405 with Allow: GET for every non-GET before origin and secret handling", () => {
+describe("handleViewerStart — method gate (spec §5.1 rule 6)", () => {
+  it("answers 405 with Allow: GET, POST for every method that is neither", () => {
     const throttle = { allow: vi.fn(() => true), failure: vi.fn(), success: vi.fn() };
     const hub = viewerContext({ surface: "hub" });
     hub.adminThrottle = throttle;
 
-    for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+    for (const method of ["PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]) {
       const answer = handleViewerStart(
         request(`${BASE}/viewer/start`, { "x-bluepencil-admin": SECRET }, method),
         hub,
       );
       expect(answer?.status, method).toBe(405);
-      expect(answer?.headers.allow, method).toBe("GET");
+      expect(answer?.headers.allow, method).toBe("GET, POST");
+      expect(answer?.headers.connection, method).toBe("close");
       expect(answer?.body, method).toContain("method_not_allowed");
     }
 
@@ -211,17 +212,46 @@ describe("handleViewerStart — method gate (R2-F4)", () => {
     expect(throttle.success).not.toHaveBeenCalled();
   });
 
-  it("wins over the start window, so a POST during startup is 405 and not 503", () => {
+  it("wins over the start window, so a PUT or DELETE during startup is 405 and not 503", () => {
     const base = viewerContext({ surface: "hub" });
     const hub: ViewerFixture = { ...base, viewer: { ...base.viewer, origin: undefined } };
 
+    for (const method of ["PUT", "DELETE"]) {
+      const answer = handleViewerStart(
+        request(`${BASE}/viewer/start`, { "x-bluepencil-admin": SECRET }, method),
+        hub,
+      );
+      expect(answer?.status, method).toBe(405);
+      expect(answer?.headers.allow, method).toBe("GET, POST");
+      expect(answer?.headers.location, method).toBeUndefined();
+    }
+    expect(hub.viewer.tickets.size()).toBe(0);
+  });
+
+  it("accepts a POST with a valid header as 303 — it is no longer a 405", () => {
+    const hub = viewerContext({ surface: "hub" });
+    const answer = handleViewerStart(
+      request(
+        `${BASE}/viewer/start`,
+        { "x-bluepencil-admin": SECRET, accept: "text/html" },
+        "POST",
+      ),
+      hub,
+    );
+    expect(answer?.status).toBe(303);
+    expect(String(answer?.headers.location)).toContain("?ticket=");
+    expect(hub.viewer.tickets.size()).toBe(1);
+  });
+
+  it("answers 503 for a POST during the start window", () => {
+    const base = viewerContext({ surface: "hub" });
+    const hub: ViewerFixture = { ...base, viewer: { ...base.viewer, origin: undefined } };
     const answer = handleViewerStart(
       request(`${BASE}/viewer/start`, { "x-bluepencil-admin": SECRET }, "POST"),
       hub,
     );
-    expect(answer?.status).toBe(405);
-    expect(answer?.headers.allow).toBe("GET");
-    expect(answer?.headers.location).toBeUndefined();
+    expect(answer?.status).toBe(503);
+    expect(answer?.body).toContain("service_not_ready");
     expect(hub.viewer.tickets.size()).toBe(0);
   });
 });

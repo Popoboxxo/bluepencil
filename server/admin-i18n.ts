@@ -7,7 +7,9 @@
  *    markup or in its embedded script;
  *  - `de` is typed as `AdminStrings`, so a missing translation is a compile error, never a raw key
  *    on the page;
- *  - `{name}` placeholders are substituted by the page's small `fmt()` helper;
+ *  - `{name}` placeholders are substituted by the page's small `fmt()` helper — and, for the
+ *    launcher page (which ships no JavaScript), server-side by `fillTemplate()` in
+ *    `server/launcher-html.ts`;
  *  - `lang` is the value for `<html lang>`, which is also what `adminLanguage()` selects;
  *  - dependency-free: this module is a plain object and one pure function.
  */
@@ -146,6 +148,22 @@ export interface AdminStrings {
   colWhen: string;
   colWho: string;
   colWhat: string;
+
+  /* -- launcher (FR-6.26…FR-6.30) ----------------------------------------- */
+  launcherTitle: string;
+  launcherHeading: string;
+  launcherHelp: string;
+  launcherSubmit: string;
+  launcherInvalidSecret: string;
+  launcherThrottled: string;
+  launcherForbidden: string;
+  launcherBodyTooLarge: string;
+  launcherUnsupportedBody: string;
+  launcherViewerOff: string;
+  launcherViewerPending: string;
+  launcherViewerAt: string;
+  launcherOpening: string;
+  launcherError: string;
 }
 
 /** English — the default rendering (`ADMIN_HTML`) and the reference for every key. */
@@ -277,6 +295,22 @@ const en: AdminStrings = {
   colWhen: "When",
   colWho: "Who",
   colWhat: "What",
+
+  launcherTitle: "Bluepencil — viewer",
+  launcherHeading: "Viewer login",
+  launcherHelp:
+    "The hub's admin secret (--admin-secret). It is sent once to this hub and traded for a one-time ticket — it never reaches the viewer origin.",
+  launcherSubmit: "Open viewer",
+  launcherInvalidSecret: "The operator secret is not valid.",
+  launcherThrottled: "Too many wrong attempts. Try again in {seconds} seconds.",
+  launcherForbidden: "This form was submitted from another site.",
+  launcherBodyTooLarge: "The submission was too large.",
+  launcherUnsupportedBody: "The form could not be read.",
+  launcherViewerOff: "The viewer is not enabled on this hub (--viewer).",
+  launcherViewerPending: "The viewer is not ready yet. Try again in a moment.",
+  launcherViewerAt: "The viewer opens at {origin}.",
+  launcherOpening: "opening…",
+  launcherError: "The viewer could not be opened: {message}",
 };
 
 /** German — same keys, same placeholders; typed so a missing key cannot compile. */
@@ -408,6 +442,22 @@ const de: AdminStrings = {
   colWhen: "Wann",
   colWho: "Wer",
   colWhat: "Was",
+
+  launcherTitle: "Bluepencil — Viewer",
+  launcherHeading: "Viewer-Anmeldung",
+  launcherHelp:
+    "Das Admin-Secret des Hubs (--admin-secret). Es wird einmal an diesen Hub gesendet und gegen ein Einmal-Ticket getauscht — es erreicht die Viewer-Origin nie.",
+  launcherSubmit: "Viewer öffnen",
+  launcherInvalidSecret: "Das Operator-Secret ist nicht gültig.",
+  launcherThrottled: "Zu viele Fehlversuche. In {seconds} Sekunden erneut versuchen.",
+  launcherForbidden: "Dieses Formular wurde von einer anderen Seite gesendet.",
+  launcherBodyTooLarge: "Die Übermittlung war zu groß.",
+  launcherUnsupportedBody: "Das Formular konnte nicht gelesen werden.",
+  launcherViewerOff: "Der Viewer ist auf diesem Hub nicht aktiviert (--viewer).",
+  launcherViewerPending: "Der Viewer ist noch nicht bereit. In einem Moment erneut versuchen.",
+  launcherViewerAt: "Der Viewer öffnet unter {origin}.",
+  launcherOpening: "öffne…",
+  launcherError: "Der Viewer konnte nicht geöffnet werden: {message}",
 };
 
 /** The two complete tables the renderer accepts. */
