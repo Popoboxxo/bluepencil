@@ -1,5 +1,7 @@
 {
-  "subagent_depth": 3,
+  "experimental": {
+    "subagent_depth": 3
+  },
   "mcp": {
     "viz-logger": {
       "type": "local",
