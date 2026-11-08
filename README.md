@@ -98,7 +98,7 @@ What is in the tree:
   silently reported as "no notes"; and `unverified` appears only when a peer's `/config` omits
   `app` — a missing `federates` is a start error, not a warning.
 - **Distribution.** No npm publish — install from the tag
-  (`npm i github:Popoboxxo/bluepencil#v0.14.0`; the `prepare` script builds `dist/` during
+  (`npm i github:Popoboxxo/bluepencil#v0.15.0`; the `prepare` script builds `dist/` during
   install) or use the release artifacts: loader, layer, package tarball, the MV3 browser
   extension, one `SHA256SUMS` over all of them, and the hub image on
   `ghcr.io/popoboxxo/bluepencil` ([docs/DOCKER.md](docs/DOCKER.md)).
@@ -410,7 +410,7 @@ process: `/notes` for the page, `/mcp` for the agent, `/config` to describe it w
 ```yaml
 services:
   hub:
-    image: ghcr.io/popoboxxo/bluepencil:0.14.0
+    image: ghcr.io/popoboxxo/bluepencil:0.15.0
     ports: ["127.0.0.1:8787:8787"]
     volumes: ["bluepencil-notes:/data"]
     environment:
@@ -502,7 +502,7 @@ docker run -i --rm --network bluepencil-federation \
   --env-file .env \
   --no-healthcheck \
   -v "$PWD/instances.json:/etc/bluepencil/instances.json:ro" \
-  ghcr.io/popoboxxo/bluepencil:0.14.0 bluepencil-federator \
+  ghcr.io/popoboxxo/bluepencil:0.15.0 bluepencil-federator \
   --registry /etc/bluepencil/instances.json --read-only --allow-insecure
 ```
 
@@ -803,11 +803,11 @@ flowchart LR
 
   subgraph beforeTag["before the tag"]
     scan["npm run secret-scan"] --> spec["npm run spec / spec:check"]
-    spec --> pre["release-preflight --tag v0.14.0"]
+    spec --> pre["release-preflight --tag v0.15.0"]
   end
 
   subgraph cut["release.yml"]
-    tag["tag v0.14.0"] --> rel["verify on the tagged commit"]
+    tag["tag v0.15.0"] --> rel["verify on the tagged commit"]
     rel --> assets["4 assets + one SHA256SUMS"]
     assets --> pub["publish + attest"]
     pub --> store["dispatch chrome-webstore.yml"]
@@ -871,7 +871,7 @@ tagged commit, builds the assets and publishes them — no manual upload steps.
   release's own extension zip to the Chrome Web Store (a release published with `GITHUB_TOKEN` does
   not start workflow runs, so the dispatch is explicit).
 
-Install without npm: `npm i github:Popoboxxo/bluepencil#v0.14.0`. The full procedure, failure modes
+Install without npm: `npm i github:Popoboxxo/bluepencil#v0.15.0`. The full procedure, failure modes
 and the store workflow are in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Documentation

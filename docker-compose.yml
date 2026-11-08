@@ -11,7 +11,7 @@ services:
     # Exact version, never `:latest`: a restart must not silently change the code under an
     # operator. Update by bumping this tag (or BLUEPENCIL_IMAGE); digest pinning for production
     # deployments is documented in docs/DOCKER.md, but is not the compose default.
-    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.12.0}
+    image: ${BLUEPENCIL_IMAGE:-ghcr.io/popoboxxo/bluepencil:0.15.0}
     # Building from this checkout instead of pulling the published image:
     # build: .
     container_name: bluepencil-hub
