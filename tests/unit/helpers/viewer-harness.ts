@@ -134,13 +134,25 @@ export function viewerContext(overrides: ViewerContextOverrides = {}): ViewerFix
   };
 }
 
-/** A minimal server request; `method` defaults to the door's common case. */
+/**
+ * A minimal server request; `method` defaults to the door's common case.
+ *
+ * `host` defaults to `HUB_ORIGIN`'s value so a POST can derive the launcher's `Origin` basis
+ * (spec §8, RVW2-4); an explicit `host` in `headers` wins. `body` is only added when the caller
+ * passes one, so a GET stays body-less.
+ */
 export function request(
   url: string,
   headers: Record<string, string> = {},
   method = "GET",
+  body?: string,
 ): ServerRequest {
-  return { method, url, headers };
+  return {
+    method,
+    url,
+    headers: { host: "127.0.0.1:8787", ...headers },
+    ...(body === undefined ? {} : { body }),
+  };
 }
 
 /** What a stubbed hostname resolves to: a fixed address list, or a rejection. */

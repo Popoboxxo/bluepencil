@@ -14,7 +14,7 @@ shared by UI, CLI, hub and MCP.
 
 | Section | What you find |
 |---|---|
-| [Status](#status) | What `0.14.0` contains — and what it honestly does not |
+| [Status](#status) | What `0.15.0` contains — and what it honestly does not |
 | [Why the name](#why-the-name) | Where the metaphor comes from |
 | [Quick start](#quick-start) | Build, artifact table, one `init()` call, the runtime handle |
 | [The pieces](#the-pieces) | Browser layer, five adapters, store, hub, two agent doors |
@@ -32,12 +32,14 @@ shared by UI, CLI, hub and MCP.
 
 ## Status
 
-**`0.14.0`** — the review layer, the headless data library and the CLI/MCP surfaces are on `main`.
+**`0.15.0`** — the review layer, the headless data library and the CLI/MCP surfaces are on `main`.
 The **hub viewer** (`--viewer`, issue #140 AC 5) serves a website from its **own dedicated origin** —
 a second listener next to the hub — with the layer already injected, so a page can be reviewed
 without installing the extension. Viewer content (`/viewer`, `/view`, the assets and the bookmarklet)
-is not reachable on the hub port, even with `--root`; the operator entry point is the hub launcher
-`{base}/viewer/start?k=`. The bookmarklet becomes a versioned artifact
+is not reachable on the hub port, even with `--root`; the browser entry point is the hub launcher page
+`{base}/viewer/start` (a script-free form, secret in the body, issue #144), or the "Open viewer"
+control on `{base}/admin`; `{base}/viewer/start?k=` and the `x-bluepencil-admin` header stay the paths
+for scripts. The bookmarklet becomes a versioned artifact
 (`GET {base}/viewer/bookmarklet.txt`) for the pages a proxy cannot carry, not a pasted snippet.
 Viewer note routes accept a viewer session (an HttpOnly cookie, or `x-bluepencil-viewer` for the
 bookmarklet); the hub port ignores it, and the MCP door and the admin routes never accept it.
@@ -64,7 +66,9 @@ What is in the tree:
 - **The hub viewer** — `--viewer` serves a site from its own dedicated origin (a second listener),
   not the hub port, with the layer injected, so a review needs no extension; it stays off unless
   `--viewer-assets`, `--viewer-allow` and `--admin-secret` are all set, and `--viewer` needs an
-  explicit `--viewer-port`. The bookmarklet ships as a versioned artifact at
+  explicit `--viewer-port`. A browser enters through the launcher page `{base}/viewer/start` or the
+  "Open viewer" control on `{base}/admin`; both trade the secret for a one-time ticket, the header and
+  `?k=` remain for scripts. The bookmarklet ships as a versioned artifact at
   `GET {base}/viewer/bookmarklet.txt`, for the pages a proxy cannot carry.
 - **The extension** — a **Chromium MV3 extension** that mounts the layer in pages you do not build
   yourself, with its settings reaching the layer and its rounds kept in the extension's own storage.
@@ -83,7 +87,11 @@ What is in the tree:
   a sandbox. The session cookie is not port-isolated: a viewer that shares the hub's host name warns
   (`viewer_cookie_shared_host`), and true cookie isolation needs a separate host name. Viewer
   sessions live in memory and end on restart, and the bookmarklet's token is readable by the page
-  being annotated while the session lives.
+  being annotated while the session lives. The launcher form keeps the secret out of the URL, but the
+  page itself carries a password field, so it is only as private as the transport; `?k=` still writes
+  the secret into browser history and proxy logs (it is the named exception for scripts). Behind a TLS
+  proxy the `Origin` gate requires `Host: $http_host` and `X-Forwarded-Proto: $scheme` — without them
+  both browser entries answer `403`.
 - **Federation.** There is **no cross-instance session merge** (each note keeps its own session);
   the aggregate is always bounded by `limit`; the extension has **one hub profile**, not a list;
   hubs older than `0.10` are not federatable and are refused with `federates_missing`, never

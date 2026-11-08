@@ -26,16 +26,7 @@
  *   `textContent`, never concatenated HTML.
  */
 import { ADMIN_STRINGS, type AdminStrings } from "./admin-i18n";
-
-/** Escapes a string for HTML text and quoted attributes, including the single quote. */
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+import { escapeHtml } from "./html";
 
 /**
  * Serializes the string table for the page's `<script>`. `<` is escaped so a value containing
@@ -139,6 +130,11 @@ export function renderAdminHtml(strings: AdminStrings): string {
     </nav>
 
     <section role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" tabindex="0" data-view="overview">
+      <div class="bp-row" id="viewer-row">
+        <button type="button" class="bp-primary" id="open-viewer" aria-describedby="viewer-note" disabled>${escapeHtml(s.launcherSubmit)}</button>
+        <span class="bp-status" id="viewer-status" role="status" aria-live="polite"></span>
+      </div>
+      <p class="bp-muted" id="viewer-note"></p>
       <div class="bp-card" id="overview-card"></div>
     </section>
 
@@ -229,6 +225,9 @@ export function renderAdminHtml(strings: AdminStrings): string {
   var T = ${scriptJson(s)};
   var KEY = 'bluepencil-admin-secret';
   var memorySecret = '';
+  // Computed once per status render: 'enabled' alone is not enough (the start window reports
+  // enabled true with a null origin), so the control and its note share exactly one predicate.
+  var viewerReady = false;
   var pathName = location.pathname;
   var adminIndex = pathName.lastIndexOf('/admin');
   var BASE = adminIndex === -1 ? '' : pathName.slice(0, adminIndex);
@@ -271,11 +270,15 @@ export function renderAdminHtml(strings: AdminStrings): string {
     return text ? text.slice(0, 19).replace('T', ' ') : '—';
   }
 
-  async function call(path, init) {
+  async function call(path, init, accept) {
     var headers = { 'x-bluepencil-admin': secret(), 'Content-Type': 'application/json' };
+    if (accept === 'json') { headers['accept'] = 'application/json'; }
     // The notes and journal are the ordinary API routes; the admin secret doubles as their
-    // credential, so this page never needs the hub's own secret.
-    if (path.indexOf('/admin') === -1) { headers['x-bluepencil-auth'] = secret(); }
+    // credential, so this page never needs the hub's own secret. The launcher is not an admin
+    // route and needs only the admin header: exactly one credential per request.
+    if (path.indexOf('/admin') === -1 && path.indexOf('/viewer/start') === -1) {
+      headers['x-bluepencil-auth'] = secret();
+    }
     var response = await fetch(BASE + path, Object.assign({ headers: headers }, init || {}));
     var text = await response.text();
     var body = null;
@@ -353,6 +356,21 @@ export function renderAdminHtml(strings: AdminStrings): string {
   }
 
   function renderOverview(status) {
+    // A 0.14.0 hub answers without the viewer field; the fallback keeps the page from throwing.
+    var viewer = status.viewer || { enabled: false, origin: null };
+    viewerReady = viewer.enabled === true && typeof viewer.origin === 'string' && viewer.origin !== '';
+    // The static markup ships the control 'disabled', so a click can never reach the launcher
+    // before this line ran; this assignment is the only place that enables it.
+    var button = el('open-viewer');
+    if (button) { button.disabled = !viewerReady; }
+    var note = el('viewer-note');
+    if (note) {
+      // Every state gets one true sentence: not enabled, configured but not ready (start window),
+      // or the resolved origin. The word "null" is never rendered.
+      note.textContent = viewerReady
+        ? fmt(T.launcherViewerAt, { origin: viewer.origin })
+        : (viewer.enabled === true ? T.launcherViewerPending : T.launcherViewerOff);
+    }
     var accepted = credentialNames(status);
     var rows = [
       [T.overviewHub, status.name + ' (v' + status.version + ')'],
@@ -403,6 +421,30 @@ export function renderAdminHtml(strings: AdminStrings): string {
       list.appendChild(dt);
       list.appendChild(dd);
     });
+  }
+
+  // Variant B of FR-6.29: the already authenticated page fetches the launcher with the admin
+  // header and navigates to the one-time ticket. The secret never enters a URL, and a failed
+  // attempt never navigates (no automatic retry — the message is the whole answer).
+  async function openViewer() {
+    var button = el('open-viewer');
+    if (!button || button.disabled) { return; }
+    button.disabled = true;
+    say('viewer-status', T.launcherOpening, 'busy');
+    try {
+      var body = await call('/viewer/start', { method: 'POST' }, 'json');
+      if (!body || typeof body.url !== 'string' || body.url === '') {
+        throw new TypeError('');
+      }
+      location.assign(body.url);
+      // No restore on success: the document navigates away, so re-enabling would be dead code.
+    } catch (error) {
+      var message = error && error.message ? error.message : String(error);
+      // A transport failure carries no server sentence, so it is wrapped in this page's own.
+      if (error && error.name === 'TypeError') { message = fmt(T.launcherError, { message: message }); }
+      say('viewer-status', message, 'error');
+      button.disabled = !viewerReady;
+    }
   }
 
   function emptyRow(colspan, primary, note) {
@@ -632,6 +674,7 @@ export function renderAdminHtml(strings: AdminStrings): string {
     if (!(target instanceof HTMLElement)) return;
     try {
       if (target.id === 'connect') { await connect(el('secret').value); return; }
+      if (target.id === 'open-viewer') { await openViewer(); return; }
       if (target.id === 'notes-reload') { await loadNotes(); return; }
       if (target.id === 'devices-reload') { await loadDevices(); return; }
       if (target.id === 'activity-reload') { await loadActivity(); return; }

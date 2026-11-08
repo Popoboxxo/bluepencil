@@ -13,6 +13,11 @@ import { join } from "node:path";
 import { parseServerArgs, startServer, type ServerOptions } from "../../server/index";
 import { adminGate, handleAdmin, verifyOperatorSecret } from "../../server/admin";
 import type { AdminThrottle, HandlerContext } from "../../server/handler";
+import {
+  createViewerSessions,
+  createViewerTickets,
+  type ViewerOptions,
+} from "../../server/viewer";
 
 const ADMIN = "admin-fixture-secret-1";
 const CLIENT_CREDENTIAL = "hub-fixture-secret-1";
@@ -948,5 +953,69 @@ describe("presence is pinned to the hub context, not to one request", () => {
     // The payload carries the timestamp, never the credential that produced it.
     expect(status.body).not.toContain(CLIENT_CREDENTIAL);
     expect(status.body).not.toContain(ADMIN);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * FR-6.29 — the admin status reports the viewer (spec §5.6, AC-L21/AC-L22)
+ *
+ * The payload is the only place the admin page learns whether it can open the viewer and where.
+ * It is therefore asserted in all three real states: off, configured but unresolved (the start
+ * window), and resolved.
+ * ---------------------------------------------------------------------------------------------- */
+
+function viewerOptions(overrides: Partial<ViewerOptions> = {}): ViewerOptions {
+  return {
+    assetsDir: freshDir(),
+    allow: ["example.com"],
+    ttlSeconds: 3600,
+    origin: "https://view.example.com",
+    sessions: createViewerSessions(3600),
+    tickets: createViewerTickets(),
+    ...overrides,
+  };
+}
+
+function adminContext(overrides: Partial<HandlerContext> = {}): HandlerContext {
+  return {
+    store: { notes: [] },
+    base: API,
+    environment: "dev",
+    adminSecret: ADMIN,
+    ...overrides,
+  };
+}
+
+function statusOf(context: HandlerContext): Record<string, unknown> {
+  const answer = handleAdmin(
+    { method: "GET", url: `${API}/admin/status`, headers: { "x-bluepencil-admin": ADMIN }, body: "" },
+    context,
+  );
+  expect(answer?.status).toBe(200);
+  return JSON.parse(String(answer?.body)) as Record<string, unknown>;
+}
+
+describe("the admin status reports the viewer (FR-6.29)", () => {
+  it("reports the viewer as enabled with its resolved origin", () => {
+    const status = statusOf(adminContext({ viewer: viewerOptions() }));
+    expect(status.viewer).toEqual({ enabled: true, origin: "https://view.example.com" });
+  });
+
+  it("reports the disabled viewer as exactly enabled false and origin null", () => {
+    const status = statusOf(adminContext());
+    expect(status.viewer).toEqual({ enabled: false, origin: null });
+    // The key exists; the page must not have to guess between "off" and "old hub".
+    expect(Object.prototype.hasOwnProperty.call(status, "viewer")).toBe(true);
+  });
+
+  it("reports enabled true with origin null while the origin is unresolved", () => {
+    const status = statusOf(adminContext({ viewer: viewerOptions({ origin: undefined }) }));
+    expect(status.viewer).toEqual({ enabled: true, origin: null });
+  });
+
+  it("carries no credential and no ticket in the viewer field", () => {
+    const body = JSON.stringify(statusOf(adminContext({ viewer: viewerOptions() })));
+    expect(body).not.toContain(ADMIN);
+    expect(body).not.toContain("ticket");
   });
 });

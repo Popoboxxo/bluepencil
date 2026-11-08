@@ -39,7 +39,9 @@ import { basename, join } from "node:path";
 import { randomBytes } from "node:crypto";
 
 import type { HandlerContext, ServerRequest, ServerResponse } from "./handler";
-import { isLoopbackAddress } from "./handler";
+import { isLoopbackAddress, surfaceOf } from "./handler";
+import { ADMIN_STRINGS, adminLanguage, type AdminStrings } from "./admin-i18n";
+import { renderLauncherHtml, fillTemplate } from "./launcher-html";
 import { ADMIN_HEADER } from "../src/core/protocol-headers";
 import type { HostResolver } from "../src/federation/net-policy";
 import {
@@ -565,10 +567,7 @@ export function viewerAuthorized(request: ServerRequest, context: HandlerContext
 }
 
 function headerValue(request: ServerRequest, name: string): string | undefined {
-  const raw = request.headers?.[name] ?? request.headers?.[name.toLowerCase()];
-  if (typeof raw === "string") return raw;
-  if (Array.isArray(raw)) return raw[0];
-  return undefined;
+  return firstHeaderValue(request, name);
 }
 
 function cookieValue(request: ServerRequest, name: string): string | undefined {
@@ -661,18 +660,7 @@ function contentTypeRefusal(contentType: string | null): string | null {
   return `the target answered with ${plain.split(";")[0]}, not HTML`;
 }
 
-/** The surface a context belongs to; `undefined` means "hub" (spec §2.1). */
-type Surface = "hub" | "viewer";
-
-type SurfaceAwareContext = HandlerContext & { surface?: Surface };
-
-/**
- * Reads the surface switch without importing `server/handler.ts`'s `surfaceOf()` (Task 6 owns that
- * function). An absent switch is the hub, which keeps every pre-viewer embed on the old surface.
- */
-function surfaceOf(context: HandlerContext): Surface {
-  return (context as SurfaceAwareContext).surface === "viewer" ? "viewer" : "hub";
-}
+/** The surface a context belongs to is read through `surfaceOf()` (`server/handler.ts`). */
 
 /** Path of the hub-side launcher: `{base}/viewer/start`. */
 export function isViewerStartRequest(url: string, context: HandlerContext): boolean {
@@ -688,6 +676,9 @@ function serviceNotReady(): ServerResponse {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
       "retry-after": "1",
+      // The answer is produced without reading a body (§5.1 rule 9): a kept-alive socket would
+      // carry unread bytes into the next request.
+      connection: "close",
     },
     body: JSON.stringify({
       error: {
@@ -698,13 +689,354 @@ function serviceNotReady(): ServerResponse {
   };
 }
 
+/* ------------------------------------------------------------------------------------------------
+ * Launcher: answer format, origin basis, body field and the header-only gates (spec §5.1–§5.3)
+ * ---------------------------------------------------------------------------------------------- */
+
+/** Size limit of the launcher body in bytes. Small, because the form carries exactly one field. */
+export const VIEWER_LAUNCHER_MAX_BODY_BYTES = 8 * 1024;
+
+/** The launcher's one field name. */
+export const VIEWER_LAUNCHER_FIELD = "secret";
+
+/** The answer format an `Accept` header asks for. Total: missing/unknown → `"json"`. */
+export type LauncherFormat = "html" | "json";
+
+/** The one media type a launcher body may declare (spec §5.1 rule 6). */
+const LAUNCHER_FORM_TYPE = "application/x-www-form-urlencoded";
+
+/** The CSP of every launcher HTML answer (spec §6): no script, no external resource, no framing. */
+const LAUNCHER_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+
+/** The JSON message of a refused secret — unchanged since 0.14.0 (AC-L03/L11 keep this body). */
+const LAUNCHER_INVALID_MESSAGE =
+  "the launcher needs the operator secret (x-bluepencil-admin header or ?k=)";
+
 /**
- * The hub-side launcher: operator secret → one-time ticket → `302` onto the viewer origin
- * (spec §2.2 rule 4, §3.1).
+ * Every value of one header, in wire order; an absent header is an empty list.
  *
- * Only the **hub** surface owns this route; the viewer surface answers `null` so the router's
- * ordinary 404 stands. The origin check runs before `verifyOperatorSecret()`, so an unresolved
- * origin never spends the `admin` budget and never mints a ticket.
+ * The lookup walks the keys instead of indexing two spellings, so it is fully case-insensitive
+ * for every caller (the same shape as `headerOf()` in `server/admin.ts`): a request built by
+ * hand may spell the name in any case, `node:http` lower-cases it on the wire.
+ */
+function headerValues(request: Pick<ServerRequest, "headers">, name: string): string[] {
+  const headers = request.headers;
+  if (headers === undefined) return [];
+  const wanted = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() !== wanted) continue;
+    const raw = headers[key];
+    if (typeof raw === "string") return [raw];
+    if (Array.isArray(raw)) return raw;
+    return [];
+  }
+  return [];
+}
+
+/** The first value of one header — the list-aware variant is `headerValues()` above. */
+function firstHeaderValue(request: Pick<ServerRequest, "headers">, name: string): string | undefined {
+  return headerValues(request, name)[0];
+}
+
+/**
+ * The first **non-empty** element of a comma-separated header, trimmed and lower-cased
+ * (spec §5.2 rule 1). `X-Forwarded-Host: , hub.example.com` therefore yields `hub.example.com`.
+ */
+function firstForwardedValue(request: Pick<ServerRequest, "headers">, name: string): string | undefined {
+  for (const value of headerValues(request, name).join(",").split(",")) {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return undefined;
+}
+
+/**
+ * The answer format an `Accept` header asks for (spec §5.1 rule 1).
+ *
+ * `html` only when an explicit `text/html` or `application/xhtml+xml` with `q > 0` is present and
+ * its `q` is at least the `q` of `application/json`; `*​/*`, `text/*` and a missing header are never
+ * an HTML wish. A tie wins HTML: browsers send `text/html` first, scripts send `*​/*`.
+ */
+export function launcherFormat(accept: string | undefined): LauncherFormat {
+  if (accept === undefined || accept.trim().length === 0) return "json";
+  let qHtml = 0;
+  let qJson = 0;
+  for (const rawRange of accept.split(",")) {
+    const parts = rawRange.split(";");
+    const media = (parts[0] ?? "").trim().toLowerCase();
+    let q = 1;
+    for (const rawParam of parts.slice(1)) {
+      const [key, ...rest] = rawParam.split("=");
+      if ((key ?? "").trim().toLowerCase() !== "q") continue;
+      const value = rest.join("=").trim();
+      const parsed = value === "" ? Number.NaN : Number(value);
+      // Unparseable → 1; a parseable value is clamped into the documented 0..1 range.
+      q = Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : 1;
+    }
+    if (media === "text/html" || media === "application/xhtml+xml") {
+      qHtml = Math.max(qHtml, q);
+    } else if (media === "application/json") {
+      qJson = Math.max(qJson, q);
+    }
+  }
+  return qHtml > 0 && qHtml >= qJson ? "html" : "json";
+}
+
+/**
+ * The origin a page served by this hub reports in `Origin`: the forwarded chain first
+ * (`x-forwarded-host` + `x-forwarded-proto`), `Host` as the fallback. `null` when it cannot be
+ * derived — the caller refuses with `403` rather than guessing (spec §5.2 rule 1).
+ */
+export function launcherOriginBasis(request: Pick<ServerRequest, "headers">): string | null {
+  const host =
+    firstForwardedValue(request, "x-forwarded-host") ?? firstForwardedValue(request, "host");
+  if (host === undefined) return null;
+  // A Host value is a host[:port] and nothing else. Anything that looks like userinfo, a path, a
+  // query, a fragment, embedded whitespace — or a backslash, which several clients and proxies
+  // normalize to `/` — is not an origin we are willing to compare against.
+  if (/[/\\?#@\s]/.test(host)) return null;
+  const scheme = firstForwardedValue(request, "x-forwarded-proto") === "https" ? "https" : "http";
+  return normalizeOrigin(`${scheme}://${host}`);
+}
+
+/** First value of the `secret` field of a form-urlencoded body; `undefined` when it is absent. */
+export function launcherSecretFromBody(body: string | undefined): string | undefined {
+  // `URLSearchParams` is the form-urlencoded contract itself: `+` → space, percent-decoding that
+  // never throws (`%zz` stays literal), and the first value for a duplicate key. No hand parser.
+  const value = new URLSearchParams(body ?? "").get(VIEWER_LAUNCHER_FIELD);
+  return value === null ? undefined : value;
+}
+
+/** The string table the launcher answers in: the same selection as `/admin` (FR-6.30). */
+function launcherStrings(request: Pick<ServerRequest, "headers">): AdminStrings {
+  return ADMIN_STRINGS[adminLanguage(firstHeaderValue(request, "accept-language"))];
+}
+
+/** One launcher HTML answer: the form page, optionally with the one-line error block (spec §4). */
+function launcherPageAnswer(
+  request: Pick<ServerRequest, "headers">,
+  context: HandlerContext,
+  status: number,
+  error?: string,
+  extra: Record<string, string> = {},
+): ServerResponse {
+  return {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-frame-options": "DENY",
+      "content-security-policy": LAUNCHER_CSP,
+      "referrer-policy": "no-referrer",
+      ...extra,
+    },
+    body: renderLauncherHtml(launcherStrings(request), {
+      action: viewerStartPath(context.base),
+      ...(error === undefined || error.length === 0 ? {} : { error }),
+    }),
+  };
+}
+
+/**
+ * An error answer in the format the request asked for (spec §3, "einheitliches Fehlerformat"):
+ * HTML gets the form plus the localized message, JSON keeps the `{error:{code,message}}` shape.
+ * `localizedError === undefined` renders the form without an error block — the 405 answer has no
+ * string in the shared table (§5.8 has exactly fourteen keys).
+ */
+function launcherErrorAnswer(
+  request: Pick<ServerRequest, "headers">,
+  context: HandlerContext,
+  status: number,
+  format: LauncherFormat,
+  code: string,
+  message: string,
+  localizedError: string | undefined,
+  extra: Record<string, string> = {},
+): ServerResponse {
+  if (format === "html") return launcherPageAnswer(request, context, status, localizedError, extra);
+  const answer = refusal(status, code, message);
+  return { status: answer.status, headers: { ...answer.headers, ...extra }, body: answer.body };
+}
+
+/** The declared `content-length`, or `null` when it is absent or not a number. */
+function declaredContentLength(request: Pick<ServerRequest, "headers">): number | null {
+  const raw = firstHeaderValue(request, "content-length");
+  if (raw === undefined || raw.trim().length === 0) return null;
+  const value = Number(raw.trim());
+  return Number.isFinite(value) ? value : null;
+}
+
+/**
+ * True when the request itself declares a body (spec §5.1 rule 6) — the ONE implementation, shared
+ * with the `node:http` glue that decides whether to read a body at all.
+ *
+ * The semantics are binding for both callers: a body is declared when the **first** `content-length`
+ * value parses as a number greater than `0`, **or** a `transfer-encoding` header is present. The
+ * `transfer-encoding` clause is not subordinate to the length: `content-length: 0` *plus*
+ * `transfer-encoding: chunked` is a declared (streamed) body, so the glue reads it and the media
+ * type gate below must see exactly the same answer. Everything else — no length, `0`, an
+ * unparseable length — is "no body".
+ */
+export function launcherDeclaresBody(request: Pick<ServerRequest, "headers">): boolean {
+  const length = declaredContentLength(request);
+  if (length !== null && length > 0) return true;
+  return firstHeaderValue(request, "transfer-encoding") !== undefined;
+}
+
+/** True when a declared body carries a media type other than the form's (spec §5.1 rule 6). */
+function refusesMediaType(request: Pick<ServerRequest, "headers">): boolean {
+  if (!launcherDeclaresBody(request)) return false;
+  const raw = firstHeaderValue(request, "content-type");
+  if (raw === undefined) return true;
+  const [type, ...params] = raw.split(";");
+  if ((type ?? "").trim().toLowerCase() !== LAUNCHER_FORM_TYPE) return true;
+  for (const param of params) {
+    const [name, ...rest] = param.split("=");
+    if ((name ?? "").trim().toLowerCase() !== "charset") continue;
+    const value = rest.join("=").trim().replace(/^"(.*)"$/, "$1").toLowerCase();
+    if (value !== "utf-8") return true;
+  }
+  return false;
+}
+
+/**
+ * True when a `POST` cannot have come from this hub's own page (spec §5.2 rules 4/6): a
+ * multi-valued or `null` `Origin`, an `Origin` that does not match the derived basis, or
+ * `Sec-Fetch-Site: cross-site`. A **missing** `Origin` is not an attack signal (curl has none).
+ */
+function refusesCrossSite(request: Pick<ServerRequest, "headers">): boolean {
+  const fetchSite = firstHeaderValue(request, "sec-fetch-site");
+  if (fetchSite !== undefined && fetchSite.split(",")[0]?.trim().toLowerCase() === "cross-site") {
+    return true;
+  }
+  const origins = headerValues(request, "origin");
+  if (origins.length === 0) return false;
+  if (origins.length > 1) return true; // several values are not a browser request — never parsed
+  const origin = origins[0];
+  if (origin === undefined) return false;
+  const raw = origin.trim().toLowerCase();
+  if (raw === "null") return true; // sandboxed iframe / file:// — never a match
+  // An `Origin` is scheme + host + port and nothing else; a path, query, fragment, userinfo or
+  // embedded whitespace is refused unparsed (spec §5.2 rule 4).
+  const withoutScheme = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//, "");
+  if (/[/?#@\s]/.test(withoutScheme)) return true;
+  const normalized = normalizeOrigin(raw);
+  if (normalized === null) return true;
+  const basis = launcherOriginBasis(request);
+  return basis === null || normalized !== basis;
+}
+
+/**
+ * The 413 answer for a body the request itself declared larger than the limit (spec §5.3). Its only
+ * caller is `launcherHeadRefusal()`; the glue has no `too_large` branch, because a streamed
+ * overshoot is cut off the way `readBody()` does it (no answer at all).
+ */
+export function launcherTooLargeAnswer(
+  request: Pick<ServerRequest, "url" | "headers">,
+  context: HandlerContext,
+): ServerResponse {
+  const strings = launcherStrings(request);
+  return launcherErrorAnswer(
+    request,
+    context,
+    413,
+    launcherFormat(firstHeaderValue(request, "accept")),
+    "payload_too_large",
+    strings.launcherBodyTooLarge,
+    strings.launcherBodyTooLarge,
+    { connection: "close" },
+  );
+}
+
+/**
+ * The header-only half of the launcher — the ONE implementation of the gates in spec §3:
+ * `405` (method ∉ {GET, POST}), `503` (viewer origin unresolved), `403` (CSRF gate, POST only),
+ * `415` (POST with a declared body, media type ≠ the form type), `413` (declared size over the
+ * limit).
+ *
+ * Reads no body, calls no `verifyOperatorSecret()`, spends no budget, mints nothing. Its answer
+ * format comes from `launcherFormat(accept)` itself — with one deliberate exception: the `503`
+ * start-window answer (`serviceNotReady()`) is **always** JSON, because it reports a hub state
+ * rather than anything a form could fix, so no form is rendered for it. Every answer carries
+ * `connection: close`, because no branch has consumed a body.
+ *
+ * `null` means: the caller may read the body (POST) or check the secret (GET).
+ */
+export function launcherHeadRefusal(
+  request: Pick<ServerRequest, "method" | "url" | "headers">,
+  context: HandlerContext,
+): ServerResponse | null {
+  const format = launcherFormat(firstHeaderValue(request, "accept"));
+  const method = (request.method ?? "GET").toUpperCase();
+
+  // 1. Method first: nothing below it (origin, secret, budget) may run for a foreign verb.
+  if (method !== "GET" && method !== "POST") {
+    return launcherErrorAnswer(
+      request,
+      context,
+      405,
+      format,
+      "method_not_allowed",
+      `${method} is not allowed on ${viewerStartPath(context.base)} — documented method(s): GET, POST`,
+      undefined,
+      { allow: "GET, POST", connection: "close" },
+    );
+  }
+
+  // 2. Origin resolved: the start window answers JSON — no form value can fix it.
+  const origin = context.viewer?.origin;
+  if (context.viewer === undefined || origin === undefined || origin.length === 0) {
+    return serviceNotReady();
+  }
+
+  if (method === "POST") {
+    // 3. CSRF gate before the media type, the size and any read (spec §5.2).
+    if (refusesCrossSite(request)) {
+      const strings = launcherStrings(request);
+      return launcherErrorAnswer(
+        request,
+        context,
+        403,
+        format,
+        "forbidden_origin",
+        strings.launcherForbidden,
+        strings.launcherForbidden,
+        { connection: "close" },
+      );
+    }
+    // 4. Media type — only for a request that declares a body, so a body-less header POST
+    //    (the admin button) passes like a GET with a header.
+    if (refusesMediaType(request)) {
+      const strings = launcherStrings(request);
+      return launcherErrorAnswer(
+        request,
+        context,
+        415,
+        format,
+        "unsupported_media_type",
+        strings.launcherUnsupportedBody,
+        strings.launcherUnsupportedBody,
+        { connection: "close" },
+      );
+    }
+    // 5. Declared size: answer before the body is read. A streamed overshoot is not handled here.
+    const declared = declaredContentLength(request);
+    if (declared !== null && declared > VIEWER_LAUNCHER_MAX_BODY_BYTES) {
+      return launcherTooLargeAnswer(request, context);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * The hub-side launcher: operator secret → one-time ticket → `302`/`303` onto the viewer origin,
+ * or the form page / `{"url": …}` for the two browser paths (spec §5.1 rule 2, §3).
+ *
+ * Only the **hub** surface owns this route; the viewer surface answers `null` so its own refusal
+ * stands. The gate order is `launcherHeadRefusal()`'s, then secret, then one mint. `?k=` is read on
+ * `GET` only: a `POST` never reads and never compares it (§2.5 rule 3).
  */
 export function handleViewerStart(
   request: ServerRequest,
@@ -715,37 +1047,51 @@ export function handleViewerStart(
   if (surfaceOf(context) !== "hub") return null;
   if (!isViewerStartRequest(request.url ?? "/", context)) return null;
 
-  // R2-F4: the launcher is a GET-only route (spec §2.8). A state-changing verb must be refused
-  // before the origin and the operator secret are consulted, so a POST can never mint a ticket and
-  // never spends the `admin` budget. `Allow` names the one documented method.
   const method = (request.method ?? "GET").toUpperCase();
-  if (method !== "GET") {
-    const response = refusal(
-      405,
-      "method_not_allowed",
-      `${method} is not allowed on ${viewerStartPath(context.base)} — documented method(s): GET`,
-    );
-    response.headers.allow = "GET";
-    return response;
+  const format = launcherFormat(firstHeaderValue(request, "accept"));
+
+  // Defense in depth: the glue runs the same gates before it reads a body (§5.3 rule 8).
+  const head = launcherHeadRefusal(request, context);
+  if (head !== null) return head;
+
+  // Secret extraction. The header always wins; `?k=` is a GET-only compatibility path.
+  const header = firstHeaderValue(request, ADMIN_HEADER);
+  const url = new URL(request.url ?? "/", "http://hub.invalid");
+  const presented =
+    header !== undefined
+      ? header
+      : method === "POST"
+        ? launcherSecretFromBody(request.body)
+        : (url.searchParams.get("k") ?? undefined);
+
+  // A browser without a secret gets the page — and spends no budget, because nothing was guessed.
+  if (
+    (presented === undefined || presented === "") &&
+    format === "html" &&
+    method === "GET"
+  ) {
+    return launcherPageAnswer(request, context, 200);
   }
 
-  // Defense in depth: `startHub()` resolves the origin before the first served request. This
-  // branch must never emit a relative or empty Location, and it must not mint.
-  if (viewer.origin === undefined || viewer.origin.length === 0) return serviceNotReady();
-
-  const url = new URL(request.url ?? "/", "http://hub.invalid");
-  const header = headerValue(request, ADMIN_HEADER);
-  // The header wins: when it is present, a `?k=` value is never consulted.
-  const presented = header !== undefined ? header : (url.searchParams.get("k") ?? undefined);
   const verdict = verifyOperatorSecret(request, context, presented);
 
   if (verdict.kind === "throttled") {
+    const seconds = verdict.retryAfterSeconds;
+    if (format === "html") {
+      return launcherPageAnswer(
+        request,
+        context,
+        429,
+        fillTemplate(launcherStrings(request).launcherThrottled, { seconds }),
+        { "retry-after": String(seconds) },
+      );
+    }
     return {
       status: 429,
       headers: {
         "content-type": "application/json; charset=utf-8",
         "cache-control": "no-store",
-        "retry-after": String(verdict.retryAfterSeconds),
+        "retry-after": String(seconds),
       },
       body: JSON.stringify({
         error: {
@@ -755,18 +1101,36 @@ export function handleViewerStart(
       }),
     };
   }
-  if (verdict.kind === "invalid") {
-    return refusal(401, "unauthorized", "the launcher needs the operator secret (x-bluepencil-admin header or ?k=)");
-  }
-  if (viewer.tickets === undefined) return serviceNotReady();
 
+  if (verdict.kind === "invalid") {
+    if (format === "html") {
+      return launcherPageAnswer(request, context, 401, launcherStrings(request).launcherInvalidSecret);
+    }
+    return refusal(401, "unauthorized", LAUNCHER_INVALID_MESSAGE);
+  }
+
+  if (viewer.tickets === undefined) return serviceNotReady();
+  const origin = viewer.origin;
+  if (origin === undefined || origin.length === 0) return serviceNotReady();
+
+  // Exactly one mint, and one local computation of the destination (spec §5.1 rule 2 step 9).
   const ticket = viewer.tickets.mint().ticket;
-  const origin = viewer.origin.replace(/\/+$/, "");
-  const base = context.base.replace(/\/+$/, "");
+  const location = `${origin.replace(/\/+$/, "")}${context.base.replace(/\/+$/, "")}/viewer?ticket=${ticket}`;
+
+  if (method === "POST" && format === "json") {
+    // 200, not 303: `fetch` follows a redirect opaquely, so the JSON path hands the URL over as
+    // data and the page navigates once (§5.4).
+    return {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+      body: JSON.stringify({ url: location }),
+    };
+  }
+
   return {
-    status: 302,
+    status: method === "POST" ? 303 : 302,
     headers: {
-      location: `${origin}${base}/viewer?ticket=${ticket}`,
+      location,
       "referrer-policy": "no-referrer",
       "cache-control": "no-store",
     },

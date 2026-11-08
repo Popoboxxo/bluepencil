@@ -136,4 +136,43 @@ revision cycle.
 
 After revision, re-run this review; the user approval remains a separate gate.
 
+## Revision 2026-11-08 (Issue #144)
+
+> Dated addendum. The findings above are **not** rewritten: they remain the record of what was
+> reviewed on 2026-11-06 against the then-current spec. This section only records what has been
+> decided since.
+
+**Finding E3 — „Secret transport: `?k=` + `x-bluepencil-admin`, no POST form" — is `superseded`.**
+
+The verdict row in §4 stays as written; it is no longer the governing decision. The deciding
+document is `docs/specs/2026-11-08-viewer-launcher-entry.md`
+(`spec-id: SPEC-viewer-launcher-entry`), §2 „Revisionsentscheidung".
+
+Why the finding no longer holds, stated as the delta between the assumption and the code:
+
+1. **The premise changed, not the taste.** When E3 was written, `{base}/viewer?k=` still worked and
+   the launcher was one entry among several. Since 0.14.0 it is the *only* entry on the hub origin
+   (the old `{base}/viewer?k=` link is `404`), so `?k=` stopped being a script convenience and
+   became the only path a browser can take.
+2. **The residual became the default.** E3 itself recommended to „document `?k=` history/logs as
+   residual". With one browser-facing path left, that residual is no longer an exception but
+   standard operation: address bar, history, `Referer`, access log.
+3. **The failure path is a dead end.** A browser that reaches the launcher without a secret gets the
+   JSON `401` („the launcher needs the operator secret (x-bluepencil-admin header or ?k=)") — correct
+   for a script, useless for a person, and it offers no route back to a login.
+
+The security delta of the reversal, in one line: the secret moves from the URL into the request body
+on the **same** hub origin, is verified by the **same** `verifyOperatorSecret()` against the **same**
+`admin` budget, the redirect still carries `referrer-policy: no-referrer` and `cache-control:
+no-store`, and the form adds a CSRF gate (`Origin` / `Sec-Fetch-Site`) plus an 8 KiB body limit —
+one field, no new credential, no second comparison site.
+
+Residual risk, unchanged in kind but now documented rather than implied: a client that sends no
+`Origin` (curl, scripts, old proxies) is not blocked by the CSRF gate; a TLS-terminating proxy on a
+non-loopback peer may produce a false `403` (same loopback-trust rule as `publicOrigin()`).
+
+Consequences for this document: §2.1 (CR-01…CR-12), §2.2 (CR-13…CR-26) and §3 are unaffected and
+stay valid. E3 is the only decision in §4 that this change supersedes; E1, E2, E4, E5, S1, S2 and S3
+remain in force.
+
 

@@ -92,16 +92,20 @@ async function serve(options: HubOptions): Promise<RunningServer> {
 function request(
   port: number,
   path: string,
-  init: { method?: string; headers?: Record<string, string> } = {},
+  init: { method?: string; headers?: Record<string, string>; body?: string } = {},
 ): Promise<Answer> {
   return new Promise((resolve, reject) => {
+    const headers: Record<string, string> = { ...(init.headers ?? {}) };
+    if (init.body !== undefined && headers["content-length"] === undefined) {
+      headers["content-length"] = String(Buffer.byteLength(init.body));
+    }
     const req = nodeRequest(
       {
         host: "127.0.0.1",
         port,
         path,
         method: init.method ?? "GET",
-        headers: init.headers ?? {},
+        headers,
       },
       (response) => {
         let text = "";
@@ -115,6 +119,83 @@ function request(
       },
     );
     req.on("error", reject);
+    req.end(init.body);
+  });
+}
+
+/** A form-encoded launcher POST: `content-type` and `content-length` as a browser sends them. */
+function urlencoded(
+  fields: Record<string, string>,
+  headers: Record<string, string> = {},
+): { headers: Record<string, string>; body: string } {
+  return {
+    headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
+    body: new URLSearchParams(fields).toString(),
+  };
+}
+
+/**
+ * Sends the headers of a request with a declared `content-length` but **no** body, and keeps the
+ * write side open until the answer arrives (AC-L14: the client streams nothing and waits).
+ */
+function requestWithDeclaredBodyOnly(
+  port: number,
+  path: string,
+  headers: Record<string, string>,
+): Promise<Answer> {
+  return new Promise((resolve, reject) => {
+    const req = nodeRequest(
+      { host: "127.0.0.1", port, path, method: "POST", headers },
+      (response) => {
+        let text = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          text += chunk;
+        });
+        response.on("end", () => {
+          resolve({ status: response.statusCode ?? 0, headers: response.headers, text });
+          req.destroy();
+        });
+      },
+    );
+    req.on("error", reject);
+    req.flushHeaders();
+  });
+}
+
+/**
+ * Streams a chunked body past the launcher limit and resolves with the observed outcome: a
+ * transport error code, or the status of an answer that should not exist (AC-L29).
+ *
+ * A **timeout is a failure**, not an outcome: AC-L29 requires a cut socket, and a request that
+ * simply hangs would otherwise satisfy "no status" for the wrong reason. Only this file's single
+ * caller uses the helper, so the timeout branch rejects instead of resolving a passing value.
+ */
+function requestChunkedOvershoot(
+  port: number,
+  path: string,
+  headers: Record<string, string>,
+  size: number,
+): Promise<{ error?: string; status?: number }> {
+  return new Promise((resolve, reject) => {
+    const req = nodeRequest(
+      { host: "127.0.0.1", port, path, method: "POST", headers },
+      (response) => {
+        response.resume();
+        clearTimeout(timer);
+        resolve({ status: response.statusCode ?? 0 });
+      },
+    );
+    const timer = setTimeout(() => {
+      req.destroy();
+      reject(new Error(`no cut socket within 2s on ${path}: the launcher answered nothing (AC-L29)`));
+    }, 2000);
+    timer.unref();
+    req.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({ error: (error as NodeJS.ErrnoException).code ?? String(error) });
+    });
+    req.write("x".repeat(size));
     req.end();
   });
 }
@@ -384,14 +465,140 @@ describe("dispatch gate — the hub never serves viewer content, even with --roo
       new RegExp(`^https://view\\.example\\.com${BASE}/viewer\\?ticket=[0-9a-f]{48}$`),
     );
 
-    // R2-F4: the launcher stays GET-only through the dispatch path too; a POST never mints.
+    // Spec §3 row 8/9: a POST with the operator header and a body-less request is the admin
+    // button's shape — 303 with HTML, no 415/413 rule fires. It is no longer a 405.
     const posted = await request(server.port, startPath, {
       method: "POST",
+      headers: { "x-bluepencil-admin": OPERATOR_SECRET, accept: "text/html" },
+    });
+    expect(posted.status).toBe(303);
+    expect(String(posted.headers["location"])).toMatch(
+      new RegExp(`^https://view\\.example\\.com${BASE}/viewer\\?ticket=[0-9a-f]{48}$`),
+    );
+    expect(posted.headers["set-cookie"]).toBeUndefined();
+    expect(posted.headers["connection"]).not.toBe("close");
+
+    // The documented method gate is now `Allow: GET, POST`; PUT is the foreign verb.
+    const put = await request(server.port, startPath, { method: "PUT" });
+    expect(put.status).toBe(405);
+    expect(String(put.headers["allow"])).toBe("GET, POST");
+    expect(put.headers["connection"]).toBe("close");
+    expect(put.headers["location"]).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * The launcher body over the wire (spec §3, §5.3)
+ * ---------------------------------------------------------------------------------------------- */
+
+describe("the launcher reads a form body once, gated and size-limited", () => {
+  const startPath = `${BASE}/viewer/start`;
+
+  function launcherHub(): Promise<RunningServer> {
+    return serve({
+      storePath: storePath(),
+      port: 0,
+      adminSecret: OPERATOR_SECRET,
+      viewer: viewerOptions({ origin: "https://view.example.com" }),
+    });
+  }
+
+  it("answers 303 for a form body and never echoes the secret", async () => {
+    const server = await launcherHub();
+    const answer = await request(server.port, startPath, {
+      method: "POST",
+      ...urlencoded({ secret: OPERATOR_SECRET }, { accept: "text/html" }),
+    });
+    expect(answer.status).toBe(303);
+    expect(String(answer.headers["location"])).toMatch(
+      new RegExp(`^https://view\\.example\\.com${BASE}/viewer\\?ticket=[0-9a-f]{48}$`),
+    );
+    expect(answer.headers["referrer-policy"]).toBe("no-referrer");
+    expect(answer.headers["cache-control"]).toBe("no-store");
+    // AC-L06/L28 hold over the wire too: the ticket is the only credential in the answer.
+    expect(answer.headers["set-cookie"]).toBeUndefined();
+    expect(answer.text).not.toContain(OPERATOR_SECRET);
+  });
+
+  it("answers 413 for 9000 declared bytes without reading, and the answer is fully readable", async () => {
+    const server = await launcherHub();
+    const answer = await requestWithDeclaredBodyOnly(server.port, startPath, {
+      accept: "application/json",
+      "content-type": "application/x-www-form-urlencoded",
+      "content-length": "9000",
+    });
+    expect(answer.status).toBe(413);
+    expect(answer.headers["connection"]).toBe("close");
+    expect(errorCode(answer)).toBe("payload_too_large");
+    expect(answer.headers["location"]).toBeUndefined();
+  });
+
+  it("answers 415 for a declared body with a non-form content-type", async () => {
+    const server = await launcherHub();
+    const answer = await request(server.port, startPath, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: '{"secret":"x"}',
+    });
+    expect(answer.status).toBe(415);
+    expect(answer.headers["connection"]).toBe("close");
+    expect(errorCode(answer)).toBe("unsupported_media_type");
+  });
+
+  it("cuts the socket without an answer for a chunked 9000-byte body (AC-L29)", async () => {
+    const server = await launcherHub();
+    const outcome = await requestChunkedOvershoot(
+      server.port,
+      startPath,
+      { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+      9000,
+    );
+    // No 413, no 400, no 200: the socket is cut off the way readBody() does it. The helper rejects
+    // on a hang, so this test is red when the request is not cut off at all.
+    expect(outcome.status).toBeUndefined();
+    expect(outcome.error).toBeDefined();
+    expect(outcome.error).not.toBe("timeout");
+  });
+
+  it("shares the admin budget with /admin/status in both directions (AC-L30)", async () => {
+    const fromLauncher = await launcherHub();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const wrong = await request(fromLauncher.port, startPath, {
+        method: "POST",
+        ...urlencoded({ secret: `wrong-${attempt}` }, { accept: "application/json" }),
+      });
+      expect(wrong.status, `attempt ${attempt}`).toBe(401);
+    }
+    const admin = await request(fromLauncher.port, `${BASE}/admin/status`, {
       headers: { "x-bluepencil-admin": OPERATOR_SECRET },
     });
-    expect(posted.status).toBe(405);
-    expect(String(posted.headers["allow"])).toBe("GET");
-    expect(posted.headers["location"]).toBeUndefined();
+    expect(admin.status).toBe(429);
+    expect(String(admin.headers["retry-after"])).toBe("300");
+
+    const fromAdmin = await launcherHub();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const wrong = await request(fromAdmin.port, `${BASE}/admin/status`, {
+        headers: { "x-bluepencil-admin": `wrong-${attempt}` },
+      });
+      expect(wrong.status, `attempt ${attempt}`).toBe(401);
+    }
+    const throttled = await request(fromAdmin.port, startPath, {
+      method: "POST",
+      ...urlencoded({ secret: OPERATOR_SECRET }, { accept: "application/json" }),
+    });
+    expect(throttled.status).toBe(429);
+    expect(String(throttled.headers["retry-after"])).toBe("300");
+  });
+
+  it("answers 404 for GET and POST on a hub without a viewer (AC-L19)", async () => {
+    const server = await serve({ storePath: storePath(), port: 0, adminSecret: OPERATOR_SECRET });
+    expect((await request(server.port, startPath)).status).toBe(404);
+    const posted = await request(server.port, startPath, {
+      method: "POST",
+      ...urlencoded({ secret: OPERATOR_SECRET }, { accept: "text/html" }),
+    });
+    expect(posted.status).toBe(404);
+    expect(posted.text).not.toContain("<form");
   });
 });
 

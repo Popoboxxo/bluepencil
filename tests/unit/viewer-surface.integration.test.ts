@@ -348,6 +348,20 @@ describe("IT-09 — viewer surface 404s admin, MCP, journal, config, launcher an
     expectNotFound(mcp, "viewer POST /mcp");
     expect(mcp.text).not.toContain(OPERATOR);
 
+    // AC-L20 names GET **and** POST for the launcher path on the viewer surface.
+    const launcherPost = await request(port, `${BASE}/viewer/start`, {
+      method: "POST",
+      headers: {
+        cookie,
+        "content-type": "application/x-www-form-urlencoded",
+        "x-bluepencil-admin": OPERATOR,
+      },
+      body: `secret=${OPERATOR}`,
+    });
+    expectNotFound(launcherPost, "viewer POST /viewer/start");
+    expect(launcherPost.text).not.toContain(OPERATOR);
+    expect(launcherPost.headers["location"]).toBeUndefined();
+
     // A `--root` file lives outside `{base}`, so the viewer refusal catches it structurally.
     const staticFile = await request(port, "/other.html", { headers: { cookie } });
     expectNotFound(staticFile, "viewer GET /other.html");

@@ -330,6 +330,15 @@ function statusPayload(context: HandlerContext, registry: RegistryRead): Record<
     // can render the rest of the status.
     ...(registry.error === undefined ? {} : { devicesError: registry.error }),
     revoked: revoked === undefined ? 0 : revoked.size,
+    /**
+     * FR-6.29: whether this hub can open the viewer and where it lives. Never a secret, never a
+     * ticket. Deliberately absent from the credential-free `/config`. The start window is a real
+     * third state (`{enabled: true, origin: null}`), so the page must key on both fields.
+     */
+    viewer: {
+      enabled: context.viewer !== undefined,
+      origin: context.viewer?.origin ?? null,
+    },
   };
 }
 
