@@ -1,3 +1,22 @@
+## [0.15.2] - 2026-11-19
+
+### Fixed
+
+- **jsdom 31 compatibility in the layer's stylesheet lifecycle.** `document.adoptedStyleSheets` in
+  jsdom 31 keeps a live array and exposes its accessor on `Document.prototype`. `adoptStyles()` now
+  snapshots the host's sheets before adding ours, so `disable()` really restores the previous list
+  instead of leaking the layer's sheet into the page. The "no constructable stylesheets" test now
+  shadows the prototype accessor with an own `undefined` (the shape the layer actually checks for)
+  and disables its layer in `finally`, so a failed assertion cannot leave an active mode listening
+  on the shared document — the third former failure, an idle Alt+click being prevented, was that
+  cascade and passes once the first two are fixed.
+
+### Verified
+
+- `NODE_ENV=test npm run verify` — **121 test files, 2759 tests passed**; typecheck,
+  `typecheck:ext`, build, `build:ext`, `verify:sync`, `size` and `smoke:components -- --no-docker`
+  (**14 passed, 0 failed, 1 skipped**) green.
+
 ## [0.15.1] - 2026-11-19
 
 ### Added
