@@ -203,9 +203,10 @@ function adoptStyles(doc: Document): boolean {
     const sheet = new Sheet();
     sheet.replaceSync(STYLES);
     // Record what the document had adopted BEFORE adding ours, so teardown can put the host's own
-    // sheets back. Capturing the array after the assignment would store the combined list and make
-    // teardown a no-op that leaks our sheet into the page for good.
-    const previous = target.adoptedStyleSheets;
+    // sheets back. Snapshot the array: an engine (jsdom 31 among them) may keep a live list behind
+    // this property and mutate the array it is given on assignment — holding that same reference
+    // would make the restore below a no-op and leak our sheet into the page for good.
+    const previous = [...target.adoptedStyleSheets];
     target.adoptedStyleSheets = [...previous, sheet];
     STYLE_NODES.set(doc, { handle: { kind: "adopted", previous }, refs: 1 });
     return true;
