@@ -36,6 +36,7 @@ describe("normalizeSettings", () => {
       tokenExpiresAt: "2026-10-01T12:00:00.000Z",
       deviceName: "work-laptop",
       mountAlongsideHost: true,
+      allowInsecureEndpoint: true,
     };
     expect(normalizeSettings(input)).toEqual(input);
   });
@@ -68,6 +69,12 @@ describe("normalizeSettings", () => {
       ["mountAlongsideHost", "yes", "mountAlongsideHost"],
       ["mountAlongsideHost", 1, "mountAlongsideHost"],
       ["mountAlongsideHost", null, "mountAlongsideHost"],
+      // The cleartext override is the same class of switch: a stored string "true" must not turn a
+      // security guard off (#SEC-18). Only a literal boolean `true` counts as opted in.
+      ["allowInsecureEndpoint", "true", "allowInsecureEndpoint"],
+      ["allowInsecureEndpoint", "yes", "allowInsecureEndpoint"],
+      ["allowInsecureEndpoint", 1, "allowInsecureEndpoint"],
+      ["allowInsecureEndpoint", null, "allowInsecureEndpoint"],
     ];
     for (const [field, bad, expectedKey] of cases) {
       const result = normalizeSettings({ [field]: bad });
@@ -151,6 +158,13 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({}).mountAlongsideHost).toBe(false);
     expect(normalizeSettings({ mountAlongsideHost: true }).mountAlongsideHost).toBe(true);
     expect(normalizeSettings({ mountAlongsideHost: false }).mountAlongsideHost).toBe(false);
+
+    // The cleartext override must default to off and only accept a literal boolean, so an old or
+    // hand-edited storage blob can never turn the SEC-18 guard off by accident.
+    expect(DEFAULT_SETTINGS.allowInsecureEndpoint).toBe(false);
+    expect(normalizeSettings({}).allowInsecureEndpoint).toBe(false);
+    expect(normalizeSettings({ allowInsecureEndpoint: true }).allowInsecureEndpoint).toBe(true);
+    expect(normalizeSettings({ allowInsecureEndpoint: false }).allowInsecureEndpoint).toBe(false);
   });
 
   it("keeps a readable expiry and drops one that cannot be read", () => {

@@ -73,6 +73,15 @@ export interface ExtensionSettings {
    * reviewer wants *their* layer on every page, host embed or not.
    */
   mountAlongsideHost: boolean;
+  /**
+   * Explicit opt-in to send a configured credential over cleartext HTTP to a non-loopback hub.
+   *
+   * Off by default: ADR-0.12-S2 / SEC-18 refuses that combination in the options page's save and
+   * probe paths. Turning this on is a conscious decision for a trusted network; the secret or token
+   * is then readable by anyone on that network. It never turns an HTTPS URL into HTTP and does not
+   * change which credential header is sent.
+   */
+  allowInsecureEndpoint: boolean;
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -88,6 +97,9 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
   deviceName: "",
   // Off by default is the whole point of #70: the page's own embed wins unless the user says otherwise.
   mountAlongsideHost: false,
+  // Off by default is the whole point of SEC-18: no credential on cleartext LAN without an explicit
+  // opt-in on the options page.
+  allowInsecureEndpoint: false,
 };
 
 /**
@@ -141,6 +153,12 @@ export function normalizeSettings(value: unknown): ExtensionSettings {
       typeof raw.mountAlongsideHost === "boolean"
         ? raw.mountAlongsideHost
         : DEFAULT_SETTINGS.mountAlongsideHost,
+    // Literal `true` only, exactly like the host-embed switch: a hand-edited blob with the string
+    // "true" must not silently turn off a security guard (#SEC-18).
+    allowInsecureEndpoint:
+      typeof raw.allowInsecureEndpoint === "boolean"
+        ? raw.allowInsecureEndpoint
+        : DEFAULT_SETTINGS.allowInsecureEndpoint,
   };
 }
 

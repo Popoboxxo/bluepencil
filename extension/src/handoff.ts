@@ -19,14 +19,19 @@ import type { ExtensionSettings } from "./settings";
  *
  * A credential, its expiry and a device name belong to the extension only. They are omitted here at
  * the type level *and* stripped at runtime: the page never receives a value it could read out of
- * `__bluepencilConfig__` (SEC-14, AC-B15).
+ * `__bluepencilConfig__` (SEC-14, AC-B15). The cleartext opt-in is stripped for the same reason,
+ * minus the credential risk: it is an options-page-only transport decision, and a page reading its
+ * own config has no business learning which guards its reviewer switched off.
  */
-export type PageSettings = Omit<ExtensionSettings, "token" | "tokenExpiresAt" | "deviceName">;
+export type PageSettings = Omit<
+  ExtensionSettings,
+  "token" | "tokenExpiresAt" | "deviceName" | "allowInsecureEndpoint"
+>;
 
 /**
  * The page-facing projection of the settings.
  *
- * The three extension-only fields are **removed**, not merely unnamed by the type: an object spread
+ * The extension-only fields are **removed**, not merely unnamed by the type: an object spread
  * would carry them into `__bluepencilConfig__`, where any page script could read the hub credential.
  * The credential is attached by the worker only, after validation (AC-B13, AC-B15).
  */
@@ -35,6 +40,7 @@ export function pageSettingsFor(settings: ExtensionSettings): PageSettings {
   delete page.token;
   delete page.tokenExpiresAt;
   delete page.deviceName;
+  delete page.allowInsecureEndpoint;
   return page as unknown as PageSettings;
 }
 

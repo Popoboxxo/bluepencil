@@ -90,7 +90,11 @@ export function saveInGesture(
  * (`insecure_endpoint`, AC-B60) in the same shape a `SaveDecision` uses. `save_` renders the message
  * and returns before it asks for a permission or writes anything.
  */
-export function insecureSaveRefusal(input: { endpoint: string; auth: CredentialMode }):
+export function insecureSaveRefusal(input: {
+  endpoint: string;
+  auth: CredentialMode;
+  allowInsecure?: boolean;
+}):
   | { ok: false; code: "insecure_endpoint"; message: string }
   | null {
   const message = insecureEndpointRefusal(input);
@@ -177,6 +181,7 @@ const FIELDS = [
 /** The checkbox fields — booleans, read from `.checked` rather than `.value`. */
 const CHECKBOXES = [
   "mountAlongsideHost",
+  "allowInsecureEndpoint",
 ] as const satisfies readonly (keyof ExtensionSettings)[];
 
 function byId<T extends HTMLElement>(id: string): T {
@@ -279,9 +284,14 @@ async function testConnection_(): Promise<void> {
   say("Testing…");
   try {
     const settings = normalizeSettings(readForm());
-    // The same check the save path uses (ADR-0.12-S2): testing is not a way around it. Nothing is
-    // sent — there is no request whose credential could travel in cleartext.
-    const refusal = insecureEndpointRefusal({ endpoint: settings.endpoint, auth: settings.auth });
+    // The same check the save path uses (ADR-0.12-S2): testing is not a way around it, and the
+    // explicit opt-in from the form is honoured in both paths. Nothing is sent — there is no request
+    // whose credential could travel in cleartext.
+    const refusal = insecureEndpointRefusal({
+      endpoint: settings.endpoint,
+      auth: settings.auth,
+      allowInsecure: settings.allowInsecureEndpoint,
+    });
     if (refusal !== null) {
       sayIfCurrent(generation, refusal, "error");
       return;
@@ -330,14 +340,21 @@ function save_(): void {
 
   // ADR-0.12-S2 (AC-B60): a credential must not go over plain HTTP to anything but this machine.
   // Refused here — before `saveInGesture` asks Chrome for the origin and before `persist` — so a
-  // refused endpoint is neither granted a permission nor written. No silent downgrade to https and
-  // no "insecure" override: the user fixes the URL or sets Authentication to None.
+  // refused endpoint is neither granted a permission nor written. No silent downgrade to https;
+  // the cleartext-to-LAN case is allowed only through the explicit `allowInsecureEndpoint` opt-in
+  // from the options form, which is labelled as insecure and off by default.
   //
   // Only the hub store sends the credential, so only the hub store is judged: `decideSave` likewise
   // never asks for a permission for a local store. A hidden cleartext URL left in the form must not
   // block an unrelated local save — nothing would be sent.
   const refusal =
-    settings.store === "http" ? insecureSaveRefusal({ endpoint, auth: settings.auth }) : null;
+    settings.store === "http"
+      ? insecureSaveRefusal({
+          endpoint,
+          auth: settings.auth,
+          allowInsecure: settings.allowInsecureEndpoint,
+        })
+      : null;
   if (refusal !== null) {
     sayIfCurrent(generation, refusal.message, "error");
     save.disabled = false;
