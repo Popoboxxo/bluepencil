@@ -448,21 +448,27 @@ describe("layer lifecycle", () => {
     const realSheet = Object.getOwnPropertyDescriptor(proto, "sheet");
     Object.defineProperty(proto, "sheet", { ...realSheet, get: () => null, configurable: true });
     const target = document as Document & { adoptedStyleSheets?: CSSStyleSheet[] };
-    const realAdopted = target.adoptedStyleSheets;
-    // An engine without constructable stylesheets simply has no such property at all.
-    delete (target as { adoptedStyleSheets?: CSSStyleSheet[] }).adoptedStyleSheets;
-
+    // An engine without constructable stylesheets has no usable adoption property. jsdom 31 moved
+    // it to Document.prototype, so `delete target.adoptedStyleSheets` is a no-op there and the
+    // layer still takes the constructable path. Shadow the accessor with an own `undefined` — that
+    // is the shape `adoptStyles()` actually checks for, on both jsdom 30 and 31.
+    Object.defineProperty(target, "adoptedStyleSheets", { value: undefined, configurable: true });
+    let layer: ReturnType<typeof createLayer> | undefined;
     try {
       const mount = document.createElement("div");
       document.body.append(mount);
-      const layer = createLayer({ store: makeStore(), document, mount });
+      layer = createLayer({ store: makeStore(), document, mount });
       layer.enable();
       expect(document.querySelectorAll("style[data-bp-styles]").length).toBe(1);
       layer.disable();
+      layer = undefined;
       expect(document.querySelectorAll("style[data-bp-styles]").length).toBe(0);
     } finally {
+      // A failed assertion must not leave an enabled layer listening on the shared document — that
+      // leaks an active mode into the next test's idle-click case (FR-12.6).
+      layer?.disable();
       if (realSheet) Object.defineProperty(proto, "sheet", realSheet);
-      target.adoptedStyleSheets = realAdopted;
+      delete (target as { adoptedStyleSheets?: CSSStyleSheet[] }).adoptedStyleSheets;
     }
   });
 
