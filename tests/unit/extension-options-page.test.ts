@@ -47,6 +47,25 @@ describe("options page — the page toggle controls are gone (AC-B48)", () => {
   });
 });
 
+describe("options page — the cleartext exception is an explicit opt-in (SEC-18)", () => {
+  it("offers a checkbox in the hub section and calls it insecure", () => {
+    // The override exists, but it must be a conscious tick: an escape hatch nobody can find is not
+    // what this feature is, and a quietly-worded one is the failure SEC-18 exists to prevent.
+    expect(OPTIONS_HTML).toContain('id="allowInsecureEndpoint"');
+    expect(OPTIONS_HTML).toMatch(/Allow cleartext HTTP to this hub \(insecure\)/);
+    expect(OPTIONS_HTML).toMatch(/unencrypted/);
+    expect(OPTIONS_HTML).toMatch(/SSH tunnel/);
+  });
+
+  it("wires the checkbox into the page's boolean field list", () => {
+    // `CHECKBOXES` is what reads `.checked` instead of `.value`; a checkbox outside that list would
+    // render but never be saved.
+    expect(OPTIONS_SOURCE).toMatch(/const CHECKBOXES = \[[^\]]*"allowInsecureEndpoint"[^\]]*\]/u);
+    // Both decision paths consume the persisted setting, not the raw DOM.
+    expect(OPTIONS_SOURCE).toMatch(/allowInsecure: settings\.allowInsecureEndpoint/u);
+  });
+});
+
 describe("options page — the credential comes from its one module (AC-B53)", () => {
   it("imports `configuredCredential` from ./credential", () => {
     expect(OPTIONS_SOURCE).toMatch(

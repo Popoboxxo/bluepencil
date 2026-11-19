@@ -801,8 +801,10 @@ describe("probeConnection", () => {
 
 /**
  * B.8 (SEC-18, ADR-0.12-S2): a configured credential never travels over plain HTTP to anything but
- * the machine that runs the browser. There is no "insecure" override — the save and the probe both
- * refuse, and the refusal is the same sentence in both paths.
+ * the machine that runs the browser. There is no *silent* "insecure" override — the save and the
+ * probe both refuse by default, and the refusal is the same sentence in both paths. The explicit
+ * `allowInsecure` opt-in (persisted as `allowInsecureEndpoint`, ticked on the options page) is the
+ * one deliberate exception: both paths honour it, and nothing else changes.
  */
 describe("insecureEndpointRefusal (B.8, SEC-18)", () => {
   it.each([
@@ -836,6 +838,21 @@ describe("insecureEndpointRefusal (B.8, SEC-18)", () => {
     expect(insecureEndpointRefusal({ endpoint, auth })).toBeNull();
   });
 
+  it("allows a cleartext non-loopback endpoint only through the explicit opt-in", () => {
+    for (const auth of ["secret", "token"] as const) {
+      // The opt-in is the only thing that changes the answer, and it changes exactly this case.
+      expect(insecureEndpointRefusal({ endpoint: "http://hub.example/api", auth, allowInsecure: true })).toBeNull();
+      expect(insecureEndpointRefusal({ endpoint: "http://hub.example/api", auth, allowInsecure: false })).not.toBeNull();
+      // Absent means off — the protection is unchanged for every existing user.
+      expect(insecureEndpointRefusal({ endpoint: "http://hub.example/api", auth })).not.toBeNull();
+    }
+    // The opt-in does not widen anything else: an unjudgeable URL is still left to the URL checks,
+    // and https/loopback remain allowed with or without it.
+    expect(insecureEndpointRefusal({ endpoint: "not a url", auth: "secret", allowInsecure: true })).toBeNull();
+    expect(insecureEndpointRefusal({ endpoint: "https://hub.example/api", auth: "secret", allowInsecure: true })).toBeNull();
+    expect(insecureEndpointRefusal({ endpoint: "http://127.0.0.1:8787/api", auth: "secret", allowInsecure: true })).toBeNull();
+  });
+
   it("leaves values it cannot judge to the URL/invalid-origin checks", () => {
     // These are refused elsewhere (invalid-url / invalid_origin); claiming "insecure endpoint" here
     // would point the user at the wrong fix.
@@ -865,9 +882,15 @@ describe("insecureEndpointRefusal (B.8, SEC-18)", () => {
 
   it("is the one rule both the probe and the save use", () => {
     expect(CONNECTION_SOURCE).toMatch(/export function insecureEndpointRefusal/);
-    // Two call sites in options.ts: the "Test connection" probe and the save wrapper.
+    // Two call sites in options.ts: the "Test connection" probe and the save wrapper. Both have to
+    // pass the opt-in, or ticking the checkbox would fix one path and leave the other refusing.
     expect(OPTIONS_SOURCE.match(/insecureEndpointRefusal\(/g) ?? []).toHaveLength(2);
-    expect(OPTIONS_SOURCE).toMatch(/insecureSaveRefusal\(\{ endpoint, auth: settings\.auth \}\)/);
+    expect(OPTIONS_SOURCE).toMatch(
+      /insecureSaveRefusal\(\{\s*endpoint,\s*auth: settings\.auth,\s*allowInsecure: settings\.allowInsecureEndpoint,\s*\}\)/u,
+    );
+    expect(OPTIONS_SOURCE).toMatch(
+      /insecureEndpointRefusal\(\{\s*endpoint: settings\.endpoint,\s*auth: settings\.auth,\s*allowInsecure: settings\.allowInsecureEndpoint,\s*\}\)/u,
+    );
   });
 });
 
@@ -885,6 +908,12 @@ describe("the save path (B.8, AC-B60)", () => {
     expect(insecureSaveRefusal({ endpoint: "http://127.0.0.1:8787/api", auth: "secret" })).toBeNull();
     expect(insecureSaveRefusal({ endpoint: "https://hub.example/api", auth: "token" })).toBeNull();
     expect(insecureSaveRefusal({ endpoint: "http://hub.example/api", auth: "none" })).toBeNull();
+
+    // The explicit opt-in is the only way past the refusal, and it is opt-in: off/absent still
+    // refuses, so an older settings blob without the field keeps the guard.
+    expect(insecureSaveRefusal({ endpoint: "http://hub.example/api", auth: "secret", allowInsecure: false })).not.toBeNull();
+    expect(insecureSaveRefusal({ endpoint: "http://hub.example/api", auth: "secret", allowInsecure: true })).toBeNull();
+    expect(insecureSaveRefusal({ endpoint: "http://hub.example/api", auth: "token", allowInsecure: true })).toBeNull();
   });
 
   /**
@@ -989,5 +1018,34 @@ describe("the save path (B.8, AC-B60)", () => {
 
     expect(page.writes).toHaveLength(2);
     expect(page.requested).toEqual(["http://hub.example/*"]);
+  });
+
+  it("persists the explicit cleartext opt-in when the checkbox is ticked", async () => {
+    const page = await bootOptionsPage();
+
+    const store = document.getElementById("store") as HTMLSelectElement;
+    const endpoint = document.getElementById("endpoint") as HTMLInputElement;
+    const auth = document.getElementById("auth") as HTMLSelectElement;
+    const allowInsecure = document.getElementById("allowInsecureEndpoint") as HTMLInputElement;
+    expect(allowInsecure, "the options page must offer the checkbox").not.toBeNull();
+    expect(allowInsecure.checked, "the opt-in must start off").toBe(false);
+
+    store.value = "http";
+    endpoint.value = "http://hub.example/api";
+    auth.value = "secret";
+    allowInsecure.checked = true;
+    document.getElementById("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    await flush();
+    await flush();
+
+    expect(page.requested).toEqual(["http://hub.example/*"]);
+    expect(page.writes, "the ticked opt-in must be saved, not silently dropped").toHaveLength(1);
+    const stored = page.writes[0]?.["bluepencil:settings"] as {
+      endpoint?: string;
+      allowInsecureEndpoint?: boolean;
+    };
+    expect(stored.endpoint).toBe("http://hub.example/api");
+    expect(stored.allowInsecureEndpoint).toBe(true);
+    expect(page.statusText()).toContain("Saved.");
   });
 });

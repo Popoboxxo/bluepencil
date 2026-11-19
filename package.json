@@ -1,6 +1,6 @@
 {
   "name": "bluepencil",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "description": "Annotate any web app — text and design notes, anchored to the element, readable by humans and agents.",
   "license": "MIT",
   "repository": {
@@ -141,11 +141,11 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
-    "@vitest/coverage-v8": "^5.0.5",
+    "@vitest/coverage-v8": "^5.1.0",
     "esbuild": "^0.28.2",
     "jsdom": "^31.0.0",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.5"
+    "vitest": "^5.1.0"
   },
   "keywords": [
     "annotation",

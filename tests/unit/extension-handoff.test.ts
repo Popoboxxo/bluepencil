@@ -124,6 +124,8 @@ describe("pageSettingsFor — the credential never crosses into the page (AC-B15
     expect("token" in page).toBe(false);
     expect("tokenExpiresAt" in page).toBe(false);
     expect("deviceName" in page).toBe(false);
+    // The cleartext opt-in is an options-page-only transport decision; it does not cross either.
+    expect("allowInsecureEndpoint" in page).toBe(false);
     expect(JSON.stringify(page)).not.toContain("a.b.c");
     expect(JSON.stringify(page)).not.toContain("reviewer-laptop");
   });
@@ -146,6 +148,7 @@ describe("pageSettingsFor — the credential never crosses into the page (AC-B15
     expect(JSON.stringify(plan.config)).not.toContain("a.b.c");
     expect(plan.config.settings).not.toHaveProperty("token");
     expect(plan.config.settings).not.toHaveProperty("tokenExpiresAt");
+    expect(plan.config.settings).not.toHaveProperty("allowInsecureEndpoint");
   });
 });
 

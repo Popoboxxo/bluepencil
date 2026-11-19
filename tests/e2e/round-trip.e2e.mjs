@@ -459,6 +459,7 @@ const EXTENSION_SETTINGS_DEFAULTS = {
   tokenExpiresAt: "",
   deviceName: "",
   mountAlongsideHost: false,
+  allowInsecureEndpoint: false,
 };
 
 /** Writes the extension's settings blob where the mount path reads it (copied from extension/smoke.mjs). */
