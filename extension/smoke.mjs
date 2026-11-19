@@ -825,6 +825,7 @@ const EXTENSION_SETTINGS_DEFAULTS = {
   tokenExpiresAt: "",
   deviceName: "",
   mountAlongsideHost: false,
+  allowInsecureEndpoint: false,
 };
 
 /**

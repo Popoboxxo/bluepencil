@@ -216,6 +216,18 @@
             hub appends <code>/notes</code>, <code>/config</code> and the other routes itself.
           </span>
         </div>
+        <!-- Explicit opt-in for the cleartext exception (ADR-0.12-S2 / SEC-18). Off by default and
+             labelled as insecure on purpose: a silent downgrade is the exact failure this guard
+             exists to prevent, so the override is a conscious tick, not a hidden escape hatch. -->
+        <label class="row">
+          <input type="checkbox" id="allowInsecureEndpoint">
+          <span>Allow cleartext HTTP to this hub (insecure)</span>
+        </label>
+        <span class="hint" id="allow-insecure-hint">
+          Off by default. With this on, the shared secret or signed token travels unencrypted to this
+          hub's host, and anyone who can see that traffic can read it. Use HTTPS, or an SSH tunnel
+          with a loopback address, instead of turning this on for a network you do not fully trust.
+        </span>
         <label>
           <span>Authentication</span>
           <select id="auth">

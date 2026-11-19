@@ -1,3 +1,37 @@
+## [0.15.1] - 2026-11-19
+
+### Added
+
+- **An explicit opt-in for cleartext hub credentials (SEC-18).** The options page gets a checkbox
+  "Allow cleartext HTTP to this hub (insecure)" in the hub section. It is off by default and labelled
+  as insecure on purpose: with it off — or absent from an older settings blob — the ADR-0.12-S2 guard
+  behaves exactly as before, refusing `http:` plus a configured credential for every non-loopback
+  host in **both** the save path and the "Test connection" probe. Ticking it lets a reviewer point
+  the extension at a trusted LAN hub over plain HTTP. The choice is stored as `allowInsecureEndpoint`,
+  normalized as literal-`true`-only (a hand-edited `"true"` string cannot turn the guard off), and
+  never crosses into `__bluepencilConfig__`.
+
+### Changed
+
+- `insecureEndpointRefusal` takes an optional `allowInsecure` flag; both call sites in
+  `extension/src/options.ts` pass `settings.allowInsecureEndpoint`, so ticking the checkbox cannot
+  fix one path while the other keeps refusing. `pageSettingsFor` strips the flag from the
+  page-facing projection alongside the credential fields.
+
+### Verified
+
+- `NODE_ENV=test npm run verify` — **121 test files, 2759 tests passed**; typecheck,
+  `typecheck:ext`, build, `build:ext`, `verify:sync`, `size` and `smoke:components -- --no-docker`
+  (**14 passed, 0 failed, 1 skipped**) all green.
+- `npm run smoke:ext` — **155/155 cases passed** against the built extension in a real Chrome.
+- `npm run smoke:webstore` — **44 checks passed, 0 failed**. Its pre-existing ADVICE ("a soft hint
+  for a non-loopback `http://` host stays cheap courtesy, not a requirement — not implemented") is
+  exactly what this PR implements, as an explicit opt-in rather than a silent hint.
+- New unit coverage: the opt-in allows precisely the cleartext-non-loopback case and changes nothing
+  else (https, loopback, `auth: none`, unjudgeable URLs); default off and strict boolean
+  normalization; both decision paths pass the flag; the checkbox persists through a real form
+  submit; the flag is stripped from the page config.
+
 ## [0.15.0] - 2026-11-08
 
 ### Added

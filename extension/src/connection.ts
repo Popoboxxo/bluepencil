@@ -372,8 +372,10 @@ function isLoopbackHost(hostname: string): boolean {
  * ADR-0.12-S2 / SEC-18: when a credential is configured (`auth !== "none"`), plain `http:` is only
  * accepted for loopback hosts. `https:` is accepted for every host, and `auth: "none"` may still use
  * `http:` — an unauthenticated hub sends nothing secret, and the pre-0.12 default must keep working.
- * There is deliberately no "insecure" override: a downgrade would be silent, and this exists to stop
- * exactly that.
+ * There is deliberately no *silent* override: a downgrade would be silent, and this exists to stop
+ * exactly that. A user may still opt in explicitly: the persisted `allowInsecureEndpoint` setting is
+ * passed to both paths as `allowInsecure`, the options page labels the checkbox as insecure, and the
+ * default stays off — the protection is unchanged until someone consciously turns it off.
  *
  * Pure, and shared by the options page's save path and its connection probe: both refuse before a
  * request is made or a setting is written, so the check cannot be skipped by testing instead of
@@ -382,8 +384,9 @@ function isLoopbackHost(hostname: string): boolean {
 export function insecureEndpointRefusal(input: {
   endpoint: string;
   auth: CredentialMode;
+  allowInsecure?: boolean;
 }): string | null {
-  if (input.auth === "none") return null;
+  if (input.auth === "none" || input.allowInsecure === true) return null;
 
   const url = endpointUrl(input.endpoint);
   // Not a URL this check can judge: `baseOf`/`decideSave` reject it with their own, more precise
