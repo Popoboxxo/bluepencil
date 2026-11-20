@@ -89,6 +89,8 @@ export interface AdminStrings {
   notesEmpty: string;
   typeNoteFirst: string;
   adding: string;
+  /** Shown when a request comes back 401 because the in-memory admin secret is gone after a reload. */
+  sessionExpired: string;
   notesCount: string;
   colBody: string;
   colRoute: string;
@@ -237,6 +239,7 @@ const en: AdminStrings = {
   notesEmpty: "no notes yet",
   typeNoteFirst: "Type a note first.",
   adding: "adding…",
+  sessionExpired: "Session expired — enter the admin secret again. Your note text was kept.",
   notesCount: "{count} note(s)",
   colBody: "Body",
   colRoute: "Route",
@@ -251,7 +254,7 @@ const en: AdminStrings = {
   devicesHeading: "Issued client credentials",
   noIssuingBanner:
     "This hub has no --token-key, so it cannot issue tokens. Client access runs on the shared secret; restart the hub with a key to mint per-device tokens.",
-  deviceNamePlaceholder: "device name (e.g. caro-laptop)",
+  deviceNamePlaceholder: "device name (e.g. laptop-1)",
   deviceNameLabel: "Device name",
   deviceTtlPlaceholder: "lifetime days (default: hub default)",
   deviceTtlLabel: "Lifetime in days",
@@ -384,6 +387,7 @@ const de: AdminStrings = {
   notesEmpty: "noch keine Notizen",
   typeNoteFirst: "Zuerst eine Notiz eingeben.",
   adding: "füge hinzu…",
+  sessionExpired: "Sitzung abgelaufen — bitte das Admin-Secret erneut eingeben. Dein Notiztext wurde behalten.",
   notesCount: "{count} Notiz(en)",
   colBody: "Text",
   colRoute: "Route",
@@ -398,7 +402,7 @@ const de: AdminStrings = {
   devicesHeading: "Ausgegebene Client-Credentials",
   noIssuingBanner:
     "Dieser Hub hat keinen --token-key und kann daher keine Token ausstellen. Der Client-Zugang läuft über das geteilte Secret; für Token pro Gerät den Hub mit einem Schlüssel neu starten.",
-  deviceNamePlaceholder: "Gerätename (z. B. caro-laptop)",
+  deviceNamePlaceholder: "Gerätename (z. B. laptop-1)",
   deviceNameLabel: "Gerätename",
   deviceTtlPlaceholder: "Laufzeit in Tagen (Standard: Hub-Standard)",
   deviceTtlLabel: "Laufzeit in Tagen",

@@ -25,7 +25,8 @@ interface JsdomOptions {
 }
 
 interface JsdomInstance {
-  window: Window;
+  // The local Window slice omits `eval`; the harness uses it to dispatch a realm-local event.
+  window: Window & { eval(source: string): unknown };
 }
 
 interface JsdomModule {
@@ -115,6 +116,10 @@ interface MountOptions {
   clipboardRejects?: boolean;
   /** `/admin/status` answer this page receives; defaults to `STATUS`. */
   status?: typeof STATUS & { credentials?: string[] };
+  /** Make only the note-creation POST fail with this status; GETs still succeed (#133). */
+  notesFailStatus?: number;
+  /** A draft left in sessionStorage by an earlier page load (#133). */
+  draft?: { body: string; route: string };
 }
 
 function mount(options: MountOptions = {}): Harness {
@@ -147,7 +152,14 @@ function mount(options: MountOptions = {}): Harness {
       }
       return reply(200, { devices: [DEVICE], tokenIssuing: true, revocationDurable: true });
     }
-    if (url.includes("/notes")) return reply(200, { notes: [NOTE] });
+    if (url.includes('/notes')) {
+      if (method === 'POST' && options.notesFailStatus !== undefined) {
+        return reply(options.notesFailStatus, {
+          error: { code: 'unauthorized', message: 'invalid x-bluepencil-auth — sign in again' },
+        });
+      }
+      return reply(200, { notes: [NOTE] });
+    }
     if (url.includes("/journal")) {
       return reply(200, { journal: { backend: "file", entries: 0, lastSeq: 0 }, entries: [] });
     }
@@ -165,6 +177,12 @@ function mount(options: MountOptions = {}): Harness {
     runScripts: "dangerously",
     beforeParse(window) {
       window.fetch = fetchMock as unknown as typeof window.fetch;
+      if (options.draft) {
+        window.sessionStorage.setItem(
+          "bluepencil-admin-note-draft",
+          JSON.stringify(options.draft),
+        );
+      }
       Object.defineProperty(window.navigator, "clipboard", {
         configurable: true,
         value: { writeText: clipboard },
@@ -421,6 +439,48 @@ describe("the admin page's controls", () => {
     expect(html).toContain("location.assign(body.url)");
     expect(html).not.toContain("location.href = body.url");
     expect(html).not.toContain("window.open(body.url");
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * Admin notes: neutral placeholders and a recoverable 401 (#131, #133)
+ * ---------------------------------------------------------------------------------------------- */
+describe("the admin page's note workflow regressions", () => {
+  it("[#131] uses a neutral device-name example in both locales", () => {
+    for (const strings of [ADMIN_STRINGS.en, ADMIN_STRINGS.de]) {
+      expect(strings.deviceNamePlaceholder).toContain("laptop-1");
+      expect(strings.deviceNamePlaceholder.toLowerCase()).not.toContain("caro");
+    }
+  });
+
+  it("[#133] restores a draft left in this tab by an earlier page load", () => {
+    const h = mount({ draft: { body: "unfiled text after a reload", route: "/settings" } });
+    expect(input(h, "note-body").value).toBe("unfiled text after a reload");
+    expect(input(h, "note-route").value).toBe("/settings");
+  });
+
+  it("[#133] a 401 says the session expired, reopens login and keeps the typed note", async () => {
+    const h = mount({ notesFailStatus: 401 });
+    await connect(h);
+
+    const draft = "an unfiled note — the operator typed this after the session died";
+    input(h, "note-body").value = draft;
+    // Dispatch inside the JSDOM realm so the event is that realm's `Event`, not Node's global.
+    h.dom.window.eval(
+      "document.getElementById('note-body').dispatchEvent(new Event('input', { bubbles: true }))",
+    );
+    click(h, "note-create");
+
+    await vi.waitFor(() => {
+      expect(node(h, "notes-status").textContent).toContain(ADMIN_STRINGS.en.sessionExpired);
+    });
+    expect(node(h, "login").hidden, "the operator must be able to sign in again").toBe(false);
+    expect(node(h, "login-status").textContent).toContain(ADMIN_STRINGS.en.sessionExpired);
+    expect(input(h, "note-body").value, "never clear the textarea on a failed save").toBe(draft);
+    expect(h.dom.window.sessionStorage.getItem("bluepencil-admin-note-draft")).toContain(draft);
+    expect(
+      h.requests.filter((r) => r.url.includes("/notes") && r.method === "POST"),
+    ).toHaveLength(1);
   });
 });
 

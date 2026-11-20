@@ -1,3 +1,22 @@
+## [0.15.3] - 2026-11-20
+
+### Fixed
+
+- **#131 — the admin page no longer ships a person's name in the device-name placeholder.** Both
+  locales now suggest `laptop-1` instead of `caro-laptop`.
+- **#133 — a lost admin session is reported honestly and costs no text.** After a page reload the
+  in-memory secret is gone; note creation now receives a typed 401 and says „Session expired — enter
+  the admin secret again“, reopens the login box, and leaves the textarea alone. The note body and
+  route are kept in `sessionStorage` (a separate key from the credential, which is never stored
+  unless the operator opts in) and restored on load.
+
+### Verified
+
+- `NODE_ENV=test npm run verify` — **121 test files, 2762 tests passed** (3 new tests for the neutral
+  placeholder, draft restore and typed 401); typecheck, `typecheck:ext`, build, `build:ext`,
+  `verify:sync`, `size` and `smoke:components -- --no-docker` (**14 passed, 0 failed, 1 skipped**)
+  green.
+
 ## [0.15.2] - 2026-11-19
 
 ### Fixed
