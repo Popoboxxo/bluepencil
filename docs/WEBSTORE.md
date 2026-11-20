@@ -384,6 +384,23 @@ Policy, including the Limited Use requirements.
 - [ ] 2-Step Verification enabled on the publisher account ("2-Step Verification" §1)
 - [ ] Contact e-mail address in the developer account is correct and reachable (Best Practices §7)
 
+## When the credentials answer `401 unauthorized_client`
+
+The publish workflow's `check-credentials` mode only exchanges the stored `REFRESH_TOKEN` at
+`https://oauth2.googleapis.com/token`. `unauthorized_client` means Google refuses that exchange —
+nothing in this repository can repair the triple. The usual causes, in order:
+
+1. the refresh token was minted for a **different OAuth client** than the stored `CLIENT_ID`;
+2. it expired — an OAuth consent screen in *Testing* expires refresh tokens after **7 days**;
+3. the client is the wrong type (it must be **Web application**, not Desktop);
+4. `CLIENT_SECRET` was rotated after the token was minted.
+
+Recovery is an operator action: create/confirm a Web-application OAuth client in the Cloud project,
+mint a fresh refresh token with `offline_access` for that exact client, and replace `CLIENT_ID`,
+`CLIENT_SECRET` and `REFRESH_TOKEN` together. Then re-run the workflow's `check-credentials` mode
+before trusting a release to publish. The repo-side check is green again only when that exchange
+answers 200.
+
 ## Where these rules come from
 
 - [Program Policies](https://developer.chrome.com/docs/webstore/program-policies/policies) — read 2026-10-02

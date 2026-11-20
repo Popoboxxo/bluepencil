@@ -194,6 +194,7 @@ export function renderAdminHtml(strings: AdminStrings): string {
         <thead><tr>
           <th scope="col">${escapeHtml(s.colDevice)}</th>
           <th scope="col">${escapeHtml(s.colScope)}</th>
+          <th scope="col">${escapeHtml(s.colLastSeen)}</th>
           <th scope="col">${escapeHtml(s.colIssued)}</th>
           <th scope="col">${escapeHtml(s.colExpires)}</th>
           <th scope="col">${escapeHtml(s.colState)}</th>
@@ -230,6 +231,10 @@ export function renderAdminHtml(strings: AdminStrings): string {
   // Computed once per status render: 'enabled' alone is not enough (the start window reports
   // enabled true with a null origin), so the control and its note share exactly one predicate.
   var viewerReady = false;
+  // #134: the presence snapshot from the last /admin/status read drives the devices column and the
+  // session drill-down. Refreshed by the reload button through a fresh status read below.
+  var presenceSnapshot = { devices: [] };
+  var sessionFilter = '';
   var pathName = location.pathname;
   var adminIndex = pathName.lastIndexOf('/admin');
   var BASE = adminIndex === -1 ? '' : pathName.slice(0, adminIndex);
@@ -351,6 +356,7 @@ export function renderAdminHtml(strings: AdminStrings): string {
         issued: status.devices
       });
       renderOverview(status);
+      presenceSnapshot = status.presence || presenceSnapshot;
       renderPresence(status);
       loadNotes();
       loadDevices();
@@ -519,7 +525,8 @@ export function renderAdminHtml(strings: AdminStrings): string {
   async function loadNotes() {
     say('notes-status', T.loading, 'busy');
     try {
-      var data = await call('/notes?includeDone=true');
+      var query = '/notes?includeDone=true' + (sessionFilter ? '&sessionRef=' + encodeURIComponent(sessionFilter) : '');
+      var data = await call(query);
       var notes = data.notes || [];
       var tbody = el('notes-body-rows');
       tbody.textContent = '';
@@ -554,7 +561,7 @@ export function renderAdminHtml(strings: AdminStrings): string {
           tbody.appendChild(tr);
         });
       }
-      say('notes-status', fmt(T.notesCount, { count: notes.length }), 'ok');
+      say('notes-status', fmt(T.notesCount, { count: notes.length }) + (sessionFilter ? ' · ' + sessionFilter : ''), 'ok');
     } catch (error) {
       say('notes-status', error.message, 'error');
     }
@@ -585,17 +592,31 @@ export function renderAdminHtml(strings: AdminStrings): string {
       tbody.textContent = '';
       var devices = data.devices || [];
       if (devices.length === 0) {
-        tbody.appendChild(emptyRow(7, T.devicesEmpty));
+        tbody.appendChild(emptyRow(8, T.devicesEmpty));
       } else {
         devices.slice().reverse().forEach(function (device) {
           var tr = document.createElement('tr');
           cell(tr, device.device);
           cell(tr, (device.scope || []).join(' '), 'bp-mono');
+          // #134: a device with a verified token has a lastSeenAt from the presence snapshot.
+          var seen = (presenceSnapshot.devices || []).filter(function (entry) {
+            return entry.device === device.device;
+          })[0];
+          cell(tr, seen ? fmtDate(seen.lastSeenAt) : T.presenceNever);
           cell(tr, fmtDate(device.createdAt));
           cell(tr, fmtDate(device.expiresAt));
           pill(tr, device.revoked ? T.stateRevoked : T.stateLive, device.revoked ? 'bp-revoked' : 'bp-live');
           cell(tr, String(device.jti === undefined || device.jti === null ? '' : device.jti).slice(0, 8) + '…', 'bp-mono');
           var actionTd = actionButton(tr);
+          // #134 increment 2: the session id captured at authentication is enough to drill from
+          // this device to the notes of that round through the existing /notes?sessionRef= filter.
+          if (seen && seen.sessionRef) {
+            var notesButton = document.createElement('button');
+            notesButton.type = 'button';
+            notesButton.dataset.notesSession = seen.sessionRef;
+            notesButton.textContent = T.deviceNotesButton;
+            actionTd.appendChild(notesButton);
+          }
           // A hub without a durable revocation list may report a stale "revoked" flag after a
           // restart, so the operator must still be able to re-revoke that record.
           if (!device.revoked || data.revocationDurable !== true) {
@@ -707,7 +728,18 @@ export function renderAdminHtml(strings: AdminStrings): string {
       if (target.id === 'connect') { await connect(el('secret').value); return; }
       if (target.id === 'open-viewer') { await openViewer(); return; }
       if (target.id === 'notes-reload') { await loadNotes(); return; }
-      if (target.id === 'devices-reload') { await loadDevices(); return; }
+      if (target.id === 'devices-reload') {
+        var fresh = await call('/admin/status');
+        presenceSnapshot = fresh.presence || presenceSnapshot;
+        await loadDevices();
+        return;
+      }
+      if (target.dataset.notesSession) {
+        sessionFilter = target.dataset.notesSession;
+        activateTab('notes');
+        await loadNotes();
+        return;
+      }
       if (target.id === 'activity-reload') { await loadActivity(); return; }
       if (target.id === 'copy-token') { await copyToken(); return; }
       if (target.id === 'dismiss-token') { hideMint(); return; }

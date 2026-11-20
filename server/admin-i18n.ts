@@ -122,6 +122,7 @@ export interface AdminStrings {
   loading: string;
   colDevice: string;
   colScope: string;
+  colLastSeen: string;
   colIssued: string;
   colExpires: string;
   colState: string;
@@ -130,6 +131,7 @@ export interface AdminStrings {
   stateRevoked: string;
   revokeButton: string;
   revokeConfirm: string;
+  deviceNotesButton: string;
   revoking: string;
   devicesErrorBanner: string;
 
@@ -224,9 +226,9 @@ const en: AdminStrings = {
 
   presenceHeading: "Last accepted credential",
   presenceHelp:
-    "The honest limit: the hub records note writes and the client credentials it issued — one row per token, not one per connected browser. Readers are not tracked as individual clients. These two stamps say when each credential kind was last accepted on any door (notes API or MCP), at most once a minute, in memory only, and reset by a restart. They are captured when this page connects (as of page load) and do not update while it stays open — reload the page to see a newer value. They never contain a credential.",
-  presenceToken: "Signed token (--token-key)",
-  presenceSecret: "Shared secret (--auth-secret)",
+    "When each credential kind was last accepted. Memory only, reset on restart; reload for newer values. No credential value is shown.",
+  presenceToken: "Signed token — per device, revocable (--token-key)",
+  presenceSecret: "Shared secret — one value for all clients, no expiry (--auth-secret)",
   presenceNever: "not seen since this hub started",
 
   notesHeading: "Notes",
@@ -272,6 +274,7 @@ const en: AdminStrings = {
   loading: "loading…",
   colDevice: "Device",
   colScope: "Scope",
+  colLastSeen: "Last seen",
   colIssued: "Issued",
   colExpires: "Expires",
   colState: "State",
@@ -280,6 +283,7 @@ const en: AdminStrings = {
   stateRevoked: "revoked",
   revokeButton: "revoke",
   revokeConfirm: "Revoke this token? The device loses access at once.",
+  deviceNotesButton: "notes",
   revoking: "revoking…",
   devicesErrorBanner: "The device registry could not be read: {message}",
 
@@ -372,9 +376,9 @@ const de: AdminStrings = {
 
   presenceHeading: "Zuletzt akzeptiertes Credential",
   presenceHelp:
-    "Die ehrliche Grenze: der Hub zeichnet Notiz-Schreibvorgänge und die ausgegebenen Client-Credentials auf — eine Zeile pro Token, nicht pro verbundenem Browser. Lesende Clients werden nicht als einzelne Clients geführt. Die beiden Zeitstempel nennen, wann welche Art von Credential zuletzt an einer der beiden Türen (Notiz-API oder MCP) akzeptiert wurde: höchstens einmal pro Minute, nur im Speicher und nach einem Neustart zurückgesetzt. Sie werden beim Verbinden dieser Seite erfasst (Stand beim Laden der Seite) und aktualisieren sich nicht, solange sie geöffnet bleibt — zum Aktualisieren die Seite neu laden. Sie enthalten nie ein Credential.",
-  presenceToken: "Signiertes Token (--token-key)",
-  presenceSecret: "Geteiltes Secret (--auth-secret)",
+    "Wann welche Credential-Art zuletzt akzeptiert wurde. Nur im Speicher, nach Neustart zurückgesetzt; zum Aktualisieren neu laden. Kein Credential-Wert wird gezeigt.",
+  presenceToken: "Signiertes Token — pro Gerät, widerrufbar (--token-key)",
+  presenceSecret: "Geteiltes Secret — ein Wert für alle Clients, kein Ablauf (--auth-secret)",
   presenceNever: "seit dem Start dieses Hubs nicht gesehen",
 
   notesHeading: "Notizen",
@@ -420,6 +424,7 @@ const de: AdminStrings = {
   loading: "lade…",
   colDevice: "Gerät",
   colScope: "Umfang",
+  colLastSeen: "Zuletzt gesehen",
   colIssued: "Ausgestellt",
   colExpires: "Läuft ab",
   colState: "Zustand",
@@ -428,6 +433,7 @@ const de: AdminStrings = {
   stateRevoked: "widerrufen",
   revokeButton: "widerrufen",
   revokeConfirm: "Dieses Token widerrufen? Das Gerät verliert sofort den Zugang.",
+  deviceNotesButton: "Notizen",
   revoking: "widerrufe…",
   devicesErrorBanner: "Die Geräte-Registry konnte nicht gelesen werden: {message}",
 
