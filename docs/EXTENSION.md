@@ -208,6 +208,15 @@ into the hub's `--revoked-tokens` file and restart it. The hub answers
 `401 token_revoked` — which means *do not mint a new one* — as opposed to `401 token_expired`, which
 means replace it, and `403 insufficient_scope` for a valid token that may not do what was asked.
 
+### Session label and grouping
+
+The options page has a **Session label** (a review-round name) and a **Group by** selector:
+*label only* (the default, today's behaviour), *label + site*, *label + site + path* or *no session
+grouping*. The *Use today's date* button only suggests `YYYY-MM-DD` — the label stays editable.
+Both values are passed to the layer as `session` / `session-strategy` in its markup, so a note taken
+on any page carries the round you chose without editing that page. Leave the label empty to keep
+notes without a session, as before.
+
 ### Switching the layer on and off
 
 The layer follows the toolbar button and the Alt+Shift+B keyboard shortcut. The options page no

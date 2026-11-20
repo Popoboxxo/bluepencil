@@ -36,7 +36,7 @@ import type {
   RevealHint,
   Session,
 } from "../core/model";
-import { normaliseOrigin } from "../core/origin";
+import { isStoredOrigin, normaliseOrigin } from "../core/origin";
 import { assertBundle, assertNote } from "./schema";
 import { deriveSessions } from "./sessions";
 
@@ -153,6 +153,11 @@ function upgradeAnchor(value: unknown, path: string): Anchor {
   if (typeof value.selector === "string") anchor.selector = value.selector;
   if (typeof value.quote === "string") anchor.quote = value.quote;
   if (typeof value.route === "string") anchor.route = value.route;
+  // Issue #135: absent on old documents; a value with a path is dropped rather than silently
+  // truncated (an origin is scheme+host+port only).
+  if (typeof value.origin === "string" && isStoredOrigin(value.origin)) {
+    anchor.origin = value.origin;
+  }
   if (typeof value.orphaned === "boolean") anchor.orphaned = value.orphaned;
   if (typeof value.degraded === "string") anchor.degraded = value.degraded;
   if (isObject(value.reveal)) {

@@ -27,6 +27,7 @@ import {
   isNoteStatus,
   newId,
   systemClock,
+  type Anchor,
   type AuthorType,
   type Environment,
   type Message,
@@ -35,6 +36,7 @@ import {
   type NoteDraft,
   type NoteFilter,
   type NoteIntent,
+  type NoteOrigin,
   type NotePatch,
   type NoteStatus,
 } from "./model";
@@ -52,6 +54,14 @@ import {
 export interface StoreOptions {
   adapter?: AdapterLike | (() => Adapter);
   sessionRef?: string;
+  /**
+   * Per-note session composer (issue #135). When supplied it wins over the static `sessionRef`:
+   * the strategy needs this note's anchor (route + origin), which a store-wide label cannot know.
+   * Returning `undefined` means "no grouping" and suppresses the static label.
+   */
+  sessionRefFor?: (anchor: Anchor) => string | undefined;
+  /** Site origin filled automatically on notes created without an explicit one. */
+  origin?: NoteOrigin;
   environment?: Environment;
   now?: () => string;
 }
@@ -215,17 +225,30 @@ export function createStore(options: StoreOptions = {}): Store {
     return pending;
   };
 
-  const prepare = (draft: NoteDraft): NoteDraft => ({
-    ...draft,
-    id: draft.id ?? newId("n"),
-    now: draft.now ?? clock(),
-    ...(draft.sessionRef === undefined && options.sessionRef !== undefined
-      ? { sessionRef: options.sessionRef }
-      : {}),
-    ...(draft.environment === undefined && options.environment !== undefined
-      ? { environment: options.environment }
-      : {}),
-  });
+  const prepare = (draft: NoteDraft): NoteDraft => {
+    const prepared: NoteDraft = {
+      ...draft,
+      id: draft.id ?? newId("n"),
+      now: draft.now ?? clock(),
+      ...(draft.origin === undefined && options.origin !== undefined ? { origin: options.origin } : {}),
+    };
+    if (options.sessionRefFor !== undefined) {
+      const ref = options.sessionRefFor(prepared.anchor);
+      if (ref !== undefined) {
+        prepared.sessionRef = ref;
+      } else if (draft.sessionRef === undefined) {
+        // `none` (or a glob with no match) suppresses the configured label; an *explicit* draft
+        // ref is caller intent and is never thrown away (the embed smoke sets one, for example).
+        delete prepared.sessionRef;
+      }
+    } else if (prepared.sessionRef === undefined && options.sessionRef !== undefined) {
+      prepared.sessionRef = options.sessionRef;
+    }
+    if (prepared.environment === undefined && options.environment !== undefined) {
+      prepared.environment = options.environment;
+    }
+    return prepared;
+  };
 
   /** Replaces the local note with the adapter's version, keyed by id. */
   const adopt = (localId: string, saved: Note): Note => {

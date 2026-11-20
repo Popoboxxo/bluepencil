@@ -57,6 +57,8 @@ function canonicalAnchor(anchor: Anchor): Anchor {
   if (anchor.selector !== undefined) out.selector = anchor.selector;
   if (anchor.quote !== undefined) out.quote = anchor.quote;
   if (anchor.route !== undefined) out.route = anchor.route;
+  // Issue #135: canonical origin (scheme + host + port), absent on legacy notes.
+  if (anchor.origin !== undefined) out.origin = anchor.origin;
   if (anchor.orphaned !== undefined) out.orphaned = anchor.orphaned;
   if (anchor.degraded !== undefined) out.degraded = anchor.degraded;
   if (anchor.reveal !== undefined) out.reveal = canonicalReveal(anchor.reveal);
@@ -153,7 +155,17 @@ export function canonicalNote(note: Note): Note {
 }
 
 function canonicalSession(session: Session): Session {
-  return { ref: session.ref, label: session.label, createdAt: session.createdAt };
+  return {
+    ref: session.ref,
+    label: session.label,
+    createdAt: session.createdAt,
+    ...(session.origins === undefined ? {} : { origins: [...session.origins].sort(compareCodeUnits) }),
+    ...(session.firstSeen === undefined ? {} : { firstSeen: session.firstSeen }),
+    ...(session.lastSeen === undefined ? {} : { lastSeen: session.lastSeen }),
+    ...(session.notes === undefined
+      ? {}
+      : { notes: { total: session.notes.total, open: session.notes.open, done: session.notes.done } }),
+  };
 }
 
 /** Canonical form of a bundle: fixed key order, notes and sessions in a stable order. */

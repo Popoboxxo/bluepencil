@@ -33,6 +33,7 @@ import {
   type RevealContainer,
   type RevealHint,
 } from "./model";
+import { normaliseOrigin } from "./origin";
 
 /** Tree-scope separator used inside a stored CSS path (ARCHITECTURE §6b). */
 const SHADOW_BOUNDARY = " >> ";
@@ -425,7 +426,7 @@ function elementLabel(el: Element): string {
  */
 export function deriveAnchor(
   el: Element,
-  options?: AnchorOptions & { route?: string; quote?: string },
+  options?: AnchorOptions & { route?: string; quote?: string; origin?: string },
 ): Anchor {
   assertElementLike(el, "deriveAnchor");
   const hooks = normalizeHooks(options?.hooks);
@@ -441,6 +442,11 @@ export function deriveAnchor(
 
   const route = typeof options?.route === "string" ? options.route.trim() : "";
   if (route !== "") anchor.route = route;
+
+  // Issue #135: the place is a fact, filled from location.origin by the layer. Only the canonical
+  // scheme+host+port form is stored: a path, query or fragment is never written into a note.
+  const origin = typeof options?.origin === "string" ? normaliseOrigin(options.origin) : null;
+  if (origin !== null) anchor.origin = origin;
 
   if (composed.degraded !== undefined) anchor.degraded = composed.degraded;
 

@@ -27,6 +27,8 @@ describe("normalizeSettings", () => {
     const input = {
       environment: "staging",
       appName: "Wolfenbütteler Zeitung",
+      sessionLabel: "relaunch-2026-11",
+      sessionStrategy: "route",
       language: "de",
       store: "http",
       identity: "anonymous",

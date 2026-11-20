@@ -127,6 +127,7 @@ export function renderAdminHtml(strings: AdminStrings): string {
     <nav class="bp-tabs" role="tablist" aria-label="${escapeHtml(s.sectionsLabel)}">
       <button type="button" role="tab" id="tab-overview" data-tab="overview" aria-controls="panel-overview" aria-selected="true" tabindex="0">${escapeHtml(s.tabOverview)}</button>
       <button type="button" role="tab" id="tab-notes" data-tab="notes" aria-controls="panel-notes" aria-selected="false" tabindex="-1">${escapeHtml(s.tabNotes)}</button>
+      <button type="button" role="tab" id="tab-sessions" data-tab="sessions" aria-controls="panel-sessions" aria-selected="false" tabindex="-1">${escapeHtml(s.tabSessions)}</button>
       <button type="button" role="tab" id="tab-devices" data-tab="devices" aria-controls="panel-devices" aria-selected="false" tabindex="-1">${escapeHtml(s.tabDevices)}</button>
       <button type="button" role="tab" id="tab-activity" data-tab="activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1">${escapeHtml(s.tabActivity)}</button>
     </nav>
@@ -145,6 +146,7 @@ export function renderAdminHtml(strings: AdminStrings): string {
       <div class="bp-row">
         <input id="note-body" placeholder="${escapeHtml(s.notePlaceholder)}" aria-label="${escapeHtml(s.noteLabel)}" size="38">
         <input id="note-route" placeholder="${escapeHtml(s.routePlaceholder)}" aria-label="${escapeHtml(s.routeLabel)}" size="16">
+        <input id="note-origin" placeholder="${escapeHtml(s.originPlaceholder)}" aria-label="${escapeHtml(s.originLabel)}" size="22">
         <button type="button" class="bp-primary" id="note-create">${escapeHtml(s.addButton)}</button>
         <button type="button" id="notes-reload">${escapeHtml(s.reloadButton)}</button>
       </div>
@@ -153,11 +155,33 @@ export function renderAdminHtml(strings: AdminStrings): string {
         <thead><tr>
           <th scope="col">${escapeHtml(s.colBody)}</th>
           <th scope="col">${escapeHtml(s.colRoute)}</th>
+          <th scope="col">${escapeHtml(s.colOrigin)}</th>
           <th scope="col">${escapeHtml(s.colStatus)}</th>
           <th scope="col">${escapeHtml(s.colAuthor)}</th>
           <th scope="col"><span class="bp-sr-only">${escapeHtml(s.colActions)}</span></th>
         </tr></thead>
         <tbody id="notes-body-rows"></tbody>
+      </table>
+    </section>
+
+    <section role="tabpanel" id="panel-sessions" aria-labelledby="tab-sessions" tabindex="0" data-view="sessions" hidden>
+      <h2>${escapeHtml(s.sessionsHeading)}</h2>
+      <p class="bp-muted">${escapeHtml(s.sessionsHelp)}</p>
+      <div class="bp-row">
+        <input id="session-filter" placeholder="${escapeHtml(s.sessionsFilterLabel)}" aria-label="${escapeHtml(s.sessionsFilterLabel)}" size="36">
+        <button type="button" id="sessions-reload">${escapeHtml(s.reloadButton)}</button>
+      </div>
+      <span class="bp-status" id="sessions-status" role="status" aria-live="polite"></span>
+      <table>
+        <thead><tr>
+          <th scope="col">${escapeHtml(s.colSession)}</th>
+          <th scope="col">${escapeHtml(s.colOrigins)}</th>
+          <th scope="col">${escapeHtml(s.colFirstSeen)}</th>
+          <th scope="col">${escapeHtml(s.colLastSeen)}</th>
+          <th scope="col">${escapeHtml(s.colNotes)}</th>
+          <th scope="col"><span class="bp-sr-only">${escapeHtml(s.colActions)}</span></th>
+        </tr></thead>
+        <tbody id="sessions-rows"></tbody>
       </table>
     </section>
 
@@ -194,7 +218,7 @@ export function renderAdminHtml(strings: AdminStrings): string {
         <thead><tr>
           <th scope="col">${escapeHtml(s.colDevice)}</th>
           <th scope="col">${escapeHtml(s.colScope)}</th>
-          <th scope="col">${escapeHtml(s.colLastSeen)}</th>
+          <th scope="col">${escapeHtml(s.colDeviceLastSeen)}</th>
           <th scope="col">${escapeHtml(s.colIssued)}</th>
           <th scope="col">${escapeHtml(s.colExpires)}</th>
           <th scope="col">${escapeHtml(s.colState)}</th>
@@ -531,12 +555,16 @@ export function renderAdminHtml(strings: AdminStrings): string {
       var tbody = el('notes-body-rows');
       tbody.textContent = '';
       if (notes.length === 0) {
-        tbody.appendChild(emptyRow(5, T.notesEmpty));
+        tbody.appendChild(emptyRow(6, T.notesEmpty));
       } else {
         notes.forEach(function (note) {
           var tr = document.createElement('tr');
           cell(tr, note.body);
           cell(tr, note.anchor && note.anchor.route ? note.anchor.route : '—', 'bp-mono');
+          var origin = note.origin === undefined || note.origin === null
+            ? (note.anchor && note.anchor.origin ? note.anchor.origin : null)
+            : note.origin;
+          cell(tr, origin === null ? 'unknown' : String(origin), 'bp-mono');
           var statusText = note.status === 'done' ? T.statusDone : note.status === 'open' ? T.statusOpen : note.status;
           cell(tr, statusText);
           var authorTd = document.createElement('td');
@@ -564,6 +592,47 @@ export function renderAdminHtml(strings: AdminStrings): string {
       say('notes-status', fmt(T.notesCount, { count: notes.length }) + (sessionFilter ? ' · ' + sessionFilter : ''), 'ok');
     } catch (error) {
       say('notes-status', error.message, 'error');
+    }
+  }
+
+  /** Sessions overview (issue #135) — derived data only, plus the already-specified purge. */
+  async function loadSessions() {
+    say('sessions-status', T.loading, 'busy');
+    try {
+      var data = await call('/sessions');
+      var sessions = data.sessions || [];
+      var filter = el('session-filter').value.trim().toLowerCase();
+      var shown = filter === '' ? sessions : sessions.filter(function (session) {
+        return String(session.ref).toLowerCase().indexOf(filter) !== -1 ||
+          (session.origins || []).some(function (origin) {
+            return String(origin).toLowerCase().indexOf(filter) !== -1;
+          });
+      });
+      var tbody = el('sessions-rows');
+      tbody.textContent = '';
+      if (shown.length === 0) {
+        tbody.appendChild(emptyRow(6, T.sessionsEmpty));
+      } else {
+        shown.forEach(function (session) {
+          var tr = document.createElement('tr');
+          cell(tr, session.label || session.ref, 'bp-mono');
+          cell(tr, (session.origins && session.origins.length ? session.origins : ['unknown']).join(', '), 'bp-mono');
+          cell(tr, session.firstSeen || session.createdAt || '—', 'bp-mono');
+          cell(tr, session.lastSeen || '—', 'bp-mono');
+          var counts = session.notes || { total: 0, open: 0, done: 0 };
+          cell(tr, String(counts.total) + ' / ' + String(counts.open) + ' / ' + String(counts.done));
+          var actions = actionButton(tr);
+          var purge = document.createElement('button');
+          purge.type = 'button';
+          purge.dataset.purgeSession = String(session.ref);
+          purge.textContent = T.purgeButton;
+          actions.appendChild(purge);
+          tbody.appendChild(tr);
+        });
+      }
+      say('sessions-status', fmt(T.sessionsCount, { count: shown.length }), 'ok');
+    } catch (error) {
+      say('sessions-status', error.message, 'error');
     }
   }
 
@@ -728,6 +797,7 @@ export function renderAdminHtml(strings: AdminStrings): string {
       if (target.id === 'connect') { await connect(el('secret').value); return; }
       if (target.id === 'open-viewer') { await openViewer(); return; }
       if (target.id === 'notes-reload') { await loadNotes(); return; }
+      if (target.id === 'sessions-reload') { await loadSessions(); return; }
       if (target.id === 'devices-reload') {
         var fresh = await call('/admin/status');
         presenceSnapshot = fresh.presence || presenceSnapshot;
@@ -750,18 +820,33 @@ export function renderAdminHtml(strings: AdminStrings): string {
       }
       if (target.getAttribute('role') === 'tab' && target.getAttribute('data-tab')) {
         activateTab(target.getAttribute('data-tab'));
+        if (target.getAttribute('data-tab') === 'sessions') { await loadSessions(); }
         return;
       }
       if (target.id === 'note-create') {
         var body = el('note-body').value.trim();
         if (!body) { say('notes-status', T.typeNoteFirst, 'error'); return; }
         var route = el('note-route').value.trim() || '/';
+        var origin = el('note-origin').value.trim();
         say('notes-status', T.adding, 'busy');
         await call('/notes', { method: 'POST', body: JSON.stringify({
-          type: 'text', body: body, anchor: { selector: 'main', route: route } }) });
+          type: 'text', body: body,
+          anchor: { selector: 'main', route: route, ...(origin === '' ? {} : { origin: origin }) },
+          ...(origin === '' ? {} : { origin: origin }) }) });
         el('note-body').value = '';
         // Keep the route for the next note, but drop the saved body: it was just filed.
         writeDraft('', route);
+        await loadNotes();
+        return;
+      }
+      if (target.dataset.purgeSession) {
+        var ref = String(target.dataset.purgeSession);
+        if (!window.confirm(fmt(T.purgeConfirm, { ref: ref }))) return;
+        say('sessions-status', T.adding, 'busy');
+        var purged = await call('/notes/bulk-delete', {
+          method: 'POST', body: JSON.stringify({ filter: { session: ref }, confirm: true }) });
+        say('sessions-status', fmt(T.purged, { count: purged.removed }), 'ok');
+        await loadSessions();
         await loadNotes();
         return;
       }
@@ -845,6 +930,7 @@ export function renderAdminHtml(strings: AdminStrings): string {
   }
   el('note-body').addEventListener('input', persistDraft);
   el('note-route').addEventListener('input', persistDraft);
+  el('session-filter').addEventListener('input', function () { void loadSessions(); });
 
   // Auto-connect only when a value was explicitly remembered in this tab; otherwise a reload
   // starts at the login box again.

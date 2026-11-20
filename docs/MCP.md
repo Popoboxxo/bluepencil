@@ -401,7 +401,7 @@ advertised at all; the arguments would be ignored.
 | `list_notes` | R | List notes in review order (open decisions first, then feedback-only). Only the session's environment in a single store; in a federation, no `instance` means every instance and each note carries `instance` and `app`. |
 | `list_instances` | R | List the reachable instances (`id`, `app`, `environment`, `mode`, health). Never base URLs, tokens or credentials. **Federation only.** |
 | `get_note` | R | Fetch one note with its anchor, captured context and full thread. |
-| `create_note` | W | Create a note with `source=agent`; an anchor needs at least one of `hook`, `selector` or `quote`. |
+| `create_note` | W | Create a note with `source=agent`; an anchor needs at least one of `hook`, `selector` or `quote`. The optional flat `origin` argument stores a canonical `http(s)` origin on both the note and its anchor; `session` is the opaque round reference. |
 | `reply` | W | Append to a thread (append-only): `reply`, `decision_request`, `feedback`. A `decision` is refused — it is a human act (PROTOCOL §6.1). |
 | `set_status` | W | Set a status. Refuses `done` on a note waiting for a decision and on `intent=feedback`. |
 | `set_intent` | W | Switch a note between `implement` and `feedback`. |

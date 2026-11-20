@@ -245,6 +245,19 @@ Host-side checklist:
 6. **Never load the layer for end users**: build-time flag *and* the role gate. Prove it with a
    test that asserts the layer is absent when the flag is off.
 
+### Place and review round (issue #135)
+
+Every new note carries `anchor.origin` (`location.origin` — scheme, host and optional port, never a
+path or query) plus the note-level `origin`; `anchor.route` remains the path. Neither is a session.
+The review round is client intent: set `data-session` (label) and `data-session-strategy` on the
+loader script or `session` / `session-strategy` on the element. The strategies are `given` (default,
+the label verbatim), `origin` (`label@origin`), `route` (`label@origin+route`), `glob:<pattern>` and
+`none`. A glob list is comma-separated, first match wins, last entry is the fallback; `*` matches
+one path segment, `**` any number including none, and the session key is the fixed prefix before
+the first placeholder. REST `GET /notes?origin=` filters on either origin spelling and combines with
+`route`, `session` and `status`. `GET /sessions` adds derived `origins`, `firstSeen`, `lastSeen` and
+`notes: {total, open, done}`; the admin page shows them in its Sessions tab.
+
 ## 7. Host hooks
 
 | Hook | Purpose | Default |

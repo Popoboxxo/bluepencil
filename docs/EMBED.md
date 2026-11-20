@@ -69,7 +69,8 @@ equivalent (`data-*`). The loader mirrors every element attribute
 | `adapter` | unset → `"memory"` | Storage backend: `"memory"`, `"localStorage"`, `"file"`, or `"http"`. Presence of `endpoint` implies `"http"`. |
 | `language` | `"en"` | UI language (`"en"`, `"de"`). |
 | `identity` | `"prompt"` | Author identity: a global path resolving to `{ getUser() }`, the literal JSON `{ getUser }` is not needed, `"prompt"` (author field) or `"anonymous"`. A path is the only way a statically wired host can pass its user — since issue #12. |
-| `session` | – | Session reference string, forwarded to the store. |
+| `session` | – | Session label (round name), forwarded to the store. |
+| `session-strategy` | `"given"` | How the label is combined with the automatic place: `given` (label verbatim), `origin` (`label@origin`), `route` (`label@origin+route`), `glob:<pattern>` (fixed prefix of a matching path pattern) or `none` (no session ref). A comma-separated list uses the first match and the last entry as fallback; an unknown value is reported as an element issue. |
 | `environment` | – | Environment name; notes are scoped per environment (NFR-18) and an exported bundle records it. |
 | `app` | – | Name of the embedding application; stamped into an exported bundle as `app.name`. Without it the export says `"unknown"` — since issue #21. |
 | `build-ref` | – | Build identifier of the host (commit, version, release). Stamped as `app.buildRef` in an exported bundle and as `context.buildRef` on a design note. |
@@ -82,6 +83,7 @@ equivalent (`data-*`). The loader mirrors every element attribute
 | `endpoint` | – | Base URL of the notes API, absolute or root-relative (e.g. `"/api/v1/bluepencil"`). Presence implies `adapter="http"`. |
 | `headers` | – | JSON object with extra request headers, e.g. `{"X-Workspace":"7"}`. |
 | `headers-from` | – | Global path to a function returning headers, evaluated on every request (refreshed tokens), e.g. `"window.__bpHeaders"`. Wins over `headers`. |
+| `origin` | automatic | Every new anchor carries `location.origin` (scheme + host + port, never a path, query or fragment), independent of the strategy. Old notes without it read as unknown. |
 | `route` | `"url"` (path-only) | `"url"` stores `location.pathname` only, so a deep-link token in the query never reaches a note. `"url-with-query"` is the explicit opt-in; combine it with `query-allow`/`query-deny`. |
 | `query-allow` | – | Comma-separated query parameters to keep under `route="url-with-query"` (e.g. `"utm_*"`). A name in `allow` overrides the default deny list. |
 | `query-deny` | – | Comma-separated query parameters to drop under `route="url-with-query"`. Deny wins over allow. Without either list, `url-with-query` stores `pathname + search` verbatim. |
@@ -341,13 +343,13 @@ them out of the box.
 | Method | Path | Request | Response |
 |---|---|---|---|
 | `GET`, `HEAD` | `{base}/health` | – | `{ ok: true, status, version }` — `HEAD` answers the same status with an empty body, for probes and proxies. |
-| `GET` | `{base}/notes` | Query params: `route`, `intent`, `type`, `session`, `source`, `environment`, `includeDone`, `since`, repeated `status` | `{ notes: Note[] }` |
+| `GET` | `{base}/notes` | Query params: `route`, `origin` (canonical origin or `null`, combinable with `route`/`session`), `intent`, `type`, `session`, `source`, `environment`, `includeDone`, `since`, repeated `status` | `{ notes: Note[] }` |
 | `POST` | `{base}/notes` | `NoteDraft` JSON — an unknown key is refused (`400`), never dropped | `{ note: Note }` |
 | `GET` | `{base}/notes/{id}` | optional `?environment=` | `{ note: Note }` — one note, so a tool does not fetch the whole set to read it. |
 | `PATCH` | `{base}/notes/{id}` | Note patch (fields only) | `{ note: Note }` |
 | `POST` | `{base}/notes/{id}/messages` | `{ id, ts, text, author, author_type, kind }` | `{ note: Note }` |
 | `POST` | `{base}/notes/bulk-delete` | `{ ids?: string[], filter?: NoteFilter, confirm: boolean }` | `{ removed: number }` |
-| `GET` | `{base}/sessions` | – | `{ sessions: Session[] }` |
+| `GET` | `{base}/sessions` | – | `{ sessions: Session[] }` with derived `origins`, `firstSeen`, `lastSeen` and `notes: { total, open, done }` per session (issue #135). |
 | `GET` | `{base}/bundle` | – | Canonical bundle (`src/data`) — for agents and exports. |
 | `GET` | `{base}/journal` | optional `?since=<seq>` | `{ journal: { backend, location, entries, lastSeq }, entries }` — the mutation history (FR-18). |
 

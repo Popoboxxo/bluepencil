@@ -22,6 +22,7 @@
  */
 
 import type { Environment, Note, NoteFilter } from "../core/model";
+import { isStoredOrigin, normaliseOrigin } from "../core/origin";
 import { compareCodeUnits, compareForReview } from "../data/order";
 import { FederationError, type FederationErrorCode } from "./errors";
 import { formatQualifiedId, SELF_INSTANCE } from "./ids";
@@ -374,8 +375,15 @@ export async function aggregateList(
       }
 
       try {
+        // Issue #135: an origin is a fact about the remote instance, so it travels qualified just
+        // like the note id. A caller can split `<instance>/` off before the `https?://` prefix.
+        const origin = note.anchor?.origin;
+        const unqualified = typeof origin === "string" && normaliseOrigin(origin) === origin;
+        const qualifiedAnchor =
+          unqualified && isStoredOrigin(origin) ? { ...note.anchor, origin: `${source.id}/${origin}` } : note.anchor;
         qualified.push({
           ...note,
+          ...(qualifiedAnchor === note.anchor ? {} : { anchor: qualifiedAnchor }),
           id: formatQualifiedId(source.id, note.id),
           instance: source.id,
           app: source.app ?? UNKNOWN_APP,

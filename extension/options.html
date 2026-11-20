@@ -148,6 +148,29 @@
         <input type="text" id="appName" placeholder="(the page's own title)">
       </label>
 
+      <!-- Issue #135: the review round is intent, so it belongs here — not in the hub. The label
+           is free text; the date button only saves typing and never overwrites without a click. -->
+      <label>
+        <span>Session label</span>
+        <input type="text" id="sessionLabel" placeholder="(no session)">
+        <span class="hint">A round name such as <code>relaunch-2026-11</code>. Leave empty to keep
+          notes without a session, as before.</span>
+      </label>
+      <div class="actions">
+        <button type="button" id="session-label-today">Use today's date</button>
+      </div>
+      <label>
+        <span>Group by</span>
+        <select id="sessionStrategy">
+          <option value="given">label only (unchanged)</option>
+          <option value="origin">label + site</option>
+          <option value="route">label + site + path</option>
+          <option value="none">no session grouping</option>
+        </select>
+        <span class="hint">Decides which notes share a session ref. <strong>label only</strong>
+          keeps today's behaviour byte-for-byte.</span>
+      </label>
+
       <label>
         <span>Language</span>
         <select id="language">
