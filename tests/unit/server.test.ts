@@ -651,8 +651,16 @@ describe("hub handler — the documented endpoints", () => {
       const response = harness.call(request("GET", "/sessions"));
       expect(response.status).toBe(200);
       expect(jsonOf(response).sessions).toEqual([
-        { ref: "s1", label: "s1", createdAt: "2026-09-15T09:00:01.000Z" },
-        { ref: "s2", label: "s2", createdAt: "2026-09-15T09:00:03.000Z" },
+        {
+          ref: "s1", label: "s1", createdAt: "2026-09-15T09:00:01.000Z",
+          firstSeen: "2026-09-15T09:00:01.000Z", lastSeen: "2026-09-15T09:00:02.000Z",
+          origins: [], notes: { total: 2, open: 1, done: 1 },
+        },
+        {
+          ref: "s2", label: "s2", createdAt: "2026-09-15T09:00:03.000Z",
+          firstSeen: "2026-09-15T09:00:03.000Z", lastSeen: "2026-09-15T09:00:04.000Z",
+          origins: [], notes: { total: 2, open: 2, done: 0 },
+        },
       ]);
     });
 

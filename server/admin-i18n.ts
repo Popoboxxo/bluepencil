@@ -41,6 +41,7 @@ export interface AdminStrings {
   sectionsLabel: string;
   tabOverview: string;
   tabNotes: string;
+  tabSessions: string;
   tabDevices: string;
   tabActivity: string;
 
@@ -84,6 +85,8 @@ export interface AdminStrings {
   noteLabel: string;
   routePlaceholder: string;
   routeLabel: string;
+  originPlaceholder: string;
+  originLabel: string;
   addButton: string;
   reloadButton: string;
   notesEmpty: string;
@@ -94,6 +97,7 @@ export interface AdminStrings {
   notesCount: string;
   colBody: string;
   colRoute: string;
+  colOrigin: string;
   colStatus: string;
   colAuthor: string;
   colActions: string;
@@ -101,6 +105,21 @@ export interface AdminStrings {
   statusDone: string;
   doneButton: string;
   reopenButton: string;
+
+  /* -- sessions ----------------------------------------------------------- */
+  sessionsHeading: string;
+  sessionsHelp: string;
+  sessionsFilterLabel: string;
+  sessionsEmpty: string;
+  sessionsCount: string;
+  colSession: string;
+  colOrigins: string;
+  colFirstSeen: string;
+  colLastSeen: string;
+  colNotes: string;
+  purgeButton: string;
+  purgeConfirm: string;
+  purged: string;
 
   /* -- devices ------------------------------------------------------------ */
   devicesHeading: string;
@@ -193,6 +212,7 @@ const en: AdminStrings = {
   sectionsLabel: "Sections",
   tabOverview: "Overview",
   tabNotes: "Notes",
+  tabSessions: "Sessions",
   tabDevices: "Issued client credentials",
   tabActivity: "Activity",
 
@@ -234,6 +254,8 @@ const en: AdminStrings = {
   noteLabel: "Note text",
   routePlaceholder: "route (e.g. /settings)",
   routeLabel: "Note route",
+  originPlaceholder: "https://shop-a.de",
+  originLabel: "Origin",
   addButton: "Add",
   reloadButton: "Reload",
   notesEmpty: "no notes yet",
@@ -243,6 +265,7 @@ const en: AdminStrings = {
   notesCount: "{count} note(s)",
   colBody: "Body",
   colRoute: "Route",
+  colOrigin: "Origin",
   colStatus: "Status",
   colAuthor: "Author",
   colActions: "Actions",
@@ -250,6 +273,20 @@ const en: AdminStrings = {
   statusDone: "done",
   doneButton: "done",
   reopenButton: "reopen",
+
+  sessionsHeading: "Sessions",
+  sessionsHelp: "Review rounds derived from the notes' session refs. All values are read-only and computed from the store — no session is created by this page.",
+  sessionsFilterLabel: "Filter by session",
+  sessionsEmpty: "no sessions yet",
+  sessionsCount: "{count} session(s)",
+  colSession: "Session",
+  colOrigins: "Sites",
+  colFirstSeen: "First seen",
+  colLastSeen: "Last seen",
+  colNotes: "Notes (total / open / done)",
+  purgeButton: "purge",
+  purgeConfirm: "Purge all notes of session {ref}? This cannot be undone.",
+  purged: "purged {count} note(s)",
 
   devicesHeading: "Issued client credentials",
   noIssuingBanner:
@@ -341,6 +378,7 @@ const de: AdminStrings = {
   sectionsLabel: "Bereiche",
   tabOverview: "Übersicht",
   tabNotes: "Notizen",
+  tabSessions: "Sessions",
   tabDevices: "Ausgegebene Client-Credentials",
   tabActivity: "Aktivität",
 
@@ -382,6 +420,8 @@ const de: AdminStrings = {
   noteLabel: "Notiztext",
   routePlaceholder: "Route (z. B. /einstellungen)",
   routeLabel: "Notiz-Route",
+  originPlaceholder: "https://shop-a.de",
+  originLabel: "Origin",
   addButton: "Hinzufügen",
   reloadButton: "Neu laden",
   notesEmpty: "noch keine Notizen",
@@ -391,6 +431,7 @@ const de: AdminStrings = {
   notesCount: "{count} Notiz(en)",
   colBody: "Text",
   colRoute: "Route",
+  colOrigin: "Origin",
   colStatus: "Status",
   colAuthor: "Autor",
   colActions: "Aktionen",
@@ -398,6 +439,20 @@ const de: AdminStrings = {
   statusDone: "erledigt",
   doneButton: "erledigt",
   reopenButton: "wieder öffnen",
+
+  sessionsHeading: "Sessions",
+  sessionsHelp: "Review-Runden, aus den Session-Refs der Notizen abgeleitet. Alle Werte sind schreibgeschützt und werden aus dem Store berechnet — diese Seite legt keine Session an.",
+  sessionsFilterLabel: "Nach Session filtern",
+  sessionsEmpty: "noch keine Sessions",
+  sessionsCount: "{count} Session(s)",
+  colSession: "Session",
+  colOrigins: "Seiten",
+  colFirstSeen: "Zuerst gesehen",
+  colLastSeen: "Zuletzt gesehen",
+  colNotes: "Notizen (gesamt / offen / erledigt)",
+  purgeButton: "löschen",
+  purgeConfirm: "Alle Notizen der Session {ref} löschen? Das kann nicht rückgängig gemacht werden.",
+  purged: "{count} Notiz(en) gelöscht",
 
   devicesHeading: "Ausgegebene Client-Credentials",
   noIssuingBanner:

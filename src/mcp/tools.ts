@@ -1054,6 +1054,9 @@ async function handleCreateNote(
   if (typeof args.selector === "string" && args.selector) anchor.selector = args.selector;
   if (typeof args.quote === "string" && args.quote) anchor.quote = args.quote;
   if (typeof args.route === "string" && args.route) anchor.route = args.route;
+  // Issue #135: the same canonical origin also travels inside the anchor, so MCP-created notes
+  // answer the `?origin=` filter exactly like layer- and REST-created ones.
+  if (origin.present && origin.origin !== null) anchor.origin = origin.origin;
   if (!anchor.hook && !anchor.selector && !anchor.quote) {
     return errorResponse("an anchor needs at least one of hook, selector or quote");
   }

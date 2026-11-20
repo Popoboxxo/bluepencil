@@ -149,7 +149,11 @@ question). "Done" is the reason a note disappears from the default view.
 auditable: who asked what, who answered, what was implemented.
 
 **Session** — a named review round (`session_ref`) so a finished round can be exported and
-purged as a unit.
+purged as a unit. The client composes it from a label plus a configurable strategy (`given`,
+`origin`, `route`, `glob:<pattern>`, `none`); the hub never guesses the grouping. The place itself is
+a separate fact: `anchor.origin` is the scheme, host and port of the page, while `anchor.route` is
+the path inside it. A session overview (`GET /sessions`) derives sites, first/last seen and status
+counts from the notes already stored — it is a view, not a second store.
 
 **Export** — Markdown (grouped by route/page, with the thread and a top section listing
 *open decisions* and *feedback-only* items) and JSON (full fidelity, for tooling).

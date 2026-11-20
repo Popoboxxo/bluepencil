@@ -23,7 +23,7 @@ import {
   SCHEMA_VERSION,
 } from "../core/model";
 import type { Bundle, Note } from "../core/model";
-import { normaliseOrigin } from "../core/origin";
+import { isStoredOrigin, normaliseOrigin } from "../core/origin";
 
 /** Loose view of unknown JSON input while validating. */
 type JsonObject = Record<string, unknown>;
@@ -76,6 +76,11 @@ function anchorIssues(value: unknown, path: string): string[] {
   for (const key of ["hook", "selector", "quote", "route", "degraded"] as const) {
     const field = value[key];
     if (field !== undefined && typeof field !== "string") issues.push(`${path}.${key} must be a string`);
+  }
+  // Issue #135: anchor.origin is scheme+host+port only. A federated aggregate may carry an
+  // instance prefix (`dev-web/https://shop-a.de`); both forms are accepted, a path is not.
+  if (value.origin !== undefined && !isStoredOrigin(value.origin)) {
+    issues.push(`${path}.origin must be a canonical http(s) origin (optionally instance-qualified)`);
   }
   if (value.orphaned !== undefined && typeof value.orphaned !== "boolean") {
     issues.push(`${path}.orphaned must be a boolean`);
@@ -276,6 +281,19 @@ function sessionIssues(value: unknown): string[] {
     if (!isNonEmptyString(session.ref)) issues.push(`${path}.ref must be a non-empty string`);
     if (!isNonEmptyString(session.label)) issues.push(`${path}.label must be a non-empty string`);
     if (!isIsoTimestamp(session.createdAt)) issues.push(`${path}.createdAt must be an ISO 8601 timestamp`);
+    // Issue #135: the derived overview fields are additive and optional; when present they must
+    // still be well-formed so a corrupt bundle cannot poison an admin view.
+    if (session.origins !== undefined) {
+      issues.push(...stringListIssues(session.origins, `${path}.origins`));
+    }
+    for (const key of ["firstSeen", "lastSeen"] as const) {
+      if (session[key] !== undefined && !isIsoTimestamp(session[key])) {
+        issues.push(`${path}.${key} must be an ISO 8601 timestamp`);
+      }
+    }
+    if (session.notes !== undefined) {
+      issues.push(...numberIssues(session.notes, `${path}.notes`, ["total", "open", "done"]));
+    }
     if (typeof session.ref === "string") {
       if (seen.has(session.ref)) issues.push(`${path}.ref ${JSON.stringify(session.ref)} is not unique`);
       seen.add(session.ref);

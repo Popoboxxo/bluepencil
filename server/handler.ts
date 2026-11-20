@@ -70,12 +70,13 @@ import {
   type NoteStatus,
 } from "../src/core/model";
 import { applyPatch, filterNotes, isRecord } from "../src/core/adapter";
-import { parseOriginInput } from "../src/core/origin";
+import { parseAnchorOriginInput, parseOriginInput } from "../src/core/origin";
 import { sortForReview } from "../src/core/protocol";
 import { VERSION } from "../src/version";
 import { canonicalNote } from "../src/data/canonical";
 import { bundleToJson, createBundle } from "../src/data/bundle";
 import { validateNote } from "../src/data/schema";
+import { summariseSessions } from "../src/data/sessions";
 import { AUTH_HEADER_SECRET, AUTH_HEADER_TOKEN } from "../src/core/protocol-headers";
 import {
   corsHeaders,
@@ -495,6 +496,29 @@ function originField(value: unknown): NoteOrigin {
     );
   }
   return parsed.origin;
+}
+
+/**
+ * Validate `anchor.origin` at the REST boundary (issue #135): scheme + host + port only. A full
+ * URL or a path is refused with the same named `invalid_origin` error as a bad top-level origin,
+ * so a typo cannot silently turn into a note with no site.
+ */
+function anchorField(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return value as Record<string, unknown>;
+  if (value.origin === undefined) return value as Record<string, unknown>;
+  const parsed = parseAnchorOriginInput(value.origin);
+  if (!parsed.ok) {
+    refuse(
+      400,
+      "invalid_origin",
+      `anchor.origin must be a canonical http(s) origin (scheme, host and port only) or null (got ${JSON.stringify(value.origin)})`,
+    );
+  }
+  if (parsed.origin === null) {
+    const { origin: _ignored, ...rest } = value;
+    return rest;
+  }
+  return { ...value, origin: parsed.origin };
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -1329,6 +1353,8 @@ function listNotes(
 function bundleOf(context: HandlerContext) {
   return createBundle(context.store.notes, {
     environment: context.environment,
+    // Issue #135: the hub's export carries the same enriched sessions as GET /sessions.
+    sessions: summariseSessions(context.store.notes),
     app: { name: context.appName ?? HUB_APP_NAME },
     exportedBy: context.exportedBy ?? HUB_EXPORTED_BY,
     ...(context.now !== undefined ? { now: context.now() } : {}),
@@ -1385,13 +1411,16 @@ function createNoteFromBody(request: ServerRequest, context: HandlerContext): Se
   // FR-2.2: an absent field keeps the model default (`null`, "unassigned"); a present one has to be
   // a usable origin, so `"file:///x"` is a 400 instead of a note that silently belongs to no site.
   const origin = payload.origin === undefined ? undefined : originField(payload.origin);
+  // Issue #135: the anchor's optional origin is validated separately — unlike the note-level field
+  // it must not contain a path, query or fragment.
+  const anchor = payload.anchor === undefined ? undefined : anchorField(payload.anchor);
   let created = "";
   return applyMutation(context, request, () => {
     if (requested !== undefined) assertEnvironment(requested, context);
     const draft: NoteDraft = {
       ...(payload as unknown as NoteDraft),
-      // The raw `origin` above is the caller's text; the parsed value is the canonical one.
       ...(origin !== undefined ? { origin } : {}),
+      ...(anchor !== undefined ? { anchor: anchor as NoteDraft["anchor"] } : {}),
       // A note is always born in the hub's environment (see `assertEnvironment`).
       environment: context.environment,
     };
@@ -1414,6 +1443,7 @@ function patchNote(id: string, request: ServerRequest, context: HandlerContext):
   const patch = patchFromBody(readJsonObject(request));
   const note = findNote(context, id);
   const actor = actorOf(request);
+  if (patch.anchor !== undefined) patch.anchor = anchorField(patch.anchor as unknown) as NotePatch["anchor"];
   return applyMutation(context, request, () => {
     assertEnvironment(note.environment, context);
     const next = applyPatch(note, patch, context.now ? context.now() : undefined);
@@ -2059,7 +2089,7 @@ function routeRequest(request: ServerRequest, context: HandlerContext): ServerRe
   }
   if (first === "sessions") {
     try {
-      return json(200, { sessions: bundleOf(context).sessions }, context, request);
+      return json(200, { sessions: summariseSessions(context.store.notes) }, context, request);
     } catch (error) {
       return toErrorResponse(error, context, request);
     }

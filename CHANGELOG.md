@@ -1,3 +1,37 @@
+## [0.15.5] - 2026-11-20
+
+### Added
+
+- **#135 — `anchor.origin`: where a note was made.** The layer stamps the canonical
+  `location.origin` (scheme + host + port, never a path, query or fragment) into every new anchor,
+  and the note-level origin with the same value. It travels through the embed loader, the extension,
+  REST (`POST`/`PATCH /notes` validate it), MCP `create_note`, bundles and federated aggregates
+  (instance-qualified). `GET /notes?origin=` filters on either spelling and combines with `route`,
+  `session` and `status`. Old notes and bundles without an origin read as unknown and stay valid;
+  the schema version stays 1.
+- **#135 — a client-configured session strategy.** `session-strategy` / `data-session-strategy`
+  accepts `given` (the default, byte-identical to before), `origin`, `route`, `glob:<pattern>` and
+  `none`. A glob list uses first match wins with the last entry as fallback; `*` is one segment,
+  `**` any number (including none), and the session key is the longest fixed prefix. Unknown values
+  are element issues, never silent no-matches. The extension options now offer a session label, a
+  one-click "today" suggestion and a "Group by" selector, passed to the layer as `session` /
+  `session-strategy`.
+- **#135 — session overview.** `GET /sessions` and hub bundles now derive `origins`, `firstSeen`,
+  `lastSeen` and `notes: {total, open, done}` for every session from existing notes (no new store,
+  no write path). The dependency-free admin page gains a Sessions tab with a filter and a confirmed
+  purge, plus an origin column/filter in Notes.
+
+### Verified
+
+- `NODE_ENV=development npm ci --include=dev` then `NODE_ENV=test npm run verify` — **125 test
+  files, 2803 tests passed** (41 new tests across four new suites; four existing exact-shape
+  assertions were strengthened for the additive fields). typecheck, `typecheck:ext`, build,
+  `build:ext`, `verify:sync`, `size` and `smoke:components -- --no-docker` (**14 passed, 0 partial,
+  0 failed, 1 skipped — docker**) green.
+- `npm run smoke:ext` — **155 cases, 155 passed**; `npm run smoke:webstore` — **44 checks, 44
+  passed** (4 advice notes). `npm run secret-scan` and `npm run check-version-bump` against
+  `origin/main` green. `embed-smoke` 14/14 cases, including the explicit-draft session ref.
+
 ## [0.15.3] - 2026-11-20
 
 ### Fixed

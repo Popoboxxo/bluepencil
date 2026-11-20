@@ -53,7 +53,14 @@ export function pageSettingsFor(settings: ExtensionSettings): PageSettings {
  */
 export type ExtensionAttributeSource = Pick<
   ExtensionSettings,
-  "environment" | "appName" | "language" | "identity" | "store" | "endpoint"
+  | "environment"
+  | "appName"
+  | "language"
+  | "identity"
+  | "store"
+  | "endpoint"
+  | "sessionLabel"
+  | "sessionStrategy"
 >;
 
 /**
@@ -104,6 +111,15 @@ export function elementAttributesFor(
 
   if (settings.appName.trim().length > 0) {
     attributes.app = settings.appName;
+  }
+
+  // Issue #135: the round label and the grouping decision both live in the client. Empty label
+  // means no `session` attribute at all, so an untouched extension keeps today's behaviour.
+  if (typeof settings.sessionLabel === "string" && settings.sessionLabel.trim() !== "") {
+    attributes.session = settings.sessionLabel.trim();
+  }
+  if (typeof settings.sessionStrategy === "string" && settings.sessionStrategy !== "given") {
+    attributes["session-strategy"] = settings.sessionStrategy;
   }
 
   if (settings.store === "http") {

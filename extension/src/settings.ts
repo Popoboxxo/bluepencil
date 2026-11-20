@@ -19,6 +19,16 @@ export interface ExtensionSettings {
   environment: "dev" | "staging" | "live";
   /** App name shown in the bar; defaults to the page's own title when empty. */
   appName: string;
+  /**
+   * Review round label (issue #135). Passed to the layer as `session`; empty means no label, so
+   * existing installations keep producing notes without a sessionRef.
+   */
+  sessionLabel: string;
+  /**
+   * How the label is grouped with the page (issue #135): `given` keeps the label verbatim,
+   * `origin` appends the site, `route` the site and path, `none` writes no sessionRef at all.
+   */
+  sessionStrategy: "given" | "origin" | "route" | "none";
   /** UI language: `auto` follows the browser, `en` / `de` pin it. */
   language: "auto" | "en" | "de";
   /**
@@ -87,6 +97,8 @@ export interface ExtensionSettings {
 export const DEFAULT_SETTINGS: ExtensionSettings = {
   environment: "dev",
   appName: "",
+  sessionLabel: "",
+  sessionStrategy: "given",
   language: "auto",
   store: "chromeStorage",
   identity: "prompt",
@@ -127,6 +139,11 @@ export function normalizeSettings(value: unknown): ExtensionSettings {
   return {
     environment: pickEnvironment(raw.environment),
     appName: typeof raw.appName === "string" ? raw.appName : DEFAULT_SETTINGS.appName,
+    sessionLabel:
+      typeof raw.sessionLabel === "string" ? raw.sessionLabel : DEFAULT_SETTINGS.sessionLabel,
+    sessionStrategy:
+      pick("sessionStrategy", ["given", "origin", "route", "none"] as const) ??
+      DEFAULT_SETTINGS.sessionStrategy,
     language: pick("language", ["auto", "en", "de"] as const) ?? DEFAULT_SETTINGS.language,
     store:
       pick("store", ["chromeStorage", "localStorage", "memory", "http"] as const) ??

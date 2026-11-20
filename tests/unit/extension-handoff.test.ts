@@ -111,6 +111,8 @@ describe("pageSettingsFor — the credential never crosses into the page (AC-B15
     ...DEFAULT_SETTINGS,
     environment: "staging",
     appName: "ReqogniLoom",
+    sessionLabel: "relaunch-2026-11",
+    sessionStrategy: "route",
     store: "http",
     endpoint: "http://127.0.0.1:8787/api/v1/bluepencil",
     auth: "token",
@@ -134,6 +136,8 @@ describe("pageSettingsFor — the credential never crosses into the page (AC-B15
     expect(pageSettingsFor(settings)).toEqual({
       environment: "staging",
       appName: "ReqogniLoom",
+      sessionLabel: "relaunch-2026-11",
+      sessionStrategy: "route",
       language: "auto",
       identity: "prompt",
       store: "http",

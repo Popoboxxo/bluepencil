@@ -345,7 +345,7 @@ describe("the viewer control's error paths (AC-L25)", () => {
 });
 
 describe("the viewer control's place in the page (AC-L26)", () => {
-  it("sits in the overview panel before the overview card, without a fifth tab", async () => {
+  it("sits in the overview panel before the overview card, as an ordinary overview control", async () => {
     const h = mount();
     await connect(h);
 
@@ -358,7 +358,8 @@ describe("the viewer control's place in the page (AC-L26)", () => {
     expect(row.compareDocumentPosition(card) & 4).toBeTruthy();
 
     const tabs = h.dom.window.document.querySelectorAll('[role="tab"]');
-    expect(tabs.length).toBe(4);
+    // Overview, Notes, Sessions (issue #135), Devices, Activity — the viewer itself is not a tab.
+    expect(tabs.length).toBe(5);
     expect(node(h, "viewer-row").getAttribute("role")).toBeNull();
 
     // The button is a native button and reachable by keyboard once enabled.

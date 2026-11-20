@@ -31,7 +31,7 @@ import {
   type NotePriority,
   type NoteTiming,
 } from "./model";
-import { normaliseOrigin, originOf } from "./origin";
+import { isStoredOrigin, normaliseOrigin, placeOriginOf } from "./origin";
 
 export interface Adapter {
   readonly name: string;
@@ -118,9 +118,9 @@ export function matchesFilter(note: Note, filter?: NoteFilter): boolean {
   if (filter.route !== undefined && note.anchor.route !== filter.route) {
     return false;
   }
-  // FR-2.2: `null` selects the unassigned notes, a string the exact canonical origin; an absent
-  // field means "no filter". Compared through `originOf` so a missing key and `null` never differ.
-  if (filter.origin !== undefined && originOf(note) !== filter.origin) {
+  // FR-2.2 + issue #135: `null` selects notes with neither a note nor an anchor origin, a string
+  // the exact canonical origin in either field. Combinable with route/session/status.
+  if (filter.origin !== undefined && placeOriginOf(note) !== filter.origin) {
     return false;
   }
   if (filter.type !== undefined && note.type !== filter.type) {
@@ -364,6 +364,11 @@ function coerceAnchor(value: unknown): Anchor {
   }
   if (typeof value.route === "string") {
     anchor.route = value.route;
+  }
+  // Issue #135: keep the canonical origin on the round-trip through every adapter; a malformed
+  // value degrades to absent rather than smuggling a path into the store.
+  if (typeof value.origin === "string" && isStoredOrigin(value.origin)) {
+    anchor.origin = value.origin;
   }
   if (value.orphaned === true) {
     anchor.orphaned = true;
