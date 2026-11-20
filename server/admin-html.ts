@@ -15,7 +15,9 @@
  *   follows a mint: the token stays visible, selectable and copyable until the operator dismisses
  *   it, reloads the device list, or mints another one. The hub keeps the id, not the token.
  * - **The notes bridge.** Notes are edited through the existing notes API with the admin secret;
- *   there is exactly one note implementation in this repository.
+ *   there is exactly one note implementation in this repository. A typed note draft is kept in
+ *   `sessionStorage` across reloads so a lost in-memory secret cannot cost the operator's text —
+ *   the secret itself is never stored there (see "Memory by default" above).
  * - **i18n (FR-11.1).** Every user-visible string comes from `AdminStrings` (`en`/`de`), selected by
  *   the request's `Accept-Language` through `adminLanguage()`. The runtime table is injected as a
  *   JSON value with `<` (and U+2028/U+2029) escaped, so no translation can close the script element.
@@ -243,6 +245,24 @@ export function renderAdminHtml(strings: AdminStrings): string {
     try { sessionStorage.removeItem(KEY); } catch (e) { /* storage unavailable */ }
   }
 
+  // A note draft is not a credential: keeping it across a reload is what makes a lost in-memory
+  // secret recoverable without losing typed work. This is deliberately a different key from KEY —
+  // the admin secret is never written here, even when "remember in this tab" is ticked.
+  var DRAFT_KEY = 'bluepencil-admin-note-draft';
+  function readDraft() {
+    try {
+      var raw = sessionStorage.getItem(DRAFT_KEY);
+      if (!raw) return null;
+      var value = JSON.parse(raw);
+      return value && typeof value === 'object' ? value : null;
+    } catch (e) { return null; }
+  }
+  function writeDraft(body, route) {
+    try {
+      sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ body: body, route: route }));
+    } catch (e) { /* storage unavailable — the in-memory textarea still holds the draft */ }
+  }
+
   // The secret the page sends: the closure, never a DOM value read on every call.
   function secret() { return memorySecret; }
 
@@ -271,6 +291,13 @@ export function renderAdminHtml(strings: AdminStrings): string {
   }
 
   async function call(path, init, accept) {
+    // A reload drops the in-memory secret. Fail before the fetch with the same typed 401 the hub
+    // would send, so the status line can say "sign in again" instead of "could not save".
+    if (!secret()) {
+      var gone = new Error(T.sessionExpired);
+      gone.status = 401;
+      throw gone;
+    }
     var headers = { 'x-bluepencil-admin': secret(), 'Content-Type': 'application/json' };
     if (accept === 'json') { headers['accept'] = 'application/json'; }
     // The notes and journal are the ordinary API routes; the admin secret doubles as their
@@ -285,7 +312,11 @@ export function renderAdminHtml(strings: AdminStrings): string {
     try { body = text ? JSON.parse(text) : null; } catch (e) { body = text; }
     if (!response.ok) {
       var message = body && body.error && body.error.message ? body.error.message : 'HTTP ' + response.status;
-      throw new Error(message);
+      var failure = new Error(message);
+      // The status is the only reliable way to distinguish "sign in again" from a validation
+      // error or a network hiccup — the message text is the hub's and may change.
+      failure.status = response.status;
+      throw failure;
     }
     return body;
   }
@@ -697,6 +728,8 @@ export function renderAdminHtml(strings: AdminStrings): string {
         await call('/notes', { method: 'POST', body: JSON.stringify({
           type: 'text', body: body, anchor: { selector: 'main', route: route } }) });
         el('note-body').value = '';
+        // Keep the route for the next note, but drop the saved body: it was just filed.
+        writeDraft('', route);
         await loadNotes();
         return;
       }
@@ -755,10 +788,31 @@ export function renderAdminHtml(strings: AdminStrings): string {
         return;
       }
     } catch (error) {
-      say('devices-status', error.message, 'error');
-      say('notes-status', error.message, 'error');
+      var unauthorized = !!error && error.status === 401;
+      var message = unauthorized
+        ? T.sessionExpired
+        : (error && error.message ? error.message : String(error));
+      // A missing credential is a session problem, not a failed save. Show the login box again and
+      // say so in the notes status; the textarea and its saved draft are deliberately untouched.
+      if (unauthorized) {
+        say('login-status', message, 'error');
+        el('login').hidden = false;
+      }
+      say('devices-status', message, 'error');
+      say('notes-status', message, 'error');
     }
   });
+
+  // Restore on page load: typing into an empty box after a reload is exactly the loss this fixes.
+  // Only note text and route are persisted — never the admin secret.
+  var savedDraft = readDraft();
+  if (savedDraft && typeof savedDraft.body === 'string') el('note-body').value = savedDraft.body;
+  if (savedDraft && typeof savedDraft.route === 'string') el('note-route').value = savedDraft.route;
+  function persistDraft() {
+    writeDraft(el('note-body').value, el('note-route').value);
+  }
+  el('note-body').addEventListener('input', persistDraft);
+  el('note-route').addEventListener('input', persistDraft);
 
   // Auto-connect only when a value was explicitly remembered in this tab; otherwise a reload
   // starts at the login box again.
