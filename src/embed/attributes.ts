@@ -19,6 +19,10 @@
  *   (G8, ADR-0.12-S5). The policy itself lives in {@link routeFor}, not here.
  */
 import { isEnvironment, type Environment } from "../core/model";
+import {
+  parseSessionStrategy,
+  type SessionStrategy,
+} from "../core/session-strategy";
 import { resolveKeymap, type KeymapOverrides } from "../ui/keymap";
 import { CAPTURE_MODES, isCaptureMode, type CaptureMode } from "../ui/modes";
 
@@ -29,6 +33,7 @@ const CORE_ATTRIBUTES = [
   "language",
   "identity",
   "session",
+  "session-strategy",
   "environment",
   "show-done",
   "theme-accent",
@@ -679,7 +684,14 @@ export function readStore(source: EmbedAttributeSource): { endpoint?: string; ad
 export function readEnvironment(
   source: EmbedAttributeSource,
   resolve?: GlobalResolver,
-): { environment?: Environment; sessionRef?: string; identity?: IdentityKind; showDone?: boolean; issues: string[] } {
+): {
+  environment?: Environment;
+  sessionRef?: string;
+  sessionStrategy?: SessionStrategy;
+  identity?: IdentityKind;
+  showDone?: boolean;
+  issues: string[];
+} {
   const issues: string[] = [];
   const raw = readAttribute(source, "environment");
   let environment: Environment | undefined;
@@ -691,6 +703,9 @@ export function readEnvironment(
     }
   }
   const sessionRef = readAttribute(source, "session");
+  // Issue #135: unknown strategies are element issues, never a silent change of grouping.
+  const strategy = parseSessionStrategy(readAttribute(source, "session-strategy"));
+  issues.push(...strategy.issues);
   const identityRaw = readAttribute(source, "identity");
   let identity: IdentityKind | undefined;
   if (identityRaw === "prompt" || identityRaw === "anonymous") {
@@ -711,6 +726,7 @@ export function readEnvironment(
   return {
     ...(environment === undefined ? {} : { environment }),
     ...(sessionRef === undefined ? {} : { sessionRef }),
+    ...(strategy.strategy === undefined ? {} : { sessionStrategy: strategy.strategy }),
     ...(identity === undefined ? {} : { identity }),
     showDone: readAttribute(source, "show-done") === "true",
     issues,

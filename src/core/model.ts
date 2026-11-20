@@ -130,6 +130,12 @@ export interface Anchor {
   quote?: string;
   /** Page/SPA route at capture time (FR-2.2). */
   route?: string;
+  /**
+   * Scheme + host + port of the page the note was made on (issue #135): never a path, query or
+   * fragment. Optional so legacy notes and bundles stay readable; readers treat an absent value
+   * as unknown, not as an empty string. Filled automatically by the layer from `location.origin`.
+   */
+  origin?: string;
   /** How to bring a target inside a transient container back into the DOM (issue #20). */
   reveal?: RevealHint;
   /** Set when resolution failed at read time; the note is never dropped (FR-2.4). */
@@ -299,10 +305,31 @@ export interface NoteFilter {
   includeDone?: boolean;
 }
 
+/** Derived overview counts of a session — `open` and `done` are note statuses. */
+export interface SessionNoteCounts {
+  total: number;
+  open: number;
+  done: number;
+}
+
+/**
+ * One session derived from the notes that reference it (issue #135).
+ *
+ * `ref`, `label` and `createdAt` are the original fields and keep their meaning (`createdAt` is the
+ * earliest note). The enrichment fields are optional so 0.11 bundles and old callers validate
+ * unchanged; the hub's `GET /sessions` always fills them.
+ */
 export interface Session {
   ref: string;
   label: string;
   createdAt: string;
+  /** Canonical origins of the notes in this session, sorted; empty for legacy notes. */
+  origins?: string[];
+  /** Earliest `createdAt` among the notes (always the same as `createdAt` today). */
+  firstSeen?: string;
+  /** Latest `updatedAt` among the notes — the answer to "what is running right now?". */
+  lastSeen?: string;
+  notes?: SessionNoteCounts;
 }
 
 /** One portable JSON file carrying a whole note set (FR-14.2, NFR-17/19). */

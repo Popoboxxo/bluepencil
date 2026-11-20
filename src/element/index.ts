@@ -265,6 +265,7 @@ export class BluepencilNotesElement extends HTMLElement {
       ...(readAttribute(this, "language") === undefined ? {} : { language: readAttribute(this, "language") as string }),
       ...(Object.keys(theme.theme).length > 0 ? { theme: theme.theme } : {}),
       ...(env.sessionRef === undefined ? {} : { sessionRef: env.sessionRef }),
+      ...(env.sessionStrategy === undefined ? {} : { sessionStrategy: env.sessionStrategy }),
       ...(env.environment === undefined ? {} : { environment: env.environment }),
       ...(route.getRoute === undefined ? {} : { getRoute: route.getRoute }),
       ...(hooks.hooks === undefined ? {} : { anchorHooks: hooks.hooks }),

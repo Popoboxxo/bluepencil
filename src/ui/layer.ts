@@ -40,6 +40,7 @@ import type {
   NoteStatus,
 } from "../core/model";
 import { isNotePriority, isNoteSeverity } from "../core/model";
+import { currentOrigin } from "../core/origin";
 import type { Store } from "../core/store";
 import { applyTranslations } from "../i18n";
 import type { MessageKey } from "../i18n/en";
@@ -96,6 +97,8 @@ export interface LayerOptions {
   /** The edge the strip and its handle dock to (FR-12.13); the mode hint takes the opposite edge. */
   dock?: "top" | "bottom";
   getRoute?: (element?: Element) => string;
+  /** Site origin stamped into new anchors; defaults to `globalThis.location.origin` (issue #135). */
+  origin?: string | null;
   identity?: { getUser?: () => { id?: string; name: string } } | "prompt" | "anonymous";
   markerStrategy?: "overlay" | "sibling";
   defaultShowDone?: boolean;
@@ -397,6 +400,12 @@ export function createLayer(options: LayerOptions): LayerHandle {
   const hostModes = settingsUnit.hostModes;
   const t = settingsUnit.t;
 
+  /** Automatic place of this page (issue #135); a host may override it via `origin`. */
+  const captureOrigin: string | undefined =
+    options.origin === undefined
+      ? (currentOrigin((globalThis as { location?: { origin?: unknown } }).location) ?? undefined)
+      : (options.origin ?? undefined);
+
   let enabled = false;
   let mode: Mode = "off";
   let degradedReported = false;
@@ -441,6 +450,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
     composer: () => composer,
     ...(options.anchorHooks === undefined ? {} : { anchorHooks: options.anchorHooks }),
     ...(options.buildRef === undefined ? {} : { buildRef: options.buildRef }),
+    ...(captureOrigin === undefined ? {} : { origin: captureOrigin }),
     ...(view === undefined ? {} : { view }),
     ...(options.identity === undefined ? {} : { identity: options.identity }),
     announce,
@@ -1711,6 +1721,7 @@ export function createLayer(options: LayerOptions): LayerHandle {
         ...anchorOptions(),
         ...(route !== undefined ? { route } : {}),
         ...(quote !== undefined ? { quote } : {}),
+        ...(captureOrigin === undefined ? {} : { origin: captureOrigin }),
       });
       label = describeElement(element);
     } catch (error) {

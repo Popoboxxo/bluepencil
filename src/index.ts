@@ -40,7 +40,9 @@
  */
 import type { Adapter, AdapterLike } from "./core/adapter";
 import { excludeDone, filterNotes } from "./core/adapter";
-import type { Environment, Note, NoteFilter } from "./core/model";
+import type { Environment, Note, NoteFilter, NoteOrigin } from "./core/model";
+import { currentOrigin } from "./core/origin";
+import { resolveSessionRef, type SessionStrategy } from "./core/session-strategy";
 import { createStore, type Store, type StoreOptions } from "./core/store";
 import { toJson } from "./core/export/json";
 import { toMarkdown } from "./core/export/markdown";
@@ -55,6 +57,16 @@ export interface BlueprintConfig extends Omit<LayerOptions, "store"> {
   storeOptions?: Omit<StoreOptions, "adapter">;
   /** Review round this instance writes into (FR-3.4). */
   sessionRef?: string;
+  /**
+   * How the round label is combined with the automatic place (issue #135). Unset means `given`,
+   * so old hosts produce byte-identical refs. A strategy needs the note's route, therefore the
+   * store composes it per note rather than once per instance.
+   */
+  sessionStrategy?: SessionStrategy;
+  /** Explicit instance prefix for federated session refs (`label@dev-web/https://…`). */
+  sessionInstance?: string;
+  /** Site origin override; defaults to `globalThis.location.origin`. */
+  origin?: NoteOrigin;
   /** Environment this instance belongs to (FR-14.1); imports never cross it by default. */
   environment?: Environment;
   /** Host gate, evaluated on every enable() (FR-1.1). */
@@ -121,6 +133,9 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
     adapter,
     storeOptions = {},
     sessionRef,
+    sessionStrategy,
+    sessionInstance,
+    origin,
     environment,
     enabled: initialGate,
     autoEnable,
@@ -148,9 +163,33 @@ export function createBlueprint(config: BlueprintConfig = {}): Blueprint {
     }
   };
 
+  const placeOrigin: NoteOrigin =
+    origin !== undefined ? origin : currentOrigin((globalThis as { location?: { origin?: unknown } }).location);
+  const prefixOrigin = (value: string | undefined): string | undefined =>
+    value === undefined || sessionInstance === undefined || sessionInstance === ""
+      ? value
+      : `${sessionInstance}/${value}`;
+
+  const defaultStrategy =
+    sessionStrategy !== undefined &&
+    sessionStrategy.length === 1 &&
+    sessionStrategy[0]?.kind === "given";
   const storeConfig: StoreOptions = {
     ...(adapter !== undefined ? { adapter: adapter as AdapterLike } : {}),
     ...(sessionRef !== undefined ? { sessionRef } : {}),
+    ...(sessionStrategy !== undefined && !defaultStrategy
+      ? {
+          sessionRefFor: (anchor) =>
+            resolveSessionRef(sessionStrategy, {
+              ...(sessionRef === undefined ? {} : { label: sessionRef }),
+              ...(anchor.origin === undefined && placeOrigin === null
+                ? {}
+                : { origin: prefixOrigin(anchor.origin ?? placeOrigin ?? undefined) }),
+              ...(anchor.route === undefined ? {} : { route: anchor.route }),
+            }),
+        }
+      : {}),
+    ...(placeOrigin !== null ? { origin: placeOrigin } : {}),
     ...(environment !== undefined ? { environment } : {}),
     ...storeOptions,
   };

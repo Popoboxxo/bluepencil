@@ -36,6 +36,8 @@ export interface LayerNotesDeps {
   composer: () => Composer | null;
   /** Anchor hooks, forwarded verbatim (FR-2.4). */
   anchorHooks?: string[];
+  /** Automatic site origin (issue #135); the anchor wins when it carries one. */
+  origin?: string;
   /** Build reference stamped into the captured context. */
   buildRef?: string;
   view?: Window;
@@ -139,6 +141,11 @@ export function createLayerNotes(deps: LayerNotesDeps): LayerNotesUnit {
         type: input.type,
         body: input.body,
         anchor: { ...target.anchor },
+        // Issue #135: the place is a fact and travels in both spellings — the anchor (what the
+        // issue asks for) and the note-level field every transport already carries (FR-2.2).
+        ...(target.anchor.origin === undefined && deps.origin === undefined
+          ? {}
+          : { origin: target.anchor.origin ?? deps.origin }),
         intent: input.intent,
         // FR-3.6: only a bug carries a severity; `createNote` drops it for any other type.
         ...(input.severity !== undefined ? { severity: input.severity } : {}),

@@ -120,6 +120,46 @@ export function originOf(note: Pick<Note, "origin">): NoteOrigin {
 }
 
 /**
+ * True for a stored origin: a canonical http(s) origin, or an instance-qualified spelling used by
+ * federated aggregates (`dev-web/https://shop-a.de`). Paths, queries and fragments are refused.
+ */
+export function isStoredOrigin(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  if (normaliseOrigin(value) === value) return true;
+  const match = /^([a-z0-9][a-z0-9._-]{0,63})\/(https?:\/\/.*)$/.exec(value);
+  if (match === null) return false;
+  return normaliseOrigin(match[2] ?? "") === match[2];
+}
+
+/**
+ * Strict parser for `anchor.origin` at the hub/MCP boundary (issue #135).
+ *
+ * Unlike `parseOriginInput` this does **not** silently strip a path, query or fragment: the field
+ * is defined as scheme + host + port only, so `"https://a.de/produkt"` is a validation error
+ * rather than a note that quietly loses the path. Absent/`null`/empty stays "unassigned".
+ */
+export function parseAnchorOriginInput(value: unknown): OriginInput {
+  if (value === undefined || value === null || value === "" || value === "null") {
+    return { ok: true, origin: null };
+  }
+  if (typeof value !== "string" || normaliseOrigin(value) !== value) {
+    return { ok: false, code: "invalid_origin" };
+  }
+  return { ok: true, origin: value };
+}
+
+/**
+ * Effective site origin of a note, reading both spellings (issue #135).
+ *
+ * The note-level field (FR-2.2) wins; the anchor field is the fallback so a note written by a
+ * transport that only carries it still answers `?origin=`. Both missing means `null` ("unknown"),
+ * which is also what `?origin=null` selects.
+ */
+export function placeOriginOf(note: Pick<Note, "origin" | "anchor">): NoteOrigin {
+  return originOf(note) ?? normaliseOrigin(note.anchor?.origin);
+}
+
+/**
  * Canonical origin of a location-like object — the capture entry point (FR-2.2).
  *
  * Takes `globalThis.location` (or any `{ origin }`) without touching the DOM: an opaque origin

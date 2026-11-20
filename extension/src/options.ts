@@ -82,6 +82,11 @@ export function saveInGesture(
   });
 }
 
+/** One-click suggestion of today's round label (issue #135 decision #4), freely editable. */
+export function todayLabel(now: Date = new Date()): string {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
 /**
  * The save-time refusal for a cleartext endpoint, or `null` when the save may run.
  *
@@ -169,6 +174,8 @@ function requestPattern(pattern: string): Promise<boolean> {
 const FIELDS = [
   "environment",
   "appName",
+  "sessionLabel",
+  "sessionStrategy",
   "language",
   "identity",
   "store",
@@ -582,6 +589,10 @@ function wirePage(): void {
 
   testConnection.addEventListener("click", () => {
     void testConnection_();
+  });
+
+  byId<HTMLButtonElement>("session-label-today").addEventListener("click", () => {
+    byId<HTMLInputElement>("sessionLabel").value = todayLabel();
   });
 
   byId<HTMLSelectElement>("store").addEventListener("change", (event) => {
