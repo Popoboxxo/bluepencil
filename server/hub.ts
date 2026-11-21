@@ -2166,7 +2166,7 @@ async function startListeners(
     process.stderr.write(
       `bluepencil server: "${hubContext.hubName}" on http://${resolved.host}:${hubBinding.port}${resolved.base || "/"}` +
         (runningViewer === undefined ? "" : ` — viewer on ${runningViewer.url}`) +
-        ` — ${store.state.notes.length} note(s), environment ${resolved.environment}, ` +
+        ` — ${store.state.notes.length} note(s), environment ${resolved.environment} (one of dev|staging|live), ` +
         `${resolved.readOnly ? "read-only" : "read-write"}, ` +
         `${isLoopbackAddress(hubBinding.host) ? "reachable on this machine only" : `reachable from the network (bound ${hubBinding.host})`}, ` +
         `store ${resolved.storePath}\n`,

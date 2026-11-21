@@ -873,6 +873,10 @@ function configResponse(context: HandlerContext, request: CorsRequest): ServerRe
       app: context.appName ?? HUB_APP_NAME,
       federates: context.federates === true,
       version: context.version ?? SERVER_VERSION,
+      // #129: server and embed layer ship and version together. Naming the layer version the hub
+      // expects here lets a probe compare it with `<base>/latest.json` and detect a partial update;
+      // it is a derived value, not a second version source.
+      layerVersion: context.version ?? SERVER_VERSION,
       base: normalizeBase(context.base),
       auth,
       readOnly: context.readOnly === true,
@@ -1741,8 +1745,11 @@ export function authorize(
     // The verified device is the identity the journal records; the header is not.
     if (verdict.device !== undefined) request.authDevice = verdict.device;
     // A verified token is a live client at this moment — the only reader signal this hub has.
-    // `presence.ts` throttles it to one recorded stamp per minute; the identity is not recorded.
+    // `presence.ts` throttles it to one recorded stamp per minute; the device name comes from the
+    // verified claims, never from a header, and the session id is the one notes record (#134).
     presence.stamp("token");
+    const sessionRef = headerValue(request.headers, "mcp-session-id");
+    if (verdict.device !== undefined) presence.stampDevice(verdict.device, sessionRef);
     return null;
   }
 

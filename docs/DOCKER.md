@@ -79,7 +79,7 @@ either — an empty value counts as unset, so the entrypoint generates or reuses
 | `BLUEPENCIL_BASE` | `/api/v1/bluepencil` | Base path of the API |
 | `BLUEPENCIL_STORE` | `/data/notes.bluepencil.json` | Where the note set lives — keep it inside `/data` |
 | `BLUEPENCIL_APP` | `bluepencil hub` | Identity reported as `/config.app`; a registry peer must match it |
-| `BLUEPENCIL_ENVIRONMENT` | `dev` | The one environment this hub is the store of record for |
+| `BLUEPENCIL_ENVIRONMENT` | `dev` | The one environment this hub is the store of record for. **Closed enum: `dev`, `staging`, `live`** — any other value (e.g. `qs`) exits 1 at startup, which looks like a silent restart loop under `--restart unless-stopped`. `/config` and the startup banner name the accepted values. |
 | `BLUEPENCIL_REGISTRY` | – | Registry file; makes `/mcp` an aggregate and `/config` report `federates:true` (the hub stays the store of record) |
 | `BLUEPENCIL_AUTH_SECRET` | generated | Shared secret; every client sends it in `x-bluepencil-auth`. Generated into `BLUEPENCIL_SECRET_FILE` even when `BLUEPENCIL_TOKEN_KEY` is set — a hub with both accepts **both** credentials |
 | `BLUEPENCIL_TOKEN_KEY` | – | Signed per-device tokens (`Authorization: Bearer …`), individually revocable. Does not replace the shared secret; configure it *in addition* to keep both doors open |
@@ -440,7 +440,12 @@ positional argument that names one of those two wrappers dispatches to it (so
   credential is not a substitute for transport encryption on an untrusted path.
 - **A bind mount ignores the image's ownership.** The image prepares `/data` for uid 1000 (`node`),
   and a *named* volume inherits that. A host bind mount does not, so it needs `chown 1000:1000` on the
-  host first — otherwise the hub cannot write its store.
+  host first — otherwise the hub cannot write its store. When a file such as `revoked.json` must
+  exist before the flags are honoured, create it inside the image's uid:
+  ```sh
+  docker run --rm -v bp-data:/data --entrypoint sh ghcr.io/popoboxxo/bluepencil:<version> \
+    -c 'echo "[]" > /data/revoked.json && chown -R node:node /data'
+  ```
 - **One writer per store file.** Two hubs on the same file is two truths fighting; run one container
   per store.
 - **`latest` tracks the newest stable release.** Prerelease tags publish `<version>` and `hub` only.
@@ -456,10 +461,13 @@ docker compose up -d --force-recreate           # only if you added a bind mount
 ```
 
 The shipped root `docker-compose.yml` mounts a named volume, not a bind mount, so a normal image
-update needs no second command. If you added a bind mount, Compose does not recreate for a
-bind-mount change — the old process keeps running until you recreate it. Compose also does not adopt
-a hand-started container: with `container_name` set, `up` fails on the name conflict, so
-`docker rm -f bluepencil-hub` first (the volume survives). Accept the update only
+update needs no second command. If you bind-mount `server.js` itself, replacing the file and even
+re-creating the container can leave the **old process** alive and healthy while reporting the old
+`version` in `GET {base}/config`: the code is read at process start, and Compose does not always
+restart a container for a bind-mount change. For that layout use
+`docker restart <container>` and then read the version back. `--force-recreate` is only needed for
+image/Compose changes. Compose also does not adopt a hand-started container: with `container_name`
+set, `up` fails on the name conflict, so `docker rm -f bluepencil-hub` first (the volume survives). Accept the update only
 when `GET {base}/config` reports the new `version`, `GET {base}/health` answers 200 (with the
 credential when the hub needs one) and the notes are still listed.
 

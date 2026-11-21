@@ -78,7 +78,7 @@ const STATUS = {
   revocationDurable: true,
   devices: 1,
   revoked: 0,
-  presence: { token: "2026-10-31T09:05:00.000Z", secret: null },
+  presence: { token: "2026-10-31T09:05:00.000Z", secret: null, devices: [{ device: "caro-laptop", lastSeenAt: "2026-10-31T09:05:00.000Z", sessionRef: "session-42" }] },
 };
 
 const DEVICE = {
@@ -381,7 +381,35 @@ describe("the admin page's presence card", () => {
 
     const card = node(h, "presence-card");
     expect(card.textContent).toContain("Last accepted credential");
-    expect(card.textContent).toContain("Readers are not tracked as individual clients");
+    // #132: the panel explains purpose in the row labels instead of a 512-character paragraph.
+    expect(card.textContent).toContain("per device, revocable");
+    expect(card.textContent).toContain("one value for all clients");
+    expect(ADMIN_STRINGS.en.presenceHelp.length).toBeLessThan(160);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------
+ * #134 — presence per credential and the drill-down into a session's notes
+ * ---------------------------------------------------------------------------------------------- */
+describe("the admin page's connected devices", () => {
+  it("shows the last-seen stamp and offers the notes of the device's session", async () => {
+    const h = mount();
+    await connect(h);
+
+    const rows = node(h, "devices-rows");
+    expect(rows.textContent).toContain("2026-10-31 09:05:00");
+    const button = h.dom.window.document.querySelector("[data-notes-session]");
+    expect(button, "a device with a verified token has a session drill-down").not.toBeNull();
+    expect(button?.getAttribute("data-notes-session")).toBe("session-42");
+    expect(button?.textContent).toContain("notes");
+
+    (button as HTMLElement).click();
+    await vi.waitFor(() => {
+      expect(node(h, "notes-status").textContent).toContain("session-42");
+    });
+    expect(
+      h.requests.filter((r) => r.url.includes("sessionRef=session-42")),
+    ).toHaveLength(1);
   });
 });
 

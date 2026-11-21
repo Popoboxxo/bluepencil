@@ -6,10 +6,11 @@
  * the authentication itself, one level below the routes: whether a request got in with a signed
  * token or with the shared secret. That is what this module records, and nothing more:
  *
- * - **One value per credential kind** (`token`, `secret`), both nullable. There is deliberately no
- *   per-client entry: two browsers holding the same shared secret are indistinguishable at the gate,
- *   and inventing an identity for them would be a lie an operator acts on.
- * - **At most one write per kind per minute.** A page that polls the hub must not turn presence into
+ * - **One value per credential kind** (`token`, `secret`), both nullable. Since #134 a third,
+ *   additive signal records the last accepted request per *named device* (the name inside a verified
+ *   token, never a browser identity). Two browsers holding the same shared secret remain
+ *   indistinguishable; a per-device stamp exists only for a verified signed token.
+ * - **At most one write per kind/device per minute.** A page that polls the hub must not turn presence into
  *   a clock churn. A stamp younger than the throttle window keeps the previous value untouched —
  *   including when the clock stepped backwards, where `at - previous` is negative and also falls
  *   inside the window.
@@ -30,6 +31,12 @@ export type PresenceKind = "token" | "secret";
 export interface PresenceSnapshot {
   token: string | null;
   secret: string | null;
+  /**
+   * #134: last accepted request per *named device* (not per browser), throttled like the two kind
+   * stamps. The optional sessionRef is the one a client sent in `mcp-session-id`, so the admin page
+   * can drill from a device to the notes of that session. Memory only; never a credential value.
+   */
+  devices: Array<{ device: string; lastSeenAt: string; sessionRef?: string }>;
 }
 
 /** Dependencies of a tracker; all optional so the production path is a plain `createPresence()`. */
@@ -43,6 +50,8 @@ export interface PresenceOptions {
 export interface PresenceTracker {
   /** Records "a credential of this kind was accepted now", throttled per kind. */
   stamp(kind: PresenceKind): void;
+  /** #134: records a named device's last accepted request and the session it presented. */
+  stampDevice(device: string, sessionRef?: string): void;
   /** A copy of the current state; later stamps do not mutate it. */
   snapshot(): PresenceSnapshot;
 }
@@ -60,6 +69,7 @@ export function createPresence(options: PresenceOptions = {}): PresenceTracker {
   const now = options.now ?? Date.now;
   const throttleMs = options.throttleMs ?? PRESENCE_THROTTLE_MS;
   const lastSeen = new Map<PresenceKind, number>();
+  const deviceSeen = new Map<string, { at: number; sessionRef?: string }>();
 
   return {
     stamp(kind: PresenceKind): void {
@@ -72,11 +82,30 @@ export function createPresence(options: PresenceOptions = {}): PresenceTracker {
       lastSeen.set(kind, at);
     },
 
+    stampDevice(device: string, sessionRef?: string): void {
+      const name = device.trim();
+      if (name.length === 0) return;
+      const at = now();
+      if (!Number.isFinite(at)) return;
+      const previous = deviceSeen.get(name);
+      if (previous !== undefined && at - previous.at < throttleMs) return;
+      deviceSeen.set(name, sessionRef === undefined ? { at } : { at, sessionRef });
+    },
+
     snapshot(): PresenceSnapshot {
-      const snapshot: PresenceSnapshot = { token: null, secret: null };
+      const snapshot: PresenceSnapshot = { token: null, secret: null, devices: [] };
       for (const kind of KINDS) {
         const at = lastSeen.get(kind);
         if (at !== undefined && Number.isFinite(at)) snapshot[kind] = new Date(at).toISOString();
+      }
+      for (const [device, { at, sessionRef }] of deviceSeen) {
+        if (!Number.isFinite(at)) continue;
+        const entry: { device: string; lastSeenAt: string; sessionRef?: string } = {
+          device,
+          lastSeenAt: new Date(at).toISOString(),
+        };
+        if (sessionRef !== undefined) entry.sessionRef = sessionRef;
+        snapshot.devices.push(entry);
       }
       return snapshot;
     },

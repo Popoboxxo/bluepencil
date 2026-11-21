@@ -133,6 +133,13 @@ describe("GET {base}/config — the answer itself", () => {
     expect(body["environment"]).toBe("staging");
   });
 
+  it("[#129] names the layer version the hub expects, so a probe can detect a partial update", () => {
+    expect(configOf()["layerVersion"]).toBe(configOf()["version"]);
+    const pinned = configOf({ version: "9.8.7" });
+    expect(pinned["version"]).toBe("9.8.7");
+    expect(pinned["layerVersion"]).toBe("9.8.7");
+  });
+
   it("leaves the binding unknown rather than guessing it", () => {
     expect(configOf()["bind"]).toBe(null);
   });

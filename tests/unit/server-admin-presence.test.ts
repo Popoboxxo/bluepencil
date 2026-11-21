@@ -80,13 +80,13 @@ describe("the presence tracker", () => {
     const time = clock();
     const presence = createPresence({ now: time.now });
 
-    expect(presence.snapshot()).toEqual({ token: null, secret: null });
+    expect(presence.snapshot()).toEqual({ token: null, secret: null, devices: [] });
 
     presence.stamp("secret");
-    expect(presence.snapshot()).toEqual({ token: null, secret: iso(START) });
+    expect(presence.snapshot()).toEqual({ token: null, secret: iso(START), devices: [] });
 
     presence.stamp("token");
-    expect(presence.snapshot()).toEqual({ token: iso(START), secret: iso(START) });
+    expect(presence.snapshot()).toEqual({ token: iso(START), secret: iso(START), devices: [] });
   });
 
   it("keeps the previous stamp while it is younger than a minute — no write, no clock churn", () => {
@@ -112,7 +112,7 @@ describe("the presence tracker", () => {
     time.advance(1_000);
     presence.stamp("secret");
 
-    expect(presence.snapshot()).toEqual({ token: iso(START), secret: iso(START + 1_000) });
+    expect(presence.snapshot()).toEqual({ token: iso(START), secret: iso(START + 1_000), devices: [] });
   });
 
   it("keeps the previous stamp when the clock steps backwards", () => {
@@ -126,10 +126,38 @@ describe("the presence tracker", () => {
     expect(presence.snapshot().secret).toBe(iso(START));
   });
 
+  it("[#134] records lastSeenAt and sessionRef per verified device, throttled like a kind stamp", () => {
+    const time = clock();
+    const presence = createPresence({ now: time.now });
+
+    presence.stampDevice(" Framework-Laptop ", "session-42");
+    expect(presence.snapshot().devices).toEqual([
+      { device: "Framework-Laptop", lastSeenAt: iso(START), sessionRef: "session-42" },
+    ]);
+
+    time.advance(1_000);
+    presence.stampDevice("Framework-Laptop", "other-session");
+    // Within the throttle window the first stamp (and its session) is kept.
+    expect(presence.snapshot().devices).toHaveLength(1);
+    expect(presence.snapshot().devices[0]?.sessionRef).toBe("session-42");
+
+    time.advance(PRESENCE_THROTTLE_MS);
+    presence.stampDevice("Framework-Laptop", "other-session");
+    presence.stampDevice("office-pc");
+    const devices = presence.snapshot().devices;
+    expect(devices).toHaveLength(2);
+    expect(devices[0]).toEqual({
+      device: "Framework-Laptop",
+      lastSeenAt: iso(START + PRESENCE_THROTTLE_MS + 1_000),
+      sessionRef: "other-session",
+    });
+    expect(devices[1]).toEqual({ device: "office-pc", lastSeenAt: iso(START + PRESENCE_THROTTLE_MS + 1_000) });
+  });
+
   it("records nothing when the clock is broken (non-finite)", () => {
     const presence = createPresence({ now: () => Number.NaN });
     presence.stamp("token");
-    expect(presence.snapshot()).toEqual({ token: null, secret: null });
+    expect(presence.snapshot()).toEqual({ token: null, secret: null, devices: [] });
   });
 
   it("hands out copies: a snapshot cannot be used to fake presence", () => {
@@ -147,7 +175,7 @@ describe("the presence tracker", () => {
     presenceOf(one).stamp("token");
 
     expect(presenceOf(one).snapshot().token).not.toBeNull();
-    expect(presenceOf(two).snapshot()).toEqual({ token: null, secret: null });
+    expect(presenceOf(two).snapshot()).toEqual({ token: null, secret: null, devices: [] });
     // The same context keeps returning the same tracker.
     expect(presenceOf(one)).toBe(presenceOf(one));
   });
@@ -163,7 +191,7 @@ describe("the gate stamps presence on both doors", () => {
     // so it never reaches `authorize` and can therefore never stamp a credential as present.
     const allowed = get(context, "/notes", { "x-bluepencil-auth": CLIENT_CREDENTIAL });
     expect(allowed.status).toBe(200);
-    expect(presence.snapshot()).toEqual({ token: null, secret: iso(START) });
+    expect(presence.snapshot()).toEqual({ token: null, secret: iso(START), devices: [] });
   });
 
   it("does not stamp a refused credential", () => {
@@ -172,7 +200,7 @@ describe("the gate stamps presence on both doors", () => {
 
     const refused = get(context, "/notes", { "x-bluepencil-auth": "not-it" });
     expect(refused.status).toBe(401);
-    expect(presence.snapshot()).toEqual({ token: null, secret: null });
+    expect(presence.snapshot()).toEqual({ token: null, secret: null, devices: [] });
   });
 
   it("stamps a verified token, not a refused one", () => {
@@ -182,12 +210,16 @@ describe("the gate stamps presence on both doors", () => {
     const acceptingHub = hub({ verifyToken: accepting, presence });
 
     expect(get(acceptingHub, "/notes", { authorization: "Bearer whatever" }).status).toBe(200);
-    expect(presence.snapshot()).toEqual({ token: iso(START), secret: null });
+    const stamped = presence.snapshot();
+    expect(stamped.token).toBe(iso(START));
+    expect(stamped.devices).toEqual([
+      { device: "graph-viewer", lastSeenAt: iso(START) },
+    ]);
 
     const other = createPresence({ now: () => START });
     const refusing: TokenVerifier = () => ({ ok: false, reason: "revoked" });
     expect(get(hub({ verifyToken: refusing, presence: other }), "/notes", { authorization: "Bearer whatever" }).status).toBe(401);
-    expect(other.snapshot()).toEqual({ token: null, secret: null });
+    expect(other.snapshot()).toEqual({ token: null, secret: null, devices: [] });
   });
 
   it("does not stamp on a route answered before the gate — /health stays credential-free", () => {
@@ -197,7 +229,7 @@ describe("the gate stamps presence on both doors", () => {
     // #109: the probe is answered before `authorize`, so a credential on it proves nothing.
     expect(get(context, "/health", { "x-bluepencil-auth": CLIENT_CREDENTIAL }).status).toBe(200);
     expect(get(context, "/health", { "x-bluepencil-auth": "not-it" }).status).toBe(200);
-    expect(presence.snapshot()).toEqual({ token: null, secret: null });
+    expect(presence.snapshot()).toEqual({ token: null, secret: null, devices: [] });
   });
 
   it("does not stamp the admin secret — it is the operator's bridge, not a client credential", () => {
@@ -214,7 +246,7 @@ describe("the gate stamps presence on both doors", () => {
       context,
     );
     expect(created.status).toBe(200);
-    expect(presence.snapshot()).toEqual({ token: null, secret: null });
+    expect(presence.snapshot()).toEqual({ token: null, secret: null, devices: [] });
   });
 
   it("stamps the MCP door too, so a reader-only agent becomes visible", async () => {
@@ -233,7 +265,7 @@ describe("the gate stamps presence on both doors", () => {
       memoryIo(),
     );
     expect(allowed?.status).toBe(200);
-    expect(presence.snapshot()).toEqual({ token: null, secret: iso(START) });
+    expect(presence.snapshot()).toEqual({ token: null, secret: iso(START), devices: [] });
 
     const refused = await handleMcpRoute(
       {
@@ -266,7 +298,7 @@ describe("what /admin/status reports", () => {
     presence.stamp("secret");
 
     const body = status({ presence });
-    expect(body.presence).toEqual({ token: null, secret: iso(START) });
+    expect(body.presence).toEqual({ token: null, secret: iso(START), devices: [] });
     // The key keeps its name for compatibility; it counts issued credentials, not clients.
     expect(body.devices).toBe(0);
   });
@@ -282,7 +314,7 @@ describe("what /admin/status reports", () => {
   });
 
   it("reports nulls on a freshly started hub", () => {
-    expect(status({}).presence).toEqual({ token: null, secret: null });
+    expect(status({}).presence).toEqual({ token: null, secret: null, devices: [] });
   });
 });
 
@@ -298,10 +330,14 @@ describe("the admin page's wording", () => {
     expect(german).not.toContain("Geräte &amp; Schlüssel");
   });
 
-  it("states the honest limit next to the credential rows", () => {
+  it("keeps the presence wording short and explains each credential's purpose (#132, #134)", () => {
     expect(english).toContain('id="presence-heading"');
     expect(english).toContain('id="presence-rows"');
-    expect(english).toContain("Readers are not tracked as individual clients");
-    expect(german).toContain("Lesende Clients werden nicht als einzelne Clients geführt");
+    expect(english).toContain("Memory only, reset on restart");
+    expect(english).toContain("per device, revocable");
+    expect(english).toContain("one value for all clients");
+    expect(english).toContain("Last seen");
+    expect(german).toContain("pro Gerät, widerrufbar");
+    expect(german).toContain("Zuletzt gesehen");
   });
 });

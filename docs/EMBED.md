@@ -353,6 +353,19 @@ them out of the box.
 | `GET` | `{base}/bundle` | – | Canonical bundle (`src/data`) — for agents and exports. |
 | `GET` | `{base}/journal` | optional `?since=<seq>` | `{ journal: { backend, location, entries, lastSeq }, entries }` — the mutation history (FR-18). |
 
+**Payload rules that cost a round trip if you guess wrong:**
+
+| Rule | REST `{base}/notes*`/`{base}/journal` | MCP `tools/call` |
+|---|---|---|
+| Create a note | `{ type, body, anchor: { selector \| hook \| quote, route? }, author?, authorType?, sessionRef? }` | `{ body, type, selector \| hook \| quote, session }` — anchor fields are **flat**, and the session key is `session`, not `sessionRef`. Sending the REST shape yields *„an anchor needs at least one of hook, selector or quote“*. |
+| Reply in a thread | `POST {base}/notes/{id}/messages` takes **`text`**, not the note's `body` | `reply` likewise takes `text` |
+| Delete notes | `POST {base}/notes/bulk-delete` with `ids` or `filter` **plus `confirm: true`**; without it `400 confirm_required` and nothing is removed. No `DELETE /notes/{id}` route exists (`405`). | `bulk_delete` carries the same explicit confirmation |
+| Read the journal | top-level `entries` is the **array**; `journal.entries` is its **count** (a number). `data.journal.entries` is deliberately not the list. | `journal` tool returns the same audit shape |
+
+See [MCP.md](MCP.md) for the tool schemas; the two create shapes are intentionally different and are
+not interchangeable. An additive `anchor.origin` may appear on notes from newer clients; readers
+treat a missing origin as *unknown*, not as an empty string.
+
 `GET {base}/health` needs no credential: a probe or a status display can ask whether the store is
 alive before it has one. `/health` carries `{ ok, status, version }` only — no note and no secret — and
 `HEAD` answers it too (same status, empty body). The same is true of `GET {base}/config`. The CORS

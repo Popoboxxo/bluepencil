@@ -1,3 +1,35 @@
+## [0.15.6] - 2026-11-20
+
+### Fixed
+
+- **#123/#124/#130 — Docker docs now match the container's real behaviour.** The environment enum
+  (`dev|staging|live`) is named in the table and startup banner; a bind-mounted `/data` needs uid 1000
+  with an init recipe for pre-created files; a bind-mounted `server.js` is picked up by
+  `docker restart`, not reliably by `--force-recreate`.
+- **#125/#126/#128 — the payload rules are written down.** `docs/EMBED.md` now puts REST and MCP
+  `create_note` shapes side by side and states `body` vs `text`, `confirm: true` for bulk-delete, the
+  absence of `DELETE /notes/{id}`, and that top-level `journal.entries` is the array while
+  `journal.entries` inside the descriptor is a count.
+- **#132 — the credential panel is short and says what each credential is for** (per-device/revocable
+  token vs one shared value without expiry).
+- **#134 — presence per verified device.** `server/presence.ts` records `lastSeenAt` and the session id
+  for each named token device (memory only, throttled like the kind stamps); the admin devices table
+  shows a *Last seen* column and a notes drill-down through the existing `?sessionRef=` filter.
+- **#58 — documented the only possible repair path** (re-mint the Google OAuth triple outside the
+  repo); the external credential itself cannot be fixed here.
+
+### Changed
+
+- **#129 — `GET /config` names `layerVersion`**, the version of the embed layer the hub expects, so a
+  probe can detect a partial update against `<base>/latest.json`.
+
+### Verified
+
+- `NODE_ENV=test npm run verify` — **125 test files, 2806 tests passed** (3 new tests for per-device
+  presence, the admin drill-down and `layerVersion`); typecheck, `typecheck:ext`, build,
+  `build:ext`, `verify:sync`, `size` and `smoke:components -- --no-docker` (**14 passed, 0 failed,
+  1 skipped**) green.
+
 ## [0.15.5] - 2026-11-20
 
 ### Added
