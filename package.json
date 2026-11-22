@@ -1,6 +1,6 @@
 {
   "name": "bluepencil",
-  "version": "0.15.6",
+  "version": "0.16.0",
   "description": "Annotate any web app — text and design notes, anchored to the element, readable by humans and agents.",
   "license": "MIT",
   "repository": {
@@ -90,6 +90,7 @@
     "docs/INTEGRATION.md",
     "docs/INTERNAL-API.md",
     "docs/MCP.md",
+    "docs/OIDC.md",
     "docs/PRIVACY.md",
     "docs/PROTOCOL.md",
     "docs/RELEASING.md",
@@ -119,6 +120,7 @@
     "build:site": "node scripts/build-site.mjs",
     "smoke:cli": "node scripts/cli-smoke.mjs",
     "smoke:mcp": "node scripts/mcp-smoke.mjs",
+    "smoke:oidc": "node scripts/oidc-smoke.mjs",
     "smoke:federation": "node scripts/federation-smoke.mjs",
     "smoke:pack": "node scripts/pack-smoke.mjs",
     "smoke:install": "node scripts/install-smoke.mjs",
@@ -134,7 +136,7 @@
     "spec:check": "reqmd check spec/",
     "spec:ls": "reqmd ls spec/",
     "spec:stats": "reqmd stats spec/",
-    "verify": "npm run typecheck && npm run typecheck:ext && npm run test && npm run build && npm run build:ext && npm run verify:sync && npm run size && npm run smoke:components -- --no-docker",
+    "verify": "npm run typecheck && npm run typecheck:ext && npm run test && npm run build && npm run build:ext && npm run verify:sync && npm run size && npm run smoke:components -- --no-docker && npm run smoke:oidc",
     "smoke:e2e": "node tests/e2e/vanilla.e2e.mjs",
     "smoke:round-trip": "node tests/e2e/round-trip.e2e.mjs",
     "smoke:parity": "node tests/e2e/parity.e2e.mjs"

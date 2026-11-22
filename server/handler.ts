@@ -87,6 +87,9 @@ import {
 import { errorText, oneLine } from "./text";
 import { presenceOf, type PresenceTracker } from "./presence";
 import { credentialMode } from "./credentials";
+// Type-only: the pure handler must not acquire a runtime Node dependency through OIDC verification.
+// The verifier is built in the glue (`server/hub.ts`) and injected as a synchronous function.
+import type { OidcVerifier } from "./oidc";
 // The admin surface answers before the credential gate, so it must not import the gate — the
 // dependency runs one way: this router delegates to `adminGate`/`handleAdmin`, whose only
 // dependency on this module is its types (erased at runtime, so the cycle never materialises in the
@@ -322,6 +325,18 @@ export interface HandlerContext {
    * route.
    */
   verifyToken?: TokenVerifier;
+  /**
+   * Verifies RS256 OIDC bearer tokens issued by an external provider (Zitadel, Keycloak, …).
+   *
+   * A second, deliberately separate client credential: device tokens are HMAC-signed by this hub
+   * and are the agent/MCP credential; OIDC tokens are signed by the identity provider and carry
+   * the human user's roles. Both may be configured on one hub, and a failed device-token check
+   * falls through to OIDC rather than refusing a valid user token.
+   *
+   * Injected as a synchronous verdict because the pure handler performs no I/O; the glue builds
+   * the verifier (and refreshes its JWKS cache) before the first request.
+   */
+  oidc?: OidcVerifier;
   /**
    * Scope a presented token must carry, as a function of the request.
    *
@@ -1690,6 +1705,7 @@ export function authorize(
   const method = (request.method ?? "GET").toUpperCase();
   const surface = surfaceOf(context);
   const verifier = context.verifyToken;
+  const oidc = context.oidc;
   const secret = context.authSecret;
   const adminSecret = context.adminSecret;
   const presentedToken = bearerToken(request);
@@ -1708,7 +1724,7 @@ export function authorize(
     if (verifier === undefined && !secretAttempt) {
       return errorResponse(401, "unauthorized", viewerSessionRefusalMessage(context), context, request);
     }
-  } else if (verifier === undefined && !secretAttempt) {
+  } else if (verifier === undefined && !secretAttempt && oidc === undefined) {
     return null;
   }
 
@@ -1725,9 +1741,17 @@ export function authorize(
   // A signed token is verified first and on its own: an invalid token is refused rather than
   // retried as a secret, so a device cannot downgrade from "my token was revoked" to "try a secret".
   if (presentedToken !== undefined && verifier !== undefined) {
-    if (!allowed("token")) return throttledResponse("token", context, request);
     const verdict = verifier(presentedToken, required, context.revokedTokens ?? EMPTY_REVOKED);
     if (!verdict.ok) {
+      // A failed DEVICE token falls through to OIDC when configured: the two credentials are
+      // independent, and a valid user token must not be refused because the HMAC check of a
+      // different format failed first. The device budget is spent only if neither accepts.
+      const oidcVerdict = oidc?.verify(presentedToken, required);
+      if (oidcVerdict?.ok === true) {
+        request.authDevice = oidcVerdict.subject === undefined ? "oidc" : `oidc:${oidcVerdict.subject}`;
+        return null;
+      }
+      if (!allowed("token")) return throttledResponse("token", context, request);
       // Only a credential that failed authentication spends the budget. `insufficient_scope` means
       // the token *is* valid and merely lacks a permission — counting it would let a legitimate
       // read-only device throttle itself by calling a write tool twice.
@@ -1741,6 +1765,7 @@ export function authorize(
         request,
       );
     }
+    if (!allowed("token")) return throttledResponse("token", context, request);
     throttle?.success(request.remote, "token");
     // The verified device is the identity the journal records; the header is not.
     if (verdict.device !== undefined) request.authDevice = verdict.device;
@@ -1751,6 +1776,27 @@ export function authorize(
     const sessionRef = headerValue(request.headers, "mcp-session-id");
     if (verdict.device !== undefined) presence.stampDevice(verdict.device, sessionRef);
     return null;
+  }
+
+  // OIDC without a device issuer: the identity provider is the only bearer-token authority. A
+  // signature failure is not a guess against a shared secret, so it does not spend a brute-force
+  // budget; roles decide read/write, and the subject becomes the journal actor.
+  if (presentedToken !== undefined && verifier === undefined && oidc !== undefined) {
+    const verdict = oidc.verify(presentedToken, required);
+    if (verdict.ok) {
+      request.authDevice = verdict.subject === undefined ? "oidc" : `oidc:${verdict.subject}`;
+      return null;
+    }
+    const insufficient = verdict.reason === "insufficient-role";
+    return errorResponse(
+      insufficient ? 403 : 401,
+      insufficient ? "insufficient_scope" : "unauthorized",
+      insufficient
+        ? `OIDC role does not allow ${required} on this hub`
+        : `invalid OIDC bearer token (${verdict.reason ?? "unknown"})`,
+      context,
+      request,
+    );
   }
 
   const presented = headerValue(request.headers, AUTH_HEADER_SECRET);
@@ -1771,13 +1817,21 @@ export function authorize(
           context,
           request,
         )
-      : errorResponse(
-          401,
-          "unauthorized",
-          `missing ${AUTH_HEADER_TOKEN}: Bearer <token> — this hub requires a signed token (--token-key)`,
-          context,
-          request,
-        );
+      : oidc !== undefined
+        ? errorResponse(
+            401,
+            "unauthorized",
+            `missing ${AUTH_HEADER_TOKEN}: Bearer <oidc token> — this hub requires an OIDC token (--oidc-issuer)`,
+            context,
+            request,
+          )
+        : errorResponse(
+            401,
+            "unauthorized",
+            `missing ${AUTH_HEADER_TOKEN}: Bearer <token> — this hub requires a signed token (--token-key)`,
+            context,
+            request,
+          );
   }
 
   // Both candidate comparisons happen first; the budget is consulted only for the kind that
