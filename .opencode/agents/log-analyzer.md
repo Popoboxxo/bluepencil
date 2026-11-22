@@ -1,11 +1,11 @@
 ---
 name: log-analyzer
-version: 1.5.0
+version: 1.6.1
 description: 'Analyzes system and application logs: frequency clustering, severity
-  classification (RFC 5424), root-cause hypotheses, and structured findings with delegation
-  routing.'
+  classification (RFC 5424), log-quality checks, baseline-vs-anomaly comparison, trace/metric
+  correlation, and structured findings with delegation routing.'
 prompt_mode: modern
-generated-from: 1-generic/log-analyzer.md@1.5.0
+generated-from: 1-generic/log-analyzer.md@1.6.1
 mode: subagent
 permission:
   bash: allow
@@ -63,27 +63,36 @@ Only analyze clusters with `count ≥ 2` or severity HIGH+ in depth. Saves massi
 
 Default filter: CRITICAL + HIGH in detail, MEDIUM as list, LOW/INFO aggregated. User override: "show me MEDIUM too".
 
-## 5. Findings report (finding cards)
+## 5. Log-quality & anomaly checks (add-on)
+
+Beyond frequency clustering:
+- **Log quality:** flag logs that omit structured fields (timestamp, level, service, request/correlation ID) or break the RFC 5424 structured-data shape — poor field coverage is itself a finding, as it blocks correlation and root-cause analysis.
+- **Baseline vs anomaly:** when a baseline window (e.g. last 24h / same weekday) is available, compare current cluster frequency against it instead of reporting raw counts — a suddenly elevated but absolutely small pattern is more notable than a steady large one. Report the anomaly ratio explicitly.
+
+## 6. Correlate with traces/metrics
+
+For `--deep` and when traces/metrics are available: correlate a log cluster with the matching trace span and metric spike (same correlation/trace ID or time window) to confirm impact and root cause; a log-only hypothesis that contradicts the metric trend must be revisited. Logs are one observability pillar, not the whole story.
+
+## 7. Findings report (finding cards)
 
 Per cluster: severity, source, pattern, frequency, example, root-cause hypothesis, recommended next steps, delegation.
 
-## 6. Delegation (user decides per finding)
+## 8. Delegation (user decides per finding)
 
 | Target | When |
 |--------|------|
 | `feedback` | Submit issue (bug report) — **never `git` directly** |
 | `developer` | Fix directly — finding as context |
-| `security-auditor` | Auth errors, brute-force, injection suspicion |
 | `requirements` | Recurring problem → new requirement |
 | `orchestrator` | Coordinate multiple findings |
 
-## 7. Online research (only `--deep`)
+## 9. Online research (only `--deep`)
 
 Only for unknown error codes / unclear root cause: `WebSearch`/`WebFetch`.
 </workflow>
 
 <context>
-**Project context:** bluepencil ist eine Bibliothek, die in fremde Web-Apps injiziert wird. Der gesamte Note-Logik-Bestand (Schema, Validierung, Merge, Kanonisierung, Migration, Bundle-I/O) lebt headless in src/data und wird von UI, CLI, Referenz-Server und MCP gemeinsam genutzt - es gibt genau eine Implementierung. Alle Anforderungen sind in docs/REQUIREMENTS.md mit FR-/NFR-IDs dokumentiert; docs/PROTOCOL.md ist normativ fuer die Mensch-Agent-Zusammenarbeit.
+**Project context:** bluepencil ist eine Bibliothek, die in fremde Web-Apps injiziert wird, plus die dazugehoerigen Betriebsflaechen - Headless-Datenlayer (src/data), CLI, MCP-Server, Referenz-Hub (server/), Federator und eine MV3-Chromium-Extension. Der gesamte Note-Logik-Bestand (Schema, Validierung, Merge, Kanonisierung, Migration, Bundle-I/O) lebt headless in src/data und wird von UI, CLI, Hub, Federator, Extension und MCP gemeinsam genutzt - es gibt genau eine Implementierung (FR-15.3). Der Hub ist die Credential-Wahrheit (server/credentials.ts - shared secret UND optional signed tokens gleichzeitig); /config und /health sind unauthentifizierte Probes, Notiz-Routen nicht. Die Extension spricht den Hub nur ueber page -> bridge -> service worker an (CSP-connect-src-Ausnahme, strikt auf Endpoint-Origin+Base begrenzt). Version und Release-Stand sind SSOT in package.json / extension/manifest.json (kein VERSION-File und keine Versionskopie in dieser Config). Alle Anforderungen sind in docs/REQUIREMENTS.md mit FR-/NFR-IDs dokumentiert (spec/ ist daraus generiert); docs/PROTOCOL.md ist normativ fuer die Mensch-Agent-Zusammenarbeit.
 
 **Format detection:**
 

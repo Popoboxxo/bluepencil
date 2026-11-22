@@ -3,7 +3,9 @@
 Execution mode: parallel_group
 
 1. task(subagent_type="git", prompt="Feature-Branch anlegen") → warten bis abgeschlossen
-2. task(subagent_type="tester", prompt="TDD Red Phase — Tests mit REQ-ID im Namen") → warten bis abgeschlossen
+⏸ Abnahme erforderlich vor Stage 'approve' — warte auf explizite Nutzerbestätigung, bevor validator startet.
+2. task(subagent_type="validator", prompt="Spec/Plan-Gate: freigegebene Spec/Plan (Status: APPROVED) per plan_ref belegen (S-Klasse: entfällt) — fehlt sie, Abbruch und Route auf concept-driven-dev") → warten bis abgeschlossen
+3. task(subagent_type="tester", prompt="TDD Red Phase — fehlschlagende Tests zuerst (Benennung laut tester-Rolle)") → warten bis abgeschlossen
 
 **implement** — Plan-driven: Agent aus payload.plan_ref (Stage-ID 'implement') übernehmen.
 
@@ -13,10 +15,10 @@ Execution mode: parallel_group
   3. Prüfe: Agent in Stage `implement` ∈ {junior-developer, developer, senior-developer, frontend-component-engineer} → sonst `developer`
   4. Bei allen Fehlern: `developer` verwenden, Fehler in Status-Payload dokumentieren
 
-3. task(subagent_type="tester", prompt="Tests grün, keine Regression") → warten bis abgeschlossen
+4. task(subagent_type="tester", prompt="Tests grün, keine Regression") → warten bis abgeschlossen
 
 **validate-and-document** — Parallel dispatch:
   - task(subagent_type="validator", prompt="DoD-Check")
   - task(subagent_type="documenter", prompt="CODEBASE_OVERVIEW aktualisieren")
 
-4. task(subagent_type="git", prompt="Commit: feat([REQ-ID]): ... + PR") → warten bis abgeschlossen
+5. task(subagent_type="git", prompt="Commit (Format: Rule commit-conventions) + PR") → warten bis abgeschlossen

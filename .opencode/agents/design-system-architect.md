@@ -1,12 +1,12 @@
 ---
 name: design-system-architect
-version: 0.5.0
+version: 0.6.1
 description: 'Translates a UI design-system schema into real, project-bound design-token
   artifacts (CSS custom properties / Tailwind config) plus the underlying systematics:
   color-harmony rules, a design-time contrast gate, spacing/breakpoint methodology,
   component-variant contracts, and motion tokens.'
 prompt_mode: modern
-generated-from: 1-generic/design-system-architect.md@0.5.0
+generated-from: 1-generic/design-system-architect.md@0.6.1
 mode: subagent
 permission:
   read: allow
@@ -42,6 +42,8 @@ Design-system schema from `ui-ux-designer` (or A2A payload). Existing token file
 
 Components reference **only** the semantic layer, never a primitive directly — this is what makes theming/dark-mode robust. A dark-mode bug is therefore always a semantic-mapping bug, never a primitive bug.
 
+**Emit tokens in the Design Tokens Format (DTCG/W3C Community Group)** — tool-agnostic token JSON using the DTCG `$value`/`$type` keys first, then map to the project framework (CSS custom properties / Tailwind `@theme`), so the same token set stays portable across tools and consumers. Never hand-write framework-specific token files without the portable source of truth.
+
 ## 4. Color-harmony systematics + contrast gate (design-time, not an audit)
 
 Derive base color + harmony model (complementary/analogous/triadic/monochromatic). For every token pairing (text/background combination) compute a contrast value before it enters the contract, to reject obviously unusable pairings at design time (e.g. light gray on white never makes it into the contract).
@@ -73,16 +75,35 @@ On `correction_hints` from a critic → fix ONLY the named findings. Track "roun
 </workflow>
 
 <context>
-**Project context:** bluepencil ist eine Bibliothek, die in fremde Web-Apps injiziert wird. Der gesamte Note-Logik-Bestand (Schema, Validierung, Merge, Kanonisierung, Migration, Bundle-I/O) lebt headless in src/data und wird von UI, CLI, Referenz-Server und MCP gemeinsam genutzt - es gibt genau eine Implementierung. Alle Anforderungen sind in docs/REQUIREMENTS.md mit FR-/NFR-IDs dokumentiert; docs/PROTOCOL.md ist normativ fuer die Mensch-Agent-Zusammenarbeit.
-**Goal:** Eine kleine, dependency-freie TypeScript-Bibliothek (Overlay + Headless-Datenlayer + CLI + MCP), mit der ein Reviewer jede Web-App annotieren und die Notizen an einen Entwickler oder einen Agenten uebergeben kann.
+**Project context:** bluepencil ist eine Bibliothek, die in fremde Web-Apps injiziert wird, plus die dazugehoerigen Betriebsflaechen - Headless-Datenlayer (src/data), CLI, MCP-Server, Referenz-Hub (server/), Federator und eine MV3-Chromium-Extension. Der gesamte Note-Logik-Bestand (Schema, Validierung, Merge, Kanonisierung, Migration, Bundle-I/O) lebt headless in src/data und wird von UI, CLI, Hub, Federator, Extension und MCP gemeinsam genutzt - es gibt genau eine Implementierung (FR-15.3). Der Hub ist die Credential-Wahrheit (server/credentials.ts - shared secret UND optional signed tokens gleichzeitig); /config und /health sind unauthentifizierte Probes, Notiz-Routen nicht. Die Extension spricht den Hub nur ueber page -> bridge -> service worker an (CSP-connect-src-Ausnahme, strikt auf Endpoint-Origin+Base begrenzt). Version und Release-Stand sind SSOT in package.json / extension/manifest.json (kein VERSION-File und keine Versionskopie in dieser Config). Alle Anforderungen sind in docs/REQUIREMENTS.md mit FR-/NFR-IDs dokumentiert (spec/ ist daraus generiert); docs/PROTOCOL.md ist normativ fuer die Mensch-Agent-Zusammenarbeit.
+**Goal:** Eine kleine, dependency-freie TypeScript-Bibliothek (Overlay + Headless-Datenlayer + CLI + MCP + Referenz-Hub + Federator + MV3-Extension), mit der ein Reviewer jede Web-App annotieren und die Notizen an einen Entwickler oder einen Agenten uebergeben kann.
 **Languages:** TypeScript, CSS, Markdown, JSON
 
-**Architecture:** src/core/    model.ts store.ts anchor.ts capture.ts protocol.ts export/{markdown,json}.ts
-src/data/    schema.ts validate.ts canonical.ts bundle.ts merge.ts migrate.ts
-src/adapters/ memory.ts local-storage.ts file.ts http.ts
-src/ui/      layer.ts composer.ts panel.ts legend.ts styles.css
-tests/unit/  vitest (jsdom)   tests/e2e/  Playwright gegen examples/vanilla
+**Architecture:** src/core/    model.ts store.ts anchor.ts capture.ts protocol.ts adapter.ts export/{markdown,json}.ts
+src/data/    schema.ts index.ts bundle.ts canonical.ts merge.ts migrate.ts order.ts
+src/adapters/ memory.ts local-storage.ts chrome-storage.ts file.ts http.ts transport.ts
+             # transport.ts ist ein additiver Seam (registerHttpTransport); http.ts nutzt ihn,
+             # der Default bleibt der eingebaute fetch - kein zweiter Transport-Pfad.
+src/ui/      layer.ts composer.ts panel.ts legend.ts modes.ts present.ts voice.ts keymap.ts styles.ts
+src/element/ index.ts    src/embed/ attach.ts attributes.ts version.ts
+src/federation/ aggregate.ts backend.ts client.ts errors.ts ids.ts index.ts net-policy.ts registry.ts
+src/mcp/     server.ts tools.ts protocol.ts stdio.ts backend.ts options.ts
+server/      index.ts hub.ts handler.ts mcp.ts federator.ts journal.ts mint.ts mint-cli.ts tokens.ts
+             credentials.ts (eine Credential-Wahrheit: credentialMode + acceptedCredentials)
+             cors.ts (preflightResponse: eine OPTIONS-Implementierung fuer alle Tueren)
+             presence.ts (in-memory, max. 1 Update/Minute, nie persistiert, nie mit Secret)
+             admin.ts admin-html.ts admin-i18n.ts (opt-in Admin-Oberflaeche, en/de)
+             atomic-write.ts (durable Revocation/Registry-Schreibvorgaenge)
+extension/   manifest.json options.html build.mjs smoke.mjs
+             src/sw.ts (Hub-Requests: Origin+Base-Bindung, GET/POST/PATCH, Header-Allowlist,
+             {base}/admin verweigert), src/bridge.ts (page <-> SW), src/connection.ts
+             ("Test connection": GET /config + GET /notes status-only, 5s AbortController),
+             src/hub-fetch.ts, src/page-relay.ts, src/storage-relay.ts, src/handoff.ts
+tests/unit/  vitest (jsdom)   tests/e2e/  dependency-freier CDP-Harness gegen examples/*
 Entscheidungen D1-D11: siehe docs/REQUIREMENTS.md "Decisions (resolved)"
+Hub-Kanten: /config und /health sind unauthentifizierte Probes; /notes*, /sessions, /bundle,
+POST /mcp und /admin brauchen Credentials; CORS-OPTIONS ist credential-frei (Browser kennt
+noch keins). Shared Secret und signed Tokens sind additiv, nie Alternativen.
 
 
 A2A-Envelopes nur für Routen mit schema-gebundenem Contract (role-defaults.yaml handoff.input_schema/output_schema zeigt auf eine echte Datei) — sonst normales Klartext-Delegationsformat: IPayload (t, ctx, con, refs, pri, dep), IEnvelope (protocol_version, handoff_id, source_agent, target_agent, schema_ref, payload). payload.t ≤ 300 Zeichen.

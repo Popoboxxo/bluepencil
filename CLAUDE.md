@@ -3,10 +3,10 @@
 > Projektbeschreibung für Claude-Agenten. Diese Datei ist die **einzige Quelle**
 > für projektspezifischen Kontext — Agenten lesen sie, statt eigenen Kontext zu haben.
 >
-> Generiert von agent-meta v2.0.0-beta.6 — `2026-10-31`
+> Generiert von agent-meta v2.0.0-beta.9 — `2026-11-16`
 >
 > **Längenempfehlung:** 200–500 Zeilen optimal. Über 500 Zeilen → Detailwissen in
-> `docs/ARCHITECTURE.md`, `docs/API.md` o.ä. auslagern und manuell verlinken.
+> eigene Doku-Dateien (z.B. ARCHITECTURE.md, API.md) auslagern und manuell verlinken.
 > Agent-spezifisches Wissen → `.claude/3-project/<rolle>-ext.md` (Extension).
 >
 > **CLAUDE.md Hierarchie (Claude Code lädt in dieser Reihenfolge):**
@@ -88,7 +88,7 @@ docker/       # entrypoint.sh + bin wrappers; Dockerfile + docker-compose.yml im
 
 - TypeScript strict, ESM, keine Default-Exports im Kern
 - Dateinamen snake_case-frei: kebab-case fuer Dateien, camelCase fuer Symbole
-- Public **data-model** types live in `src/core/model.ts`; adapter, layer and store interfaces/options stay in their own modules (`core/adapter.ts`, `ui/layer.ts`, `core/store.ts`, `adapters/transport.ts`) — deliberate exceptions, not drift
+- Oeffentliche Typen in src/core/model.ts, alles andere importiert von dort
 - Tests neben der Sache: tests/unit/<modul>.test.ts
 - Dokumentation und Code-Kommentare auf Englisch (externe Doku), Kommunikation auf Deutsch
 
@@ -111,7 +111,7 @@ automatisch via esbuild watch
 
 ## Anforderungs-Kategorien
 
-Kategorien für `docs/REQUIREMENTS.md`:
+Kategorien für Anforderungen (`docs/REQUIREMENTS.md`):
 
 - Capture & Anchoring (FR-1.x, FR-2.x)
 - Note-Modell & Protokoll (FR-3.x, FR-5.x, PROTOCOL.md)
@@ -130,7 +130,7 @@ Kategorien für `docs/REQUIREMENTS.md`:
 
 > **AI ROUTING:** Claude -> CLAUDE.md | Opencode -> AGENTS.md
 
-Generiert von agent-meta v2.0.0-beta.6 — `2026-10-31`
+Generiert von agent-meta v2.0.0-beta.9 — `2026-11-16`
 DoD-Preset: **standard** | REQ-Traceability: false | Tests: true | Codebase-Overview: false | Security-Audit: false
 > **Einstiegspunkt:** Starte mit dem `orchestrator`-Agenten für alle Entwicklungsaufgaben — Ausnahmen siehe Abschnitt »Orchestrator — Universal Router«.
 <!-- agent-meta:managed-end -->

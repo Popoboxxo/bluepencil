@@ -14,10 +14,9 @@
 | lifecycle-tasks | Session-Start, pending-tasks.md vorhanden |
 | session-conclusion | Feature-Abschluss |
 | provider-agnostic | agents/1-generic editieren |
-| mcp-reqogniloom | ReqogniLoom-MCP-Tools |
-| mcp-honcho | Honcho-MCP-Memory-Tools |
-| mcp-playwright | Playwright-MCP-Browser-Tools |
 | mcp-viz-logger | viz-logger Event-Logging |
-| tool-graphify | Architektur-/Datei-Fragen mit graphify |
+| se-cascade-adr-standard | ADRs in aktiver SE-Kaskade |
+| se-cascade-artifact-taxonomy | SE-Artefakte, Ablageorte, Namensregeln |
+| se-cascade-review-lifecycle | Reviews in aktiver SE-Kaskade |
 
 Harte MCP-Tool-Verbote: siehe `mcp-guardrails.md` (always-on).

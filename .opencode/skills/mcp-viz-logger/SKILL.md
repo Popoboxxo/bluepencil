@@ -21,8 +21,8 @@ Parameter: event (agent_start|delegate_out|agent_end), agent, provider, status, 
 ## Verbindungstyp
 
 - Typ: `stdio`
-- Kommando: `python scripts/viz-logger.py --mcp`
+- Kommando: `python3 scripts/viz-logger.py --mcp`
 
 ---
 
-*Generiert von agent-meta aus `config/mcp-registry.yaml` — nicht manuell bearbeiten.*
+*Generiert von agent-meta aus `config/plugin-catalog.yaml` — nicht manuell bearbeiten.*
