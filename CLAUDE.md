@@ -88,7 +88,7 @@ docker/       # entrypoint.sh + bin wrappers; Dockerfile + docker-compose.yml im
 
 - TypeScript strict, ESM, keine Default-Exports im Kern
 - Dateinamen snake_case-frei: kebab-case fuer Dateien, camelCase fuer Symbole
-- Oeffentliche Typen in src/core/model.ts, alles andere importiert von dort
+- Public **data-model** types live in `src/core/model.ts`; adapter, layer and store interfaces/options stay in their own modules (`core/adapter.ts`, `ui/layer.ts`, `core/store.ts`, `adapters/transport.ts`) — deliberate exceptions, not drift
 - Tests neben der Sache: tests/unit/<modul>.test.ts
 - Dokumentation und Code-Kommentare auf Englisch (externe Doku), Kommunikation auf Deutsch
 
