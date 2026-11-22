@@ -5,7 +5,7 @@
 > Datum: 2026-11-06
 > Issue: #140 — offenes Acceptance Criterion **AC 5**: „Viewer läuft auf eigenem Origin, nicht auf dem Hub-Port“.
 > Zielrelease: nächstes 0.x-Minor (Breaking-Slot des Projekts); die konkrete Version setzt `release`.
-> Bezug: `docs/VIEWER.md` (Ist-Stand 0.13.0), `docs/specs/0.12.0-audit-remediation-spec.md` (Spec-Konventionen), `.opencode/skills/spec-plan-workflow/SKILL.md`.
+> Bezug: `docs/VIEWER.md` (Ist-Stand 0.13.0), `docs/specs/archive/0.12.0/0.12.0-audit-remediation-spec.md` (Spec-Konventionen), `.opencode/skills/spec-plan-workflow/SKILL.md`.
 > Rolle: Systemdesign vor der Spec. Dieses Dokument ist **Spec-Input**; `concept-specifier` leitet daraus die Spec ab und übernimmt den Trace-Anker unverändert.
 
 ## 1. Problem / Ziel / Nicht-Ziele
