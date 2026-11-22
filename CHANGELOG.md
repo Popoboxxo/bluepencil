@@ -1,3 +1,35 @@
+## [0.16.0] - 2026-11-21
+
+### Added
+
+- **OIDC bearer tokens for human users.** `--oidc-issuer <url>` + `--oidc-audience <text>` make the hub
+  accept RS256 tokens from an external identity provider (Zitadel, Keycloak, …) on the notes routes.
+  Roles from `urn:zitadel:iam:user:roles` (or `--oidc-roles-claim`) decide access: `bp-viewer` reads,
+  `bp-reviewer` and `bp-admin` read and write (names overridable with `--oidc-*-role`). JWKS is
+  discovered from the issuer and cached; `--oidc-jwks-url` bypasses discovery. Verification uses
+  `node:crypto` only — no runtime dependency, no `node_modules` in the container. The verified
+  subject becomes the journal actor (`oidc:<sub>`).
+
+### Changed
+
+- The credential gate now exists when OIDC is configured, even without `--auth-secret`/`--token-key`.
+  A failed HMAC device-token check falls through to OIDC on the same bearer token, so both
+  credentials can coexist on one hub without one refusing the other. The admin surface and the MCP
+  door are unchanged: `--admin-secret` still guards admin, HMAC device tokens still guard agents.
+
+### Verified
+
+- `npm run smoke:oidc` against a real hub with a local JWKS endpoint: 9/9 cases (roles, read/write,
+  wrong audience, journal actor, store persistence).
+- `tsc --noEmit -p tsconfig.json` green. Unit suite `tests/unit/oidc.test.ts` added; CI runs it via
+  `npm run verify`.
+
+### Known gaps
+
+- The admin surface is still guarded by `--admin-secret`; OIDC roles do not open `/admin` yet.
+- The MCP door stays on HMAC device tokens by design. OIDC is the human/UI credential.
+- Only RS256 with RSA JWKs is supported; EC/EdDSA keys in the JWKS are ignored.
+
 ## [0.15.6] - 2026-11-20
 
 ### Fixed

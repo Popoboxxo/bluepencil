@@ -91,6 +91,7 @@ import {
   type CredentialMode,
 } from "./credentials";
 import { asHandlerVerifier, createTokenIssuer } from "./tokens";
+import { createOidcVerifier, type OidcOptions } from "./oidc";
 // The admin surface's device registry lives next to the store; the page itself is only a route.
 import { devicesPathFor } from "./admin";
 import {
@@ -390,6 +391,12 @@ export interface ServerOptions {
    * command line is visible in the process list to every other user on the machine.
    */
   tokenKey?: string;
+  /**
+   * External OIDC provider for human users (`--oidc-issuer` + `--oidc-audience`). Its RS256 tokens
+   * are accepted on the notes routes with role-based read/write scope; agents/MCP keep their
+   * HMAC device tokens. Off unless configured.
+   */
+  oidc?: OidcOptions;
   /** Lifetime of newly issued tokens in seconds (`--token-ttl`); the issuer's own default applies when unset. */
   tokenTtlSeconds?: number;
   /** Token ids to refuse (`--revoked-tokens`); loaded from that file at startup. */
@@ -497,6 +504,7 @@ interface ResolvedOptions {
   /** Phase 1's shared secret, and phase 2's signing key — alternatives, both settable. */
   authSecret: string | undefined;
   tokenKey: string | undefined;
+  oidc: OidcOptions | undefined;
   tokenTtlSeconds: number | undefined;
   revokedTokens: ReadonlySet<string> | undefined;
   revokedPath: string | undefined;
@@ -627,6 +635,7 @@ function resolveOptions(options: HubOptions): ResolvedOptions {
         : options.adminSecret,
     viewer: resolveViewerOptions(options),
     tokenKey: options.tokenKey,
+    oidc: options.oidc,
     tokenTtlSeconds: options.tokenTtlSeconds,
     revokedTokens: options.revokedTokens,
     revokedPath: options.revokedPath,
@@ -1844,6 +1853,11 @@ async function startListeners(
           ...(resolved.now !== undefined ? { now: () => new Date(resolved.now!()) } : {}),
         });
 
+  // The OIDC verifier is built before the first socket: a provider that cannot be reached is a
+  // startup failure, not a hub that looks configured and silently refuses every user token.
+  const oidcVerifier =
+    resolved.oidc === undefined ? undefined : await createOidcVerifier(resolved.oidc);
+
   // Revocation has to be live *and* durable: the set below is what the verifier reads on every
   // request, and the file is what survives a restart. Doing only one of the two would make a
   // revocation either a speed bump (memory) or invisible until restart (file). The admin surface
@@ -1888,6 +1902,7 @@ async function startListeners(
     // context, or `--viewer` would answer 404 on a hub that reports it as configured.
     ...(resolved.viewer !== undefined ? { viewer: resolved.viewer } : {}),
     ...(tokenIssuer !== undefined ? { verifyToken: asHandlerVerifier(tokenIssuer), tokenIssuer } : {}),
+    ...(oidcVerifier !== undefined ? { oidc: oidcVerifier } : {}),
     revokedTokens: liveRevoked,
     ...(devicesPathFor(resolved.storePath) !== undefined ? { devicesPath: devicesPathFor(resolved.storePath) } : {}),
     ...(resolved.revokedPath !== undefined ? { revocationPath: resolved.revokedPath } : {}),
@@ -2190,6 +2205,7 @@ async function startListeners(
       for (const result of results) {
         if (result.status === "rejected") throw result.reason;
       }
+      oidcVerifier?.close();
     },
   };
 }
@@ -2234,6 +2250,13 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
     "--viewer-port",
     "--viewer-origin",
     "--viewer-public-url",
+    "--oidc-issuer",
+    "--oidc-audience",
+    "--oidc-jwks-url",
+    "--oidc-roles-claim",
+    "--oidc-admin-role",
+    "--oidc-reviewer-role",
+    "--oidc-viewer-role",
   ] as const;
   for (const flag of VALUED_FLAGS) {
     if (argv.some((arg) => arg.startsWith(`${flag}=`))) continue;
@@ -2596,12 +2619,62 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
   }
   const tokenKey = tokenKeyRaw;
 
+  // OIDC for human users. Requires issuer + audience; everything else has a documented default.
+  // A half-configured provider is a typo, not "off", so it is a usage error at parse time.
+  const oidcIssuerRaw = get("--oidc-issuer") ?? process.env.BLUEPENCIL_OIDC_ISSUER;
+  const oidcAudienceRaw = get("--oidc-audience") ?? process.env.BLUEPENCIL_OIDC_AUDIENCE;
+  if ((oidcIssuerRaw === undefined) !== (oidcAudienceRaw === undefined)) {
+    return "--oidc-issuer and --oidc-audience must be given together (both or neither)";
+  }
+  let oidc: OidcOptions | undefined;
+  if (oidcIssuerRaw !== undefined && oidcAudienceRaw !== undefined) {
+    let parsedIssuer: URL;
+    try {
+      parsedIssuer = new URL(oidcIssuerRaw);
+    } catch {
+      return `--oidc-issuer must be an absolute http(s) URL (got ${JSON.stringify(oidcIssuerRaw)})`;
+    }
+    if (parsedIssuer.protocol !== "https:" && parsedIssuer.protocol !== "http:") {
+      return "--oidc-issuer must use http or https";
+    }
+    if (oidcAudienceRaw.trim().length === 0) {
+      return "--oidc-audience must not be empty";
+    }
+    const oidcJwksUrl = get("--oidc-jwks-url") ?? process.env.BLUEPENCIL_OIDC_JWKS_URL;
+    if (oidcJwksUrl !== undefined && !/^https?:\/\//i.test(oidcJwksUrl)) {
+      return "--oidc-jwks-url must be an absolute http(s) URL";
+    }
+    const roleFlags: Array<[string, keyof OidcOptions]> = [
+      ["--oidc-roles-claim", "rolesClaim"],
+      ["--oidc-admin-role", "adminRole"],
+      ["--oidc-reviewer-role", "reviewerRole"],
+      ["--oidc-viewer-role", "viewerRole"],
+    ];
+    const roles: Partial<Record<keyof OidcOptions, string>> = {};
+    for (const [flag, field] of roleFlags) {
+      const value = get(flag);
+      if (value !== undefined) {
+        if (value.trim().length === 0) return `${flag} must not be empty`;
+        roles[field] = value;
+      }
+    }
+    oidc = {
+      issuer: oidcIssuerRaw.replace(/\/+$/, ""),
+      audience: oidcAudienceRaw,
+      ...(oidcJwksUrl === undefined ? {} : { jwksUrl: oidcJwksUrl }),
+      ...(roles.rolesClaim === undefined ? {} : { rolesClaim: roles.rolesClaim }),
+      ...(roles.adminRole === undefined ? {} : { adminRole: roles.adminRole }),
+      ...(roles.reviewerRole === undefined ? {} : { reviewerRole: roles.reviewerRole }),
+      ...(roles.viewerRole === undefined ? {} : { viewerRole: roles.viewerRole }),
+    };
+  }
+
   // CORS (SEC-06, ADR-0.12-S1). A bare `--cors` used to become `*` silently, which turned "I turned
   // CORS on" into "every site may read every note"; the value is required now, and the wildcard
   // needs a real client gate behind it. `present()` distinguishes "flag absent" from "flag without a
   // value", which `get()` alone cannot. The *client* credential decides — the admin secret guards an
   // operator surface, it does not authenticate a browser.
-  const hasClientCredential = authSecret !== undefined || tokenKey !== undefined;
+  const hasClientCredential = authSecret !== undefined || tokenKey !== undefined || oidc !== undefined;
   const corsPolicy = corsOriginPolicy(
     present("--cors") ? (get("--cors") ?? "") : undefined,
     hasClientCredential,
@@ -2661,6 +2734,7 @@ export function parseHubArgs(argv: string[]): HubOptions | string {
     ...(adminSecret !== undefined ? { adminSecret } : {}),
     ...(viewer !== undefined ? { viewer } : {}),
     ...(tokenKey !== undefined ? { tokenKey } : {}),
+    ...(oidc !== undefined ? { oidc } : {}),
     ...(tokenTtlSeconds !== undefined ? { tokenTtlSeconds } : {}),
     ...(revokedTokens !== undefined ? { revokedTokens } : {}),
     ...(revokedPath !== undefined ? { revokedPath } : {}),
@@ -2691,6 +2765,8 @@ Usage:
   node dist/server.js --store notes.json [--port 8787] [--host 127.0.0.1] [--name "<text>"]
     [--base /api/v1/bluepencil] [--root <static dir>] [--environment dev|staging|live]
     [--read-only] [--auth-secret <value>] [--admin-secret <value>] [--allow-env-mismatch] [--mirror notes.md] [--cors <origin|*>] [--quiet]
+    [--oidc-issuer <url> --oidc-audience <text>] [--oidc-jwks-url <url>] [--oidc-roles-claim <claim>]
+    [--oidc-admin-role <role>] [--oidc-reviewer-role <role>] [--oidc-viewer-role <role>]
     [--journal auto|git|file|none] [--journal-dir <dir>] [--journal-repo <dir>]
     [--journal-coalesce <ms>] [--journal-author "Name <mail>"] [--journal-subject "<template>"]
     [--app "<text>"] [--registry <path>] [--include-self|--no-self] [--allow-write] [--allow-insecure]
@@ -2786,6 +2862,13 @@ Binding (G1): a bind other than loopback without --auth-secret/--token-key is al
 LAN and lab setups keep working — but it prints a warning on stderr that --quiet does not suppress,
 because the notes, the journal location and the author identity are readable by anyone who can
 reach the port.
+
+OIDC (external users): --oidc-issuer <url> --oidc-audience <text> makes the hub accept RS256
+  bearer tokens from an identity provider on the notes routes. Roles come from
+  urn:zitadel:iam:user:roles (or --oidc-roles-claim): bp-viewer reads, bp-reviewer and bp-admin
+  read and write (names overridable with --oidc-*-role). JWKS is discovered from the issuer and
+  cached; --oidc-jwks-url overrides discovery. Agents/MCP keep their HMAC device tokens — OIDC is
+  the human/UI credential, not a replacement. The admin surface still uses --admin-secret.
 
 Viewer (issue #140): --viewer starts a SECOND listener on its own origin. It requires
 --viewer-port (0..65535; the viewer must not share the hub port), --viewer-assets, --viewer-allow
