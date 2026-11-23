@@ -1,4 +1,4 @@
-agent-meta-version: 1.2.0-beta.2
+agent-meta-version: "2.0.0-beta.9"
 _comment: 'Projekt-Config fuer bluepencil (Projekt-Eigentuemer). Framework-Configs
   liegen im Submodul .agent-meta/config/ und werden hier nicht editiert. Nach Aenderungen:
   sync.py erneut laufen lassen.'
@@ -10,6 +10,43 @@ dod-preset: standard
 rules-preset: lazy
 knowledge-engine:
   enabled: false
+# Native Feature-Strecke spec -> plan -> execution (Plan-Modus). Bewusst an die
+# file-index-Variante gebunden, weil die Knowledge-Engine aus ist: der Fallback-Index
+# traegt die Auffindbarkeit, ohne einen zweiten Wissensspeicher zu betreiben.
+spec-plan-workflow:
+  enabled: true
+  paths:
+    specs: docs/specs
+    plans: docs/plans
+    spikes: docs/spikes
+    # 'legacy' wird als VERZEICHNIS gescannt (glob), nicht als Dateiliste. Die beiden
+    # bestehenden docs/plans/federation-0.10*.md bleiben daher, wo sie sind, und werden
+    # als untemplatete Legacy-Artefakte nur mit WARNING (nie ERROR) gemeldet.
+    legacy: []
+  scan:
+    include:
+    - '*.md'
+    changed-files-only: true
+  index:
+    mode: file-index
+    fallback-index: docs/INDEX.md
+  archive:
+    mode: ask
+    agent: documenter
+    trigger: plan-complete
+    target: docs/plans/archive
+  recovery:
+    rehydrate: true
+  ledger-drift:
+    enabled: true
+    severity: WARNING
+dod:
+  # Feature-Level-Aenderungen brauchen eine APPROVED Spec/einen APPROVED Plan, bevor
+  # implementiert wird (Regel-Gate + Pipeline-Stage 'classify'/'plan').
+  spec-plan-required: true
+  # Spec <-> Plan <-> Task <-> Test muss nachvollziehbar sein; nur fuer Artefakte in
+  # den Workflow-Verzeichnissen (Legacy-Dateien bleiben WARNING).
+  spec-plan-traceability: true
 platforms:
 - agent-meta
 roles:
@@ -98,10 +135,10 @@ variables:
     Annotieren von Inhalt und Design, verankert am Element, lesbar von Menschen und
     Agenten.'
   PROJECT_GOAL: Eine kleine, dependency-freie TypeScript-Bibliothek (Overlay + Headless-Datenlayer
-    + CLI + MCP), mit der ein Reviewer jede Web-App annotieren und die Notizen an
-    einen Entwickler oder einen Agenten uebergeben kann.
+    + CLI + MCP + Referenz-Hub + Federator + MV3-Extension), mit der ein Reviewer jede Web-App
+    annotieren und die Notizen an einen Entwickler oder einen Agenten uebergeben kann.
   PLATFORM: TypeScript-Bibliothek (Browser + Node, kein Runtime-Dependency)
-  RUNTIME: Node >= 20, aktuelle Evergreen-Browser
+  RUNTIME: 'Node ^22.22.2 || ^24.15.0 || >=26.0.0 (CI: Node 22), aktuelle Evergreen-Browser'
   LANGUAGE: TypeScript, CSS, Markdown, JSON
   PROJECT_LANGUAGES: TypeScript, CSS, Markdown, JSON
   COMMUNICATION_LANGUAGE: Deutsch
@@ -115,34 +152,71 @@ variables:
   GIT_MAIN_BRANCH: main
   BUILD_COMMAND: npm run build
   TEST_COMMAND: npm test
-  TEST_COMMANDS: npm run typecheck && npm run test
+  # Vollstaendiger Gate: typecheck(+ext), Unit-Tests, build(+ext), verify:sync, size, Component-Matrix (ohne Docker).
+  TEST_COMMANDS: |
+    npm run verify       # vollstaendiger Gate, ohne Docker
+    npm run smoke:mcp    # MCP-Door (tools/list, tools/call)
+    npm run smoke:auth   # Credential-Matrix (secret, token, token+secret, admin)
+    npm run smoke:ext    # MV3-Extension: build + Relay/Bridge
+    npm run smoke:docker # Hub im Container (nur mit Docker-Daemon)
+    npm run smoke:components -- --no-docker
+    npm run spec:check   # reqmd-Validierung von spec/
   DEV_COMMANDS: |
     npm run dev          # esbuild watch + Fixture-Server
     npm run typecheck
-    npm run test
+    npm run typecheck:ext
+    npm test
     npm run build
+    npm run build:ext
+    npm run verify       # vollstaendiger Gate (Browser-Smokes skippen ohne Chrome)
+    npm run spec         # spec/ aus docs/REQUIREMENTS.md generieren
+    npm run spec:check   # spec/ mit reqmd validieren (CI: eigener Job)
+    npm run smoke:components -- --no-docker   # Component-Matrix
   DEV_STACK_START: npm run dev
   DEV_STACK_RELOAD: automatisch via esbuild watch
   PROJECT_CONTEXT: bluepencil ist eine Bibliothek, die in fremde Web-Apps injiziert
-    wird. Der gesamte Note-Logik-Bestand (Schema, Validierung, Merge, Kanonisierung,
-    Migration, Bundle-I/O) lebt headless in src/data und wird von UI, CLI, Referenz-Server
-    und MCP gemeinsam genutzt - es gibt genau eine Implementierung. Alle Anforderungen
-    sind in docs/REQUIREMENTS.md mit FR-/NFR-IDs dokumentiert; docs/PROTOCOL.md ist
-    normativ fuer die Mensch-Agent-Zusammenarbeit.
+    wird, plus die dazugehoerigen Betriebsflaechen - Headless-Datenlayer (src/data),
+    CLI, MCP-Server, Referenz-Hub (server/), Federator und eine MV3-Chromium-Extension.
+    Der gesamte Note-Logik-Bestand (Schema, Validierung, Merge, Kanonisierung, Migration,
+    Bundle-I/O) lebt headless in src/data und wird von UI, CLI, Hub, Federator, Extension
+    und MCP gemeinsam genutzt - es gibt genau eine Implementierung (FR-15.3).
+    Der Hub ist die Credential-Wahrheit (server/credentials.ts - shared secret UND optional
+    signed tokens gleichzeitig); /config und /health sind unauthentifizierte Probes,
+    Notiz-Routen nicht. Die Extension spricht den Hub nur ueber page -> bridge -> service
+    worker an (CSP-connect-src-Ausnahme, strikt auf Endpoint-Origin+Base begrenzt).
+    Version und Release-Stand sind SSOT in package.json / extension/manifest.json
+    (kein VERSION-File und keine Versionskopie in dieser Config).
+    Alle Anforderungen sind in docs/REQUIREMENTS.md mit FR-/NFR-IDs dokumentiert
+    (spec/ ist daraus generiert); docs/PROTOCOL.md ist normativ fuer die
+    Mensch-Agent-Zusammenarbeit.
   PROJECT_STRUCTURE: |
     src/
-      core/       # model, store, anchor, capture, protocol, export/ (UI-unabhaengig, DOM nur in anchor/capture)
-      data/       # HEADLESS: schema, validate, canonical, bundle, merge, migrate (kein DOM)
+      core/       # model, store, anchor, capture, protocol, adapter, export/{markdown,json} (UI-unabhaengig)
+      data/       # HEADLESS: schema (inkl. Validierung), bundle, canonical, merge, migrate, order (kein DOM)
       cli/        # bluepencil inspect|validate|merge|export|import
-      adapters/   # memory, local-storage, file, http
-      ui/         # layer, composer, panel, legend, styles.css
+      adapters/   # memory, local-storage, chrome-storage, file, http + transport.ts (registerHttpTransport-Seam)
+      ui/         # layer, composer, panel, legend, modes, present, voice, keymap, styles.ts
       i18n/       # en, de
-      mcp/        # MCP-Server (thin wrapper ueber src/data)
+      element/    # <bluepencil-notes> custom element
+      embed/      # attach.js one-tag loader (attributes, version)
+      federation/ # federator: aggregate, backend, registry, client, net-policy
+      mcp/        # MCP server (server, tools, protocol, stdio, backend, options)
       index.ts    # oeffentliche API: init(), mount(), enable(), disable(), destroy()
-    server/       # Referenz-Server (Sidecar-Modus)
-    examples/     # vanilla, react, home-assistant, round-trip
-    tests/        # unit (vitest), e2e (Playwright)
-    docs/         # CONCEPT, REQUIREMENTS, ARCHITECTURE, PROTOCOL, INTEGRATION
+    server/       # Referenz-Hub (HTTP + MCP door) und Federator
+                  # credentials.ts (credentialMode/acceptedCredentials), cors.ts (preflightResponse),
+                  # presence.ts (in-memory Presence), admin*.ts (admin surface), tokens/mint/registry/journal
+    extension/    # MV3-Chromium-Extension
+      src/        # sw.ts, bridge.ts, connection.ts (Test-connection-Probe), handoff.ts, hub-fetch.ts,
+                  # page-relay.ts, storage-relay.ts, bootstrap.ts, detect.ts, options.ts, settings.ts
+    examples/     # vanilla, attach, parity, presentation, round-trip, voice, federation
+    scripts/      # build.mjs, dev.mjs, size-guard.mjs, verify-sync.mjs, check-version-bump.mjs, *-smoke.mjs
+    tests/        # unit (vitest), e2e (dependency-freier CDP-Harness, kein Playwright)
+    spec/         # GENERIERTE reqmd-Spec aus docs/REQUIREMENTS.md (nicht handeditieren)
+    docs/         # CONCEPT, REQUIREMENTS, ARCHITECTURE, PROTOCOL, RELEASING, DOCKER, EMBED, EXTENSION, ...
+      plans/      # Feature-Plaene (spec-plan-workflow); archive/ fuer abgeschlossene Plaene
+      specs/      # Feature-Spezifikationen (spec-plan-workflow)
+      spikes/     # Zeitbox-Erkundungen (spec-plan-workflow, Namensmuster *-spike.md)
+    docker/       # entrypoint.sh + bin wrappers; Dockerfile + docker-compose.yml im Root
   ENTRY_POINT_PATTERN: src/index.ts (Bibliothek) / src/cli/bin.ts (CLI) / src/mcp/server.ts
     (MCP)
   KEY_PATTERNS: |
@@ -152,17 +226,44 @@ variables:
     - Nutzertexte immer als Text rendern, nie als HTML (FR-9.3)
     - Keine Netzwerkaufrufe ausser zum host-konfigurierten Adapter (FR-9.4, NFR-7)
     - Kanonische, stabile Serialisierung fuer diffbare Bundles (NFR-17)
+    - Transport-Seam ist additiv: registerHttpTransport() ergaenzt, ersetzt aber nie den Default-fetch (src/adapters/http.ts)
+    - Extension-Hub-Zugriff nur page -> bridge -> service worker; CSP connect-src braucht diese Ausnahme,
+      Reichweite strikt Endpoint-Origin+Base, Methoden GET/POST/PATCH, Header-Allowlist, {base}/admin nie
+    - Credential-Paritaet: shared secret UND signed tokens sind gleichzeitig akzeptiert (server/credentials.ts);
+      /config und /health bleiben credential-frei, Notiz-Routen nie
+    - Presence ist in-memory, max. 1 Update/Minute, nie persistiert und nie mit Secret
+    - OPTIONS-Preflight kommt aus genau einer Implementierung (server/cors.ts preflightResponse)
+    - Bundle-Budget ist knapp: IIFE 44.2/45 kB, Element 47.0/48 kB (min+gzip) - Feature-Zuwachs explizit begruenden
   ARCHITECTURE: |
-    src/core/    model.ts store.ts anchor.ts capture.ts protocol.ts export/{markdown,json}.ts
-    src/data/    schema.ts validate.ts canonical.ts bundle.ts merge.ts migrate.ts
-    src/adapters/ memory.ts local-storage.ts file.ts http.ts
-    src/ui/      layer.ts composer.ts panel.ts legend.ts styles.css
-    tests/unit/  vitest (jsdom)   tests/e2e/  Playwright gegen examples/vanilla
+    src/core/    model.ts store.ts anchor.ts capture.ts protocol.ts adapter.ts export/{markdown,json}.ts
+    src/data/    schema.ts index.ts bundle.ts canonical.ts merge.ts migrate.ts order.ts
+    src/adapters/ memory.ts local-storage.ts chrome-storage.ts file.ts http.ts transport.ts
+                 # transport.ts ist ein additiver Seam (registerHttpTransport); http.ts nutzt ihn,
+                 # der Default bleibt der eingebaute fetch - kein zweiter Transport-Pfad.
+    src/ui/      layer.ts composer.ts panel.ts legend.ts modes.ts present.ts voice.ts keymap.ts styles.ts
+    src/element/ index.ts    src/embed/ attach.ts attributes.ts version.ts
+    src/federation/ aggregate.ts backend.ts client.ts errors.ts ids.ts index.ts net-policy.ts registry.ts
+    src/mcp/     server.ts tools.ts protocol.ts stdio.ts backend.ts options.ts
+    server/      index.ts hub.ts handler.ts mcp.ts federator.ts journal.ts mint.ts mint-cli.ts tokens.ts
+                 credentials.ts (eine Credential-Wahrheit: credentialMode + acceptedCredentials)
+                 cors.ts (preflightResponse: eine OPTIONS-Implementierung fuer alle Tueren)
+                 presence.ts (in-memory, max. 1 Update/Minute, nie persistiert, nie mit Secret)
+                 admin.ts admin-html.ts admin-i18n.ts (opt-in Admin-Oberflaeche, en/de)
+                 atomic-write.ts (durable Revocation/Registry-Schreibvorgaenge)
+    extension/   manifest.json options.html build.mjs smoke.mjs
+                 src/sw.ts (Hub-Requests: Origin+Base-Bindung, GET/POST/PATCH, Header-Allowlist,
+                 {base}/admin verweigert), src/bridge.ts (page <-> SW), src/connection.ts
+                 ("Test connection": GET /config + GET /notes status-only, 5s AbortController),
+                 src/hub-fetch.ts, src/page-relay.ts, src/storage-relay.ts, src/handoff.ts
+    tests/unit/  vitest (jsdom)   tests/e2e/  dependency-freier CDP-Harness gegen examples/*
     Entscheidungen D1-D11: siehe docs/REQUIREMENTS.md "Decisions (resolved)"
+    Hub-Kanten: /config und /health sind unauthentifizierte Probes; /notes*, /sessions, /bundle,
+    POST /mcp und /admin brauchen Credentials; CORS-OPTIONS ist credential-frei (Browser kennt
+    noch keins). Shared Secret und signed Tokens sind additiv, nie Alternativen.
   CODE_CONVENTIONS: |
     - TypeScript strict, ESM, keine Default-Exports im Kern
     - Dateinamen snake_case-frei: kebab-case fuer Dateien, camelCase fuer Symbole
-    - Oeffentliche Typen in src/core/model.ts, alles andere importiert von dort
+    - Public **data-model** types live in `src/core/model.ts`; adapter, layer and store interfaces/options stay in their own modules (`core/adapter.ts`, `ui/layer.ts`, `core/store.ts`, `adapters/transport.ts`) — deliberate exceptions, not drift
     - Tests neben der Sache: tests/unit/<modul>.test.ts
     - Dokumentation und Code-Kommentare auf Englisch (externe Doku), Kommunikation auf Deutsch
   EXTRA_DONTS: |
@@ -172,37 +273,64 @@ variables:
     - KEINE Aenderungen an generierten Provider-Ordnern (.claude/, .opencode/) von Hand
     - KEIN stopPropagation im Leerlauf - nur bei aktivem Annotationsmodus (FR-12.6)
   CODE_QUALITY_RULES: |
-    - npm run typecheck muss fehlerfrei sein
+    - npm run typecheck und npm run typecheck:ext muessen fehlerfrei sein
     - npm test (vitest) muss gruen sein; neue Logik braucht Unit-Tests
-    - Bundle-Budget pruefen (NFR-3: <= 30 kB min+gzip Kern)
+    - npm run verify muss gruen sein (typecheck(+ext), Tests, build(+ext), verify:sync, size, Component-Matrix ohne Docker)
+    - Bundle-Budget pruefen (scripts/size-guard.mjs: 100 kB Kern, 45 kB IIFE, 48 kB Element, 8 kB attach loader, je min+gzip)
+    - Bei Hub-/Auth-Aenderungen: npm run smoke:auth und npm run smoke:mcp; bei Extension-/Relay-Aenderungen: npm run smoke:ext
+    - Bei Container-/Entrypoint-Aenderungen: npm run smoke:docker (braucht einen Docker-Daemon)
+    - docs/REQUIREMENTS.md ist die Anforderungsquelle; spec/ nur via npm run spec regenerieren (nie handeditieren), npm run spec:check prueft
     - Oeffentliche API-Aenderungen in CHANGELOG.md dokumentieren
   TESTER_SNIPPETS_PATH: ''
   DEVELOPER_SNIPPETS_PATH: ''
-  BUILD_COMMANDS: npm run build
+  BUILD_COMMANDS: npm run build && npm run build:ext
   REQ_CATEGORIES: |
     - Capture & Anchoring (FR-1.x, FR-2.x)
     - Note-Modell & Protokoll (FR-3.x, FR-5.x, PROTOCOL.md)
     - UI, Filter & A11y (FR-4.x, FR-11.x)
     - Adapter, Export & Bundles (FR-6.x, FR-7.x, FR-14.x)
     - Headless/CLI/MCP (FR-13.x, FR-15.x, FR-16.x)
-  SERVICE_NAME: (kein Service)
-  CONTAINER_NAME: (kein Container)
-  PRIMARY_PORT: ''
+    - Hub-Betrieb, Auth & Extension-Relay (FR-6.7, FR-6.10-6.16, FR-10.4, CSP connect-src)
+  SERVICE_NAME: hub
+  CONTAINER_NAME: bluepencil-hub
+  PRIMARY_PORT: '8787'
   EXTRA_PORTS: ''
-  DOCKER_STACKS_OVERVIEW: (kein Docker-Stack)
-  EXTRA_VOLUMES: ''
-  EXTRA_VOLUME_DEFINITIONS: ''
-  EXTRA_ENV_VARS: ''
-  EXTRA_STARTUP_INFO: ''
+  DOCKER_STACKS_OVERVIEW: 'docker-compose.yml: Service hub, Image ghcr.io/popoboxxo/bluepencil:latest (Override via BLUEPENCIL_IMAGE), Port 8787:8787 (BLUEPENCIL_PORT), Volume bluepencil-notes:/data; docker/entrypoint.sh generiert/persistiert das Shared Secret in BLUEPENCIL_SECRET_FILE und exportiert es auch bei gesetztem BLUEPENCIL_TOKEN_KEY (additive Credentials, token+secret), Exit 2 wenn das Secret nicht persistiert werden kann; Dockerfile baut server.js und federator.js.'
+  EXTRA_VOLUMES: 'bluepencil-notes:/data'
+  EXTRA_VOLUME_DEFINITIONS: 'bluepencil-notes:/data (Named Volume; Store + generiertes Credential, Secret-Datei 0600)'
+  EXTRA_ENV_VARS: BLUEPENCIL_IMAGE, BLUEPENCIL_PORT, BLUEPENCIL_BASE, BLUEPENCIL_STORE, BLUEPENCIL_NAME,
+    BLUEPENCIL_APP, BLUEPENCIL_ENVIRONMENT, BLUEPENCIL_AUTH_SECRET, BLUEPENCIL_TOKEN_KEY,
+    BLUEPENCIL_ADMIN_SECRET, BLUEPENCIL_SECRET_FILE, BLUEPENCIL_REVOKED_TOKENS, BLUEPENCIL_REGISTRY,
+    BLUEPENCIL_SERVER_JS, BLUEPENCIL_UID, BLUEPENCIL_GID
+  EXTRA_STARTUP_INFO: 'docker compose up -d; Banner via docker compose logs hub | head -20 nennt Adresse,
+    MCP-Door und beide akzeptierten Credentials (Secret wird genau einmal gedruckt, Token-Key nie).
+    Probes ohne Credential: GET {base}/config und GET|HEAD {base}/health; alles Notiz-tragende
+    (/notes*, /sessions, /bundle, POST /mcp) und /admin verlangt Credentials.
+    CORS ist Opt-in per --cors <origin|*> (Flag, kein Env-Var); --read-only und --admin-secret
+    sind Flags bzw. BLUEPENCIL_ADMIN_SECRET (min. 16 Zeichen).'
   HOST_LAN_IP: ''
-  BUILD_OUTPUT: dist/ (ESM, IIFE, custom-element, CLI, MCP)
-  ARTIFACT_ZIP_CMD: ''
-  ARTIFACT_TAR_CMD: ''
-  GH_ASSETS: ''
-  REQUIRED_BINARIES_SECTION: Node >= 20, npm; Playwright-Browser nur fuer E2E.
+  BUILD_OUTPUT: dist/ (ESM library, data, core, IIFE, custom element (iife/min), attach loader, adapters, i18n, CLI, MCP, server, federator, .d.ts)
+  ARTIFACT_ZIP_CMD: |
+    mkdir -p release-assets
+    version="$(node -p "require('./package.json').version")"
+    (cd extension/dist && zip -qr "../../release-assets/bluepencil-extension-${version}.zip" . -x '.*')
+  ARTIFACT_TAR_CMD: |
+    mkdir -p release-assets
+    npm pack --pack-destination release-assets
+  GH_ASSETS: 'release-assets/attach.js release-assets/bluepencil.element.min.js release-assets/*.tgz release-assets/*.zip release-assets/SHA256SUMS'
+  REQUIRED_BINARIES_SECTION: |
+    Node ^22.22.2 || ^24.15.0 || >=26.0.0 und npm (paketiert, CI: Node 22);
+    Chrome/Chromium fuer die Browser-Legs (CI: ubuntu-latest; BP_REQUIRE_BROWSER=1 erzwingt einen
+    vorhandenen Browser, BP_CHROME erlaubt einen expliziten Pfad);
+    python3 fuer npm run spec (Generator) und npm run spec:check; reqmd nur fuer spec:check
+    (CI laedt das Binary in einem eigenen Job, lokal optional);
+    Docker nur optional (npm run smoke:docker, CI-Job `image`).
   BINARY_INSTALL_STEPS: |
     npm ci
-    npx playwright install chromium   # nur fuer E2E
+    # Chrome/Chromium: auf ubuntu-latest vorhanden; lokal BP_CHROME setzen, falls nicht im PATH.
+    # Kein `npx playwright install`: das Repo nutzt den dependency-freien CDP-Harness (NFR-4, NFR-11).
+    # reqmd (nur spec:check): https://github.com/dVoo/reqmd/releases -> v0.2-alpha, sha256 gegen SHA256SUMS.txt pruefen.
+    # Docker: nur fuer smoke:docker / CI-Job `image` erforderlich.
   ORCHESTRATOR_STRICT: true
   UNKNOWN_FALLBACK_META_FEEDBACK: true
   UNKNOWN_FALLBACK_MAIN_CHAT: true
@@ -212,14 +340,17 @@ variables:
   BUILD_SYNC_GUARD: |
     Bausteine 1-6: dist/ <-> extension/dist in Lockstep, package.json = Version-SSOT
     1 Identity-Gate: scripts/verify-sync.mjs (npm run verify:sync) - sha256(dist/bluepencil.element.iife.js) == extension/dist/build-info.json.elementSha256 && manifest.version == package.json.version; CI nach build:ext, Teil von verify
-    2 Version-Bump-Gate: scripts/check-version-bump.mjs - Diff (merge-base..HEAD) beruehrt src/**, src/element/**, extension/src/**, extension/manifest.json, server/** aber package.json.version unveraendert -> CI fail
+    2 Version-Bump-Gate: scripts/check-version-bump.mjs - Diff (merge-base..HEAD) beruehrt src/**, src/element/**, extension/src/**, extension/manifest.json, extension/options.html, server/** aber package.json.version unveraendert -> CI fail
     3 Local-Auto-Build: scripts/build.mjs --watch + debounced esbuild onEnd (element/element-iife) ruft extension/build.mjs
-    4 Affected-Matrix: Pfad->Legs dokumentieren; verify/parity/image = required status checks (branch protection); optional paths:-Filter fuer docs-only PRs (parity bleibt required)
+    4 Affected-Matrix: Pfad->Legs in docs/BUILD-SYNC.md; required status checks (branch protection, docs/BUILD-SYNC.md "Required status checks"): verify, parity, image. spec/bump/install bleiben wertvoll, sind aber nicht required; smoke:docker ist workflow_dispatch-only. Keine paths:-Filter ohne immer laufenden Stub je required Job - sonst bleiben docs-only PRs auf "Expected" haengen.
     5 Provenance: git rev-parse HEAD in build-info.json (neben version+elementSha256), auch im Store-Zip + Release-Attestation
     6 Optional pre-push Hook (convention boundary): npm run build:ext && npm run verify:sync
-  VERSION_DIST_BEHAVIOUR: 'Release: 1. package.json + VERSION, 2. CHANGELOG.md, 3.
-    git tag vX.Y.Z, 4. Push mit Release-Sektion. Ein Release pro Milestone (docs/ARCHITECTURE.md
-    §11).'
+    7 Extension-Relay-Guard: middleman-Pfad page->bridge->service worker und die Origin+Base-Bindung
+      in extension/src/{bridge,sw,page-relay}.ts testen (smoke:ext); connect-src-Ausnahme darf nicht
+      auf weitere Hosts ausgeweitet werden (docs/EMBED.md, docs/EXTENSION.md, docs/INTEGRATION.md)
+  VERSION_DIST_BEHAVIOUR: 'Release: 1. package.json (SSOT) und extension/manifest.json, 2. CHANGELOG.md,
+    3. git tag vX.Y.Z, 4. Push; release.yml prueft Tag <-> package.json <-> manifest <-> CHANGELOG und baut die Assets.
+    Kein VERSION-File. Ein Release pro Milestone (docs/ARCHITECTURE.md §11).'
   SE_MIN_DEPTH: 2
   SE_MAX_DEPTH: 6
   SE_MAX_CELLS: 20

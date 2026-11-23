@@ -3,14 +3,18 @@
 Execution mode: loop
 
 1. task(subagent_type="explorer", prompt="Codebase-/Kontext-Analyse (read-only): betroffene Dateien, Patterns, Risiko-Zonen, empfohlener Approach") → warten bis abgeschlossen
-2. task(subagent_type="concept-specifier", prompt="Technische Spezifikation schreiben (Interface-Contracts, Datenfluss, Akzeptanzkriterien) — XL-Tasks: vorab Systemdesign über concept-architect") → warten bis abgeschlossen
+2. task(subagent_type="ideation", prompt="Klassifikation Spike/Bounded/Architectural inkl. S/M/L/XL-Mapping (F7-Zusatzkriterium)") → warten bis abgeschlossen
+3. task(subagent_type="concept-specifier", prompt="Technische Spezifikation schreiben (Interface-Contracts, Datenfluss, Akzeptanzkriterien) — XL-Tasks: vorab Systemdesign über concept-architect") → warten bis abgeschlossen
 
 **review** — REPEAT_UNTIL Loop:
   - task(subagent_type="concept-specifier", prompt="Spec/Design reviewen — Verdict APPROVED/CHANGES_REQUESTED/BLOCKED + Findings mit Severity")
   - task(subagent_type="concept-reviewer", prompt="Review / Critic feedback")
   Max iterations: 3 → Erfolg pruefen; bei Abbruch User benachrichtigen
 
-3. task(subagent_type="developer", prompt="Implementierung gegen die freigegebene Spezifikation — Tier nach Task-Größe (S/M/L/XL): S junior-developer, M developer, L senior-developer, XL principal-developer") → warten bis abgeschlossen
+⏸ Abnahme erforderlich vor Stage 'approve' — warte auf explizite Nutzerbestätigung, bevor concept-reviewer startet.
+4. task(subagent_type="concept-reviewer", prompt="Abnahme der Spec (Status: APPROVED) — explizite Nutzerfreigabe") → warten bis abgeschlossen
+5. task(subagent_type="planner", prompt="Umsetzungsplan gegen die freigegebene Spec (Plan-Template, pipeline_stages, F6-Graph-Validator)") → warten bis abgeschlossen
+6. task(subagent_type="developer", prompt="Implementierung gegen die freigegebene Spezifikation — Tier nach Task-Größe (S/M/L/XL): S junior-developer, M developer, L senior-developer, XL principal-developer") → warten bis abgeschlossen
 
 **review-req** — REPEAT_UNTIL Loop:
   - task(subagent_type="developer", prompt="Task-Review Stufe 1 — Requirement-Treue gegen die Akzeptanzkriterien des Tasks (vor der Qualitätsprüfung)")

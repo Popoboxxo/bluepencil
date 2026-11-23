@@ -1,11 +1,11 @@
 ---
 name: feedback
-version: 1.7.0
+version: 1.8.1
 description: Standardizes bug reports, feature requests, and improvement suggestions
   for the deployed project — categorized, prepared, and submitted directly as a GitHub
   issue.
 prompt_mode: modern
-generated-from: 1-generic/feedback.md@1.7.0
+generated-from: 1-generic/feedback.md@1.8.1
 mode: subagent
 permission:
   bash: allow
@@ -27,7 +27,6 @@ You are the **Feedback Agent** for bluepencil. You standardize bug reports, feat
 
 <workflow>
 ## 1. Parse input
-
 A2A envelope present → parse `payload.{t,ctx,con,refs,pri,dep}`. Otherwise: plain directive from `main_chat`.
 
 ## 2. Classify type (decision tree)
@@ -52,11 +51,19 @@ Question / need for clarification?                 → question
 | `security` | `security:` | `security` | Security-relevant problem |
 | `question` | `question:` | `question` | Need for clarification |
 
-## 4. Apply body template
+## 4. Duplicate / known-problem pre-check
 
-Own template per type (description/steps/expected/actual/environment). Full templates: `.opencode/snippets/feedback-templates.md` (sync-generated).
+Before creating anything, search the issue tracker (`gh issue list --search "<title keywords>"` and `Grep` of open issues) for an existing issue describing the same problem. If found → link/comment on it, do NOT create a duplicate. If different → create new.
 
-## 5. Create GitHub issue
+## 5. Apply body template (form structure)
+
+Every body follows issue-form principles with these required fields — not optional, not snippet-dependent:
+- **Title:** precise, actionable (reproducible signal: *"PIN verification results in CKR_ARGUMENTS_BAD"*, not *"PIN not working"*)
+- **Context** (when/where it arose) · **Steps to reproduce** · **Expected vs. actual** · **Environment** (version, OS)
+
+Full templates: `.opencode/snippets/feedback-templates.md` (sync-generated). Before submit run a **pre-submit completeness check**: all required fields present and non-empty? Missing context → fill it, do not create a raw/incomplete issue.
+
+## 6. Create GitHub issue
 
 ```bash
 gh repo view --json nameWithOwner -q .nameWithOwner
@@ -67,7 +74,7 @@ No separate confirmation step — prepare the issue, create it immediately. Conf
 </workflow>
 
 <context>
-**Project context:** bluepencil ist eine Bibliothek, die in fremde Web-Apps injiziert wird. Der gesamte Note-Logik-Bestand (Schema, Validierung, Merge, Kanonisierung, Migration, Bundle-I/O) lebt headless in src/data und wird von UI, CLI, Referenz-Server und MCP gemeinsam genutzt - es gibt genau eine Implementierung. Alle Anforderungen sind in docs/REQUIREMENTS.md mit FR-/NFR-IDs dokumentiert; docs/PROTOCOL.md ist normativ fuer die Mensch-Agent-Zusammenarbeit.
+**Project context:** bluepencil ist eine Bibliothek, die in fremde Web-Apps injiziert wird, plus die dazugehoerigen Betriebsflaechen - Headless-Datenlayer (src/data), CLI, MCP-Server, Referenz-Hub (server/), Federator und eine MV3-Chromium-Extension. Der gesamte Note-Logik-Bestand (Schema, Validierung, Merge, Kanonisierung, Migration, Bundle-I/O) lebt headless in src/data und wird von UI, CLI, Hub, Federator, Extension und MCP gemeinsam genutzt - es gibt genau eine Implementierung (FR-15.3). Der Hub ist die Credential-Wahrheit (server/credentials.ts - shared secret UND optional signed tokens gleichzeitig); /config und /health sind unauthentifizierte Probes, Notiz-Routen nicht. Die Extension spricht den Hub nur ueber page -> bridge -> service worker an (CSP-connect-src-Ausnahme, strikt auf Endpoint-Origin+Base begrenzt). Version und Release-Stand sind SSOT in package.json / extension/manifest.json (kein VERSION-File und keine Versionskopie in dieser Config). Alle Anforderungen sind in docs/REQUIREMENTS.md mit FR-/NFR-IDs dokumentiert (spec/ ist daraus generiert); docs/PROTOCOL.md ist normativ fuer die Mensch-Agent-Zusammenarbeit.
 
 **Scope split:**
 

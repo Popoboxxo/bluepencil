@@ -1,5 +1,6 @@
 #!/bin/bash
-# version: 1.0.0
+# version: 1.6.0
+# changelog: 1.6.0: issue #1151 (audit G1) -- NotebookEdit (tool_input.notebook_path) and MultiEdit are judged like Edit, PowerShell like Bash (F6-01); '~', '$HOME' and '${HOME}' targets are expanded, and curl -o/--output/--output-dir, wget -O/-o/-a/-P, tar -C (extract) / -f (create), unzip -d and git clone <dir> are write targets (F6-06); cd/pushd/popd are tracked: a relative target is judged against every directory the command may be in ('&&' moves it, any other separator keeps the old one too) and an unresolvable cd target blocks a later relative write (F6-07); a cd inside $(...) or a '( ... )' subshell is scoped to it and does not move the outer command, $CLAUDE_PROJECT_DIR (hook environment) and $PWD (current directory set) are resolved as cd/write targets, and an old-style tar cluster ('tar cf /etc/x.tar .') yields its -f/-C values (review follow-up); bodies of $(...)/backtick substitutions are scanned (shared splitter, F6-03); the provider placeholder is no longer spelled out in a comment the sync-time replace rewrote (F6-12).
 # Real repo-containment ("prison mode") logic. NOT a standalone hook —
 # invoked by repo-containment.sh (thin self-health wrapper, issue #630), which
 # pipes the PreToolUse JSON payload to this script's stdin after syntax-
@@ -35,13 +36,26 @@
 # yaml.safe_load on .meta-config/project.yaml, passing the path as argv so
 # backslash-bearing Windows paths are never string-interpolated) and mirror
 # the resolver's precedence and safe-side rules inline. The tmp-sink path is
-# re-validated (relative, non-empty, no drive-letter prefix, no '..' segments,
-# not the repo root itself) before it widens the allow-list.
+# re-validated before it widens the allow-list with the SAME rule set as
+# scripts/lib/repo_containment.py::tmp_sink_path_error (IC-15 Nr. 27 a/b, hook
+# mirror f; parity enforced by tests/test_tmp_sink_path_parity.py over the
+# shared corpus tests/fixtures/tmp-sink-path-corpus.json): relative only (no
+# absolute/UNC/drive paths), no '..' segment, no reserved Windows device
+# names, no trailing dot/space, ':' or <>"|?* / control characters, no
+# protected directory (case-insensitive), not the repo root itself. The
+# accepted path is used in its canonical form (backslash -> slash before
+# normpath). An invalid path keeps falling back to '.tmp' (never aborts at
+# runtime); only the decision and canonical form must match Python. The
+# protected provider directories are embedded below (config/ai-providers.yaml
+# is not deployed); the parity test fails when they drift from
+# provider_root_dirs.
 #
 # Provider identity: `AGENT_META_PROVIDER` is substituted per provider by
-# sync.py's per-provider copy step (scripts/lib/hooks.py:470,
-# `source_content.replace("Claude", provider)`), exactly like
-# orchestrator-guard-impl.sh. That is the one reliable provider signal
+# sync.py's per-provider copy step (scripts/lib/hooks.py, which replaces the
+# braced AGENT_META_PROVIDER placeholder with the provider name), exactly like
+# orchestrator-guard-impl.sh. The placeholder itself is spelled out only on
+# the assignment line below, so the replace never rewrites this comment
+# (#1151 F6-12). That is the one reliable provider signal
 # available to a hook at runtime (the PreToolUse payload carries no provider
 # field and no documented provider env var exists), so we use it. When the
 # file is run straight from source (never synced) the placeholder is left
@@ -51,7 +65,39 @@
 #
 # Fail-mode (issue #630): the wrapper owns the missing-/broken-impl handling.
 # This impl itself fails CLOSED on a missing helper lib, a missing python
-# interpreter (issue #595 posture) and on an empty/malformed payload.
+# interpreter (issue #595 posture), an interpreter that exits 0 while
+# printing garbage, an empty/malformed payload, a missing or unrecognized
+# tool_name (v1.3.0, review finding M2), and a crashing write-target detector
+# (v1.4.0, #944 verifier note: the detector used to end in `|| true`, so a
+# Python crash silently ALLOWED the command). The recognized-name list is
+# shared with orchestrator-guard-impl.sh (hook_known_tool_name in
+# lib/hook_common.sh): a new built-in tool must be added there, and until
+# then its calls block on purpose (fail-closed).
+#
+# Fixed jail root (v1.4.0, #944 SR-B-18): the repo root prefers an anchor that
+# does NOT come from the payload, in this order:
+#   1. $CLAUDE_PROJECT_DIR, when it carries `.meta-config/`;
+#   2. the deployment layout `<root>/.claude/hooks/` this file lives in, when
+#      `<root>` carries `.meta-config/`.
+# Before this, a session whose shell was outside the project (or a forged
+# payload `cwd`) made the payload directory its own jail root, so a write
+# outside the real project was judged "inside". Only when neither fixed anchor
+# exists (e.g. the file is run straight from the source tree) does the guard
+# fall back to the payload anchor below.
+#
+# Anchor rule (fail-closed root resolution, spec §Fail-closed-Design):
+# the repo root is searched from an explicit ANCHOR — the payload `cwd` when
+# present and non-empty, or the directory of an absolute Write/Edit target when
+# `cwd` is missing/empty. `$PWD` is NEVER adopted: the guard process' working
+# directory says nothing about the project a tool call belongs to. If no
+# ancestor of the anchor carries `.meta-config/`, this hook exits 2 with the
+# single code `repo-containment.no-root` instead of promoting the anchor to a
+# root (that promotion was the fail-open this rule closes). A nested
+# agent-meta submodule's own `.meta-config/` is skipped in favour of the
+# enclosing project (#943 (l)); it remains the fallback when nothing encloses
+# it. A Bash call has no path-shaped target to anchor on (a command may write
+# zero, one or many targets), so Bash without `cwd` fails closed with the same
+# code.
 #
 # Safe-side (F4): a missing, unreadable or unparseable config resolves to
 # ENABLED, and a present-but-non-boolean `enabled` also resolves to ENABLED —
@@ -68,11 +114,44 @@
 # Best-effort boundary (issue #592, deliberate): the Bash path is a
 # convention boundary, NOT a security boundary — see
 # .claude/rules/branch-guard.md#guard-terminologie-convention-boundary-vs-
-# security-boundary. Command substitution, indirection (`eval`, `xargs`,
-# `$()`), interpreters (`python -c "open(...,'w')"`), and many tools not in
-# the small write-command set below can still smuggle a write outside the
-# root, because the hook neither executes nor fully parses the shell. Closing
-# that would need a real shell interpreter, which is disproportionate here.
+# security-boundary. The Bash detector is a best-effort token scan:
+#   * `eval` / `xargs` / `bash -c` strings, interpreters (`python -c
+#     "open(...,'w')"`), targets in an arbitrary `$VAR`, and tools outside the
+#     write-command set below can still smuggle a write outside the root.
+#     Command substitutions ($(...), backticks, also inside double quotes)
+#     are split and scanned since #1151; `~`/`$HOME` targets are expanded
+#     and cd/pushd/popd are tracked (relative targets are judged against
+#     every directory the command may be in; a cd inside $(...) or a
+#     '( ... )' subshell stays scoped to it, a cd inside a `case` is not
+#     scoped (over-blocks));
+#   * statements are split by the shared quote/heredoc-aware splitter
+#     (hook_shell_scan_py), so a quoted operator is not a separator and a
+#     heredoc body is prose, not commands (#944 SR-B-16). A real command
+#     AFTER the heredoc terminator is still scanned;
+#   * `perl -pi`, `sed -Ei`/`-ni`-style clusters, `cp -t DIR` and trailing
+#     flags are recognised (#944 SR-B-19); other in-place spellings are not;
+#   * the command word is resolved by the SHARED resolver
+#     (hook_shell_resolver_py, hook_common.sh v1.4.0), the same walk the
+#     orchestrator guard uses: wrapper grammar with positional arity
+#     (`timeout DURATION`, `flock FILE`, `chroot NEWROOT`), a transparent
+#     `--` at command position, one-line and split `case … in` arms, function
+#     bodies, subshells/groups, and `if`/`for`/`while` bodies. Before v1.5.0
+#     this hook had its own wrapper-name-only skip loop and knew none of
+#     these, so `timeout 5 -- touch /outside`, `flock -w 5 /x -- touch
+#     /outside`, `chroot /x -- touch /outside`, `case … in …) touch
+#     /outside`, `f() { touch /outside; }`, `( touch /outside )` and `if
+#     true; then touch /outside; fi` ALL resolved to no write target and were
+#     allowed (the wrapper blind spot the guard fixed in v1.9.2).
+# Closing the rest would need a real shell interpreter, which is
+# disproportionate here.
+#
+# Known gaps (issue #944 SR-B-20, #943 (m)): the config reader uses
+# yaml.safe_load. When PyYAML is unavailable (or the file is unparseable) the
+# guard stays ENABLED and now writes a warning to stderr; `enabled: false`
+# cannot be honoured in that state, and the warning says so instead of
+# ignoring the opt-out silently. Honouring the opt-out without PyYAML needs
+# the shared stdlib YAML subset reader (tracked in the plan), not a second
+# ad-hoc line scan that could open the jail on a misparse.
 #
 # Exit codes: 0 = allow, 2 = block. As with orchestrator-guard (issue #396)
 # every block reason is written to stderr — the harness feeds stderr back to
@@ -99,20 +178,67 @@ if ! hook_have_python; then
 fi
 _PY="$(hook_python_bin)"
 
+# The shared helper functions this guard relies on must actually be there:
+# a deployed lib/hook_common.sh from before they existed (sync.py not re-run
+# after an agent-meta update) would otherwise make the calls below fail
+# obscurely. Fail closed, same as a missing lib (issue #595).
+if ! declare -F hook_json_usable >/dev/null 2>&1 \
+   || ! declare -F hook_known_tool_name >/dev/null 2>&1 \
+   || ! declare -F hook_shell_scan_py >/dev/null 2>&1 \
+   || ! declare -F hook_shell_resolver_py >/dev/null 2>&1 \
+   || ! declare -F hook_is_meta_submodule_dir >/dev/null 2>&1; then
+  echo "REPO_CONTAINMENT: $SCRIPT_DIR/lib/hook_common.sh is outdated (shared guard helpers missing)." >&2
+  echo "Failing closed — re-run sync.py to redeploy the hooks/lib/ directory." >&2
+  exit 2
+fi
+
+# Issue #954 / review finding M2: a python3 on PATH that EXITS 0 while
+# printing garbage (broken or hostile PATH shim) is indistinguishable from a
+# working interpreter by exit status alone. Before this gate it handed junk
+# back as tool_name, which matched the `*) exit 0` allow branch below -- a
+# fail-open. Verify the interpreter before trusting any field (shared helper,
+# not a second copy of the probe).
+if ! hook_json_usable; then
+  echo "REPO_CONTAINMENT: the python/python3 on PATH does not behave like a Python interpreter." >&2
+  echo "Failing closed (M2/#954) — the hook payload cannot be read reliably." >&2
+  exit 2
+fi
+
 INPUT=$(cat)
 
 TOOL_NAME=$(hook_json_get "$INPUT" "tool_name")
 
-# Empty/malformed payload -> fail CLOSED. This intentionally differs from
-# orchestrator-guard-impl, which exits 0 when tool_name is empty (it treats
-# that as a non-tool event). A containment guard cannot tell a benign
-# non-tool event from a truncated payload, so it takes the safe side (F4):
-# an unevaluable payload must never open the jail.
+# Empty/malformed payload -> fail CLOSED: a containment guard cannot tell a
+# benign non-tool event from a truncated payload, so an unevaluable payload
+# must never open the jail. (orchestrator-guard-impl.sh now takes the same
+# safe side, review finding M2; before that it exited 0 here.)
 if [ -z "$TOOL_NAME" ]; then
   echo "REPO_CONTAINMENT: empty or unparseable PreToolUse payload (no tool_name)." >&2
   echo "Failing closed so an unknown tool call cannot write outside the repo root." >&2
   exit 2
 fi
+
+# M2: an unrecognized tool_name used to fall through the `*) exit 0` branch
+# below. The known-name allow-list lives in lib/hook_common.sh so both
+# security guards share one definition (see hook_known_tool_name there for
+# what is allowed and why).
+if ! hook_known_tool_name "$TOOL_NAME"; then
+  echo "REPO_CONTAINMENT: unknown tool_name '$TOOL_NAME' in the PreToolUse payload." >&2
+  echo "Failing closed (M2) — an unrecognized tool could write outside the repo root." >&2
+  echo "If it is a legitimate tool, add it to hook_known_tool_name in lib/hook_common.sh." >&2
+  exit 2
+fi
+
+# Write-capable tools without their own branch map onto the one they behave
+# like (#1151 F6-01): NotebookEdit/MultiEdit write a file like Edit (the
+# notebook target is tool_input.notebook_path, read below), PowerShell runs a
+# shell command in tool_input.command like Bash (best-effort: the detector
+# reads it with shell grammar; PowerShell cmdlets are not write commands it
+# knows, redirections are).
+case "$TOOL_NAME" in
+  NotebookEdit|MultiEdit) TOOL_NAME="Edit" ;;
+  PowerShell) TOOL_NAME="Bash" ;;
+esac
 
 # Only write-capable tools are intercepted; reads (Read/Glob/Grep) and every
 # other tool pass through untouched.
@@ -132,40 +258,250 @@ case "$AGENT_META_PROVIDER" in
   *) PROVIDER="$AGENT_META_PROVIDER" ;;
 esac
 
-# --- Workdir + repo root ----------------------------------------------
-# The payload `cwd` is the directory the tool call runs in. Repo root is the
-# nearest ancestor directory that contains a `.meta-config/` directory — NOT
-# the git toplevel (a project may live inside a larger git repo; containment
-# must follow the agent-meta project root).
-WORKDIR=$(hook_json_get "$INPUT" "cwd")
-if [ -z "$WORKDIR" ]; then
-  WORKDIR="$PWD"
+# --- Realpath helper ---------------------------------------------------
+# stdlib-only (python is already required above), works for a path that does
+# not exist yet, and normalizes symlinks on every platform. Prints "" when the
+# interpreter fails, so callers can treat an unnormalizable anchor as missing.
+resolve_realpath() {
+  "$_PY" -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null
+}
+
+# --- Target extraction -------------------------------------------------
+# Extracted before the anchor: with a missing/empty `cwd`, an absolute
+# Write/Edit target is what the anchor is derived from.
+FILE_PATH=$(hook_json_get "$INPUT" "tool_input.file_path")
+if [ -z "$FILE_PATH" ]; then
+  FILE_PATH=$(hook_json_get "$INPUT" "tool_input.notebook_path")
 fi
-case "$WORKDIR" in
-  /*) ;;
-  *) WORKDIR="$PWD/$WORKDIR" ;;
+BASH_CMD=$(hook_json_get "$INPUT" "tool_input.command")
+
+if [ "$TOOL_NAME" = "Write" ] || [ "$TOOL_NAME" = "Edit" ]; then
+  if [ -z "$FILE_PATH" ]; then
+    echo "REPO_CONTAINMENT: no tool_input.file_path in the payload for $TOOL_NAME." >&2
+    echo "Failing closed — the write target cannot be evaluated." >&2
+    exit 2
+  fi
+fi
+
+# A commandless Bash call cannot write anything and needs no anchor.
+if [ "$TOOL_NAME" = "Bash" ] && [ -z "$BASH_CMD" ]; then
+  exit 0
+fi
+
+# --- Fixed jail root (issue #944 SR-B-18) -----------------------------
+# Preferred over every payload-derived anchor. 1) the harness-set
+# $CLAUDE_PROJECT_DIR when it carries .meta-config/; 2) the deployment layout
+# <root>/.claude/hooks/ this script was synced into. Running straight from the
+# source tree (agent-meta's hooks/1-generic/) matches neither, so the tests
+# and ad-hoc runs keep the documented payload-anchor behaviour below.
+#
+# Return contract:
+#   0  fixed root selected and printed (never empty)
+#   1  no fixed root applies -- the payload anchor is the intended fallback
+#   2  a fixed root WAS selected but could not be resolved -> fail closed
+# A selected-but-unresolvable root must never degrade to the payload anchor
+# (review finding F5): that silently lets a payload cwd choose the jail.
+resolve_fixed_root() {
+  local candidate root
+  if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -d "$CLAUDE_PROJECT_DIR/.meta-config" ]; then
+    root="$(resolve_realpath "$CLAUDE_PROJECT_DIR")"
+    if [ -z "$root" ]; then
+      return 2
+    fi
+    printf '%s\n' "$root"
+    return 0
+  fi
+  # Deployment layout, provider-neutral: sync copies the hooks into
+  # <provider-root>/hooks (e.g. .claude/hooks, .agents/hooks) or, for a custom
+  # layout, <root>/hooks. The source tree is hooks/1-generic/, so its basename
+  # is not 'hooks' and this never mistakes agent-meta itself for the jail.
+  if [ "$(basename -- "$SCRIPT_DIR" 2>/dev/null)" = "hooks" ]; then
+    for candidate in \
+      "$(dirname -- "$SCRIPT_DIR")" \
+      "$(dirname -- "$(dirname -- "$SCRIPT_DIR")")"; do
+      if [ -d "$candidate/.meta-config" ]; then
+        root="$(resolve_realpath "$candidate")"
+        if [ -z "$root" ]; then
+          return 2
+        fi
+        printf '%s\n' "$root"
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+
+_FIXED_ROOT_RC=0
+FIXED_ROOT="$(resolve_fixed_root)" || _FIXED_ROOT_RC=$?
+if [ "$_FIXED_ROOT_RC" -eq 1 ] && [ -z "$FIXED_ROOT" ]; then
+  : # no fixed root applies; the payload anchor is the documented fallback
+elif [ "$_FIXED_ROOT_RC" -ne 0 ] || [ -z "$FIXED_ROOT" ]; then
+  echo "REPO_CONTAINMENT: the fixed jail root (\$CLAUDE_PROJECT_DIR or the deployment layout) could not be resolved." >&2
+  echo "Failing closed (review finding F5) — a selected root must never degrade to the payload anchor." >&2
+  exit 2
+fi
+
+# --- Anchor ------------------------------------------------------------
+# Anchor precedence (spec §Fail-closed-Design "Vertrag" point 1):
+#   1. payload `cwd` present, non-empty and absolute -> realpath(cwd)
+#   2. else target absolute (Write/Edit)             -> realpath(dirname(target))
+#   3. else                                          -> no anchor, fail closed
+# `$PWD` is never a fallback, not even implicitly: a RELATIVE `cwd` is ignored
+# as an anchor (resolving it would silently adopt the guard's own working
+# directory). Providers send an absolute `cwd`; a relative one is treated like
+# a missing one, so an absolute Write/Edit target can still anchor the search.
+# The anchor is used to resolve RELATIVE targets and to locate the root only
+# when FIXED_ROOT is absent; it never replaces a fixed root.
+CWD_RAW=$(hook_json_get "$INPUT" "cwd")
+WORKDIR=""
+ANCHOR_SOURCE="none"
+case "$CWD_RAW" in
+  /*)
+    WORKDIR="$(resolve_realpath "$CWD_RAW")"
+    ANCHOR_SOURCE="cwd"
+    ;;
 esac
 
+if [ -z "$WORKDIR" ]; then
+  case "$TOOL_NAME" in
+    Write|Edit)
+      case "$FILE_PATH" in
+        /*)
+          WORKDIR="$(resolve_realpath "$(dirname "$FILE_PATH")")"
+          ANCHOR_SOURCE="target"
+          ;;
+      esac
+      ;;
+    # Bash deliberately has no target-derived anchor: a command is not a path,
+    # and picking one of its (possibly many, possibly computed) write targets as
+    # the anchor would trust more parse evidence than this best-effort detector
+    # claims. No `cwd` therefore means no anchor -> fail closed below.
+  esac
+fi
+
+# --- Repo root (no promotion, no $PWD) --------------------------------
+# The nearest ancestor of the ANCHOR that contains a `.meta-config/`
+# directory — NOT the git toplevel (a project may live inside a larger git
+# repo; containment must follow the agent-meta project root).
+# Issue #943 (l): a nested agent-meta checkout (.agent-meta/ or
+# external/agent-meta) is skipped in favour of the enclosing project, but kept
+# as a fallback so a session opened only inside the submodule still resolves.
 resolve_repo_root() {
-  local dir="$1" parent
+  local dir="$1" parent first_skipped=""
   while [ -n "$dir" ]; do
     if [ -d "$dir/.meta-config" ]; then
-      printf '%s' "$dir"
-      return 0
+      if hook_is_meta_submodule_dir "$dir"; then
+        [ -n "$first_skipped" ] || first_skipped="$dir"
+      else
+        printf '%s' "$dir"
+        return 0
+      fi
     fi
     [ "$dir" = "/" ] && break
     parent="$(dirname "$dir")"
     [ "$parent" = "$dir" ] && break
     dir="$parent"
   done
+  if [ -n "$first_skipped" ]; then
+    printf '%s' "$first_skipped"
+    return 0
+  fi
   return 1
 }
 
-REPO_ROOT="$(resolve_repo_root "$WORKDIR")" || REPO_ROOT=""
+# Print a human-readable, absolute form of a target for a block message.
+# Falls back to the raw value when it cannot be normalized (python failure).
+display_target() {
+  local raw="${1:-}" resolved=""
+  case "$raw" in
+    '') printf '%s' "(none)"; return 0 ;;
+    /*) resolved="$(resolve_realpath "$raw")" ;;
+    *)
+      if [ -n "$WORKDIR" ]; then
+        resolved="$(resolve_realpath "$WORKDIR/$raw")"
+      fi
+      ;;
+  esac
+  printf '%s' "${resolved:-$raw}"
+}
+
+# Message for "anchor exists, but no project root above it" (spec §Fehlermeldungen).
+no_root_block() {
+  local target="$1"
+  echo "REPO_CONTAINMENT: no project root found above $WORKDIR (code repo-containment.no-root)." >&2
+  echo "  A project root is a directory that contains \`.meta-config/\`." >&2
+  echo "  This guard never promotes the working directory to a project root." >&2
+  echo "  target:    $target" >&2
+  echo "  anchor:    $WORKDIR            (payload \`cwd\`, or the target's own directory when \`cwd\` is missing)" >&2
+  if [ -n "$CWD_RAW" ] && [ "$CWD_RAW" != "$WORKDIR" ]; then
+    echo "  resolved:  payload \`cwd\` $CWD_RAW -> $WORKDIR (resolved)" >&2
+  fi
+  echo "  allowed:   only inside a project root (plus its configured tmp-sink)" >&2
+  echo "  repair:    run \`python scripts/sync.py\` in the project, or open the session" >&2
+  echo "             inside the project directory" >&2
+  echo "  opt-out:   repo_containment.enabled: false in <project>/.meta-config/project.yaml" >&2
+}
+
+# Message for "no anchor at all": a relative Write/Edit target without `cwd`
+# (spec §Fehlermeldungen, second skeleton). Same code, distinct reason.
+no_anchor_block() {
+  local target="$1"
+  echo "REPO_CONTAINMENT: no project root found for a relative target without \`cwd\`" >&2
+  echo "(code repo-containment.no-root)." >&2
+  echo "  A relative path cannot be anchored: the payload carried no \`cwd\` (or an empty one)" >&2
+  echo "  and the target is not absolute. Failing closed." >&2
+  echo "  target:    $target" >&2
+  if [ -n "$CWD_RAW" ]; then
+    echo "  note:      payload \`cwd\` '$CWD_RAW' is not absolute and cannot anchor a root search." >&2
+  fi
+  echo "  repair:    re-run \`python scripts/sync.py\` for this provider (hook payload contract, issue #630);" >&2
+  echo "             send an absolute \`file_path\`, or include \`cwd\` in the payload" >&2
+}
+
+# Message for Bash without an anchor. There is no spec skeleton for this case
+# (the anchor rule is path-shaped); documented reading: fail closed with the
+# same single code rather than guess an anchor from a command string.
+bash_no_anchor_block() {
+  local command="$1"
+  echo "REPO_CONTAINMENT: no project root found for a Bash command without \`cwd\`" >&2
+  echo "(code repo-containment.no-root)." >&2
+  echo "  A Bash command is not a path: unlike Write/Edit it has no single target" >&2
+  echo "  directory to anchor a project-root search on. Failing closed." >&2
+  echo "  command:   $command" >&2
+  if [ -n "$CWD_RAW" ]; then
+    echo "  note:      payload \`cwd\` '$CWD_RAW' is not absolute and cannot anchor a root search." >&2
+  fi
+  echo "  repair:    re-run \`python scripts/sync.py\` for this provider (hook payload contract, issue #630);" >&2
+  echo "             include \`cwd\` in the payload" >&2
+}
+
+if [ -z "$WORKDIR" ]; then
+  if [ "$TOOL_NAME" = "Bash" ]; then
+    bash_no_anchor_block "$(printf '%s' "$BASH_CMD" | head -c 200)"
+  else
+    no_anchor_block "$FILE_PATH"
+  fi
+  exit 2
+fi
+
+if [ -n "$FIXED_ROOT" ]; then
+  # SR-B-18: a fixed anchor wins over the payload-derived root, so a cwd (or a
+  # forged payload) can never redefine the jail.
+  REPO_ROOT="$FIXED_ROOT"
+else
+  REPO_ROOT="$(resolve_repo_root "$WORKDIR")" || REPO_ROOT=""
+fi
 if [ -z "$REPO_ROOT" ]; then
-  # No .meta-config/ anywhere above the workdir: treat the workdir itself as
-  # the root and let the safe-side config defaults apply (containment ON).
-  REPO_ROOT="$WORKDIR"
+  # No `.meta-config/` above the anchor: do NOT invent a root from the anchor
+  # (the old fail-open) and do NOT read any config — a foreign project's
+  # `enabled: false` must never unlock a write outside it.
+  if [ "$TOOL_NAME" = "Bash" ]; then
+    no_root_block "$(printf '%s' "$BASH_CMD" | head -c 200)"
+  else
+    no_root_block "$(display_target "$FILE_PATH")"
+  fi
+  exit 2
 fi
 CONFIG_FILE="$REPO_ROOT/.meta-config/project.yaml"
 
@@ -175,19 +511,76 @@ CONFIG_FILE="$REPO_ROOT/.meta-config/project.yaml"
 read_effective_containment() {
   "$_PY" - "$1" "$2" <<'PYEOF'
 import os
+import posixpath
 import re
 import sys
 
 CONFIG_FILE, PROVIDER = sys.argv[1], sys.argv[2]
 
-# Mirrors scripts/lib/repo_containment.py::tmp_sink_path_error.
+# Mirrors scripts/lib/repo_containment.py::tmp_sink_path_error (lexical rules).
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + ["COM%d" % i for i in range(1, 10)]
+    + ["LPT%d" % i for i in range(1, 10)]
+)
+_FORBIDDEN_CHARS = frozenset('<>"|?*')
+# Lower-cased protected segment prefixes (framework dirs + provider_root_dirs).
+_PROTECTED = (
+    (".git",), (".claude",), (".meta-config",), (".agents",), (".codex",),
+    (".continue",), (".gemini",), (".github", "copilot"), (".kimi-code",),
+    (".mammouth",), (".opencode",), (".zcode",),
+)
 
 
-def emit(enabled, sink_enabled, sink_path):
+def canonical_path(path):
+    """Backslash -> slash BEFORE normpath, always POSIX-style."""
+    return posixpath.normpath(path.replace("\\", "/"))
+
+
+def path_error(path):
+    """Return an error string for an unsafe sink path, else None."""
+    if not isinstance(path, str) or not path.strip():
+        return "empty or not a string"
+    if _WINDOWS_DRIVE_RE.match(path):
+        return "drive-letter path"
+    if path[:1] in ("/", "\\"):
+        return "absolute or UNC path"
+    if any(ord(ch) < 32 for ch in path):
+        return "control character"
+    if path in (".", ".."):
+        return "root or parent"
+    segments = path.replace("\\", "/").split("/")
+    if any(segment == ".." for segment in segments):
+        return "'..' segment"
+    for segment in segments:
+        if segment in ("", "."):
+            continue
+        if ":" in segment:
+            return "':' in segment"
+        if any(ch in _FORBIDDEN_CHARS for ch in segment):
+            return "forbidden character"
+        if segment[-1] in (".", " "):
+            return "trailing dot or space"
+        if segment.split(".", 1)[0].rstrip(" ").upper() in _RESERVED:
+            return "reserved Windows name"
+    normalized = canonical_path(path)
+    if normalized in ("", ".", "..") or normalized.startswith("../"):
+        return "escapes the root"
+    lowered = tuple(seg.lower() for seg in normalized.split("/"))
+    for prefix in _PROTECTED:
+        if lowered[: len(prefix)] == prefix:
+            return "protected directory"
+    return None
+
+
+def emit(enabled, sink_enabled, sink_path, rejected=False):
+    # SINK_REJECTED is observed only by tests/test_tmp_sink_path_parity.py
+    # (AC-97); the shell consumer deliberately ignores it (silent fallback).
     print("ENABLED=%d" % (1 if enabled else 0))
     print("SINK_ENABLED=%d" % (1 if sink_enabled else 0))
     print("SINK_PATH=%s" % sink_path)
+    print("SINK_REJECTED=%d" % (1 if rejected else 0))
 
 
 try:
@@ -196,7 +589,7 @@ try:
     with open(CONFIG_FILE, encoding="utf-8") as handle:
         config = yaml.safe_load(handle) or {}
 
-    raw = config.get("repo_containment")
+    raw = config.get("repo_containment")  # runtime-reader:repo_containment
     rc = raw if isinstance(raw, dict) else {}
 
     # Master switch: provider-override > project value > default True.
@@ -222,30 +615,27 @@ try:
         sink_enabled = True
 
     path = sink.get("path", ".tmp")
-    valid = (
-        isinstance(path, str)
-        and bool(path.strip())
-        and not os.path.isabs(path)
-        and not _WINDOWS_DRIVE_RE.match(path)
-        and path not in (".", "..")
-    )
-    if valid:
-        segments = path.replace("\\", "/").split("/")
-        valid = not any(segment == ".." for segment in segments)
-    if valid:
-        # A path whose normalized form is the root itself (".", "./.", "") or
-        # escapes it is refused, mirroring the sync validator. The commonpath
-        # re-check in the hook would otherwise treat the repo root as the sink.
-        normalized = os.path.normpath(path)
-        valid = normalized not in ("", ".", "..") and not normalized.startswith(
-            ".." + os.sep
-        )
-    if not valid:
-        path = ".tmp"
+    # Same decision and canonical form as Python; invalid => safe fallback.
+    rejected = path_error(path) is not None
+    path = ".tmp" if rejected else canonical_path(path)
 
-    emit(enabled, sink_enabled, path)
-except Exception:
+    emit(enabled, sink_enabled, path, rejected)
+except Exception as exc:
     # F4 safe-side: missing/unreadable/unparseable config never opens silently.
+    # SR-B-20: this used to be silent, so a project that had explicitly set
+    # repo_containment.enabled: false (and whose hook interpreter lacks
+    # PyYAML) kept failing closed with no explanation. The guard still fails
+    # CLOSED -- honouring the opt-out here would need the shared stdlib YAML
+    # subset reader, and a misparse must never open the jail -- but the
+    # ignored opt-out is now visible on stderr.
+    print(
+        "REPO_CONTAINMENT: warning: could not read " + CONFIG_FILE
+        + " with PyYAML (" + type(exc).__name__ + "); containment stays ENABLED."
+        + " A configured repo_containment.enabled: false is NOT honoured in"
+        + " this state (fail-closed). Install PyYAML for the hook interpreter"
+        + " or run the project sync.",
+        file=sys.stderr,
+    )
     emit(True, True, ".tmp")
 PYEOF
 }
@@ -261,6 +651,12 @@ while IFS='=' read -r _key _value; do
     SINK_PATH) SINK_PATH="$_value" ;;
   esac
 done < <(printf '%s\n' "$CONFIG_OUT")
+
+# Absolute sink for messages and for the allow-list text (AC-18): the hook's
+# effective sink is the realpath of <root>/<sink>, matching
+# scripts/lib/tmp_paths.py::resolve_tmp_paths(...).absolute (shared contract,
+# tests/test_repo_containment_hook.py::test_hook_sink_matches_tmp_paths).
+SINK_ABS="$(resolve_realpath "$REPO_ROOT/$SINK_PATH")"
 
 # enabled: false -> no enforcement at all (spec §4.1).
 if [ "$ENABLED" != "1" ]; then
@@ -316,34 +712,50 @@ print("BLOCK")
 PYEOF
 }
 
+# How the anchor was obtained, for block messages (the no-root message keeps
+# the spec's fixed parenthetical instead).
+anchor_label() {
+  case "$ANCHOR_SOURCE" in
+    target) printf '%s' "the target's own directory; payload carried no \`cwd\`" ;;
+    *) printf '%s' "payload \`cwd\`" ;;
+  esac
+}
+
 block_write() {
-  local target="$1" reason="${2:-outside}"
-  if [ "$reason" = "sink-disabled" ]; then
+  local target="$1" reason="${2:-outside}" absolute
+  absolute="$(display_target "$target")"
+  if [ "$reason" = "cwd-unknown" ]; then
+    echo "REPO_CONTAINMENT: relative write target after a directory change the hook cannot resolve (prison mode)." >&2
+    echo "  target:    $target (relative to an unknown directory)" >&2
+    echo "  reason:    a cd/pushd/popd to a computed path ('\$VAR', 'cd -', popd) hides where it lands (#1151)." >&2
+    echo "  repair:    use a literal directory or an absolute target inside $REPO_ROOT" >&2
+  elif [ "$reason" = "sink-disabled" ]; then
     echo "REPO_CONTAINMENT: write target is inside the configured but DISABLED tmp-sink (prison mode)." >&2
-    echo "  target:    $target" >&2
-    echo "  reason:    the tmp-sink ($REPO_ROOT/$SINK_PATH) is writable only when" >&2
+    echo "  target:    $absolute" >&2
+    echo "  reason:    the tmp-sink ($SINK_ABS) is writable only when" >&2
     echo "             repo_containment.tmp-sink.enabled: true." >&2
+    echo "  anchor:    $WORKDIR            ($(anchor_label))" >&2
+    echo "  repair:    set repo_containment.tmp-sink.enabled: true in" >&2
+    echo "             $REPO_ROOT/.meta-config/project.yaml, or write outside the tmp-sink." >&2
   else
     echo "REPO_CONTAINMENT: write target is outside the repository root (prison mode)." >&2
-    echo "  target:    $target" >&2
+    echo "  target:    $absolute" >&2
     echo "  repo root: $REPO_ROOT" >&2
     if [ "$SINK_ENABLED" = "1" ]; then
-      echo "  allowed:   paths under $REPO_ROOT and under $REPO_ROOT/$SINK_PATH" >&2
+      echo "  allowed:   paths under $REPO_ROOT and under $SINK_ABS" >&2
     else
-      echo "  allowed:   paths under $REPO_ROOT (the tmp-sink subtree is disabled)" >&2
+      echo "  allowed:   paths under $REPO_ROOT (the tmp-sink subtree $SINK_ABS is disabled)" >&2
     fi
+    echo "  anchor:    $WORKDIR            ($(anchor_label))" >&2
+    echo "  repair:    write inside $REPO_ROOT (or its tmp-sink), or re-run" >&2
+    echo "             \`python scripts/sync.py\` in the project" >&2
   fi
-  echo "  Opt-out: set repo_containment.enabled: false in .meta-config/project.yaml." >&2
+  echo "  opt-out:   repo_containment.enabled: false in $REPO_ROOT/.meta-config/project.yaml" >&2
 }
 
 # --- Write/Edit: check the explicit target path ------------------------
+# FILE_PATH was extracted above (the anchor may depend on it).
 if [ "$TOOL_NAME" = "Write" ] || [ "$TOOL_NAME" = "Edit" ]; then
-  FILE_PATH=$(hook_json_get "$INPUT" "tool_input.file_path")
-  if [ -z "$FILE_PATH" ]; then
-    echo "REPO_CONTAINMENT: no tool_input.file_path in the payload for $TOOL_NAME." >&2
-    echo "Failing closed — the write target cannot be evaluated." >&2
-    exit 2
-  fi
   case "$(containment_verdict "$FILE_PATH")" in
     ALLOW) exit 0 ;;
     BLOCK_SINK)
@@ -358,38 +770,46 @@ if [ "$TOOL_NAME" = "Write" ] || [ "$TOOL_NAME" = "Edit" ]; then
 fi
 
 # --- Bash: best-effort tokenized write detection (issue #592) ---------
-# The detector below tokenizes with shlex (punctuation-aware) and splits on
-# raw shell control operators / newlines, mirroring the inline tokenizer style
-# of orchestrator-guard-impl.sh. It reports candidate write targets, one per
-# line; each is then run through the same containment_verdict as Write/Edit.
-# A missing command (nothing to do) exits 0; a detector internal error yields
-# no candidates and therefore no block, which is consistent with this path's
-# documented best-effort status (the config-doubt safe-side rule above is
-# unaffected).
+# The detector below tokenizes with shlex (punctuation-aware) and uses the
+# shared quote/heredoc-aware splitter (hook_shell_scan_py) instead of a raw
+# `re.split` on control operators. That fixes two opposite errors:
+#   * a quoted operator / heredoc body is no longer split into fake commands
+#     (#944 SR-B-16), while a real command after the heredoc terminator is
+#     still scanned;
+#   * `perl -pi`, `sed -Ei`/`sed -ni`, `cp -t DIR` and trailing flags are
+#     recognised as writes (#944 SR-B-19).
+# It reports candidate write targets, one per line; each is then run through
+# the same containment_verdict as Write/Edit.
+# Fail-closed (#944 verifier note): a detector crash used to be swallowed by
+# `|| true`, so the command was ALLOWED. A non-zero detector exit now blocks.
 if [ "$TOOL_NAME" = "Bash" ]; then
-  BASH_CMD=$(hook_json_get "$INPUT" "tool_input.command")
-  if [ -z "$BASH_CMD" ]; then
-    exit 0
-  fi
-
-  WRITE_TARGETS=$(printf '%s' "$BASH_CMD" | "$_PY" -c '
+  # BASH_CMD was extracted above (an empty one already exited 0 before the
+  # anchor step).
+  _DETECTOR_SRC=$(hook_shell_scan_py
+hook_shell_resolver_py
+cat <<'PYEOF'
 import os
 import re
 import shlex
 import sys
 
-command = sys.stdin.read()
+# Bytes-in (surrogateescape): invalid UTF-8 / a lone surrogate in the command
+# must not crash the detector (the crash used to be a silent allow).
+command = sys.stdin.buffer.read().decode('utf-8', 'surrogateescape')
 
 # Commands whose operands are created / modified / removed outright.
 WRITE_ALL = {
     "touch", "mkdir", "rmdir", "rm", "truncate", "mkfifo", "mknod", "tee",
 }
-# Commands whose LAST non-flag operand is the destination write target.
+# Commands whose LAST non-flag operand (or -t/--target-directory value) is
+# the destination write target.
 WRITE_DEST = {"cp", "install", "rsync", "scp", "ln"}
 # In-place editors: only the operands are written when -i/--in-place is set.
 INPLACE = {"sed", "perl", "ruby"}
-# Wrapper prefixes skipped before the real command name.
-WRAPPERS = {"sudo", "env", "command", "nohup", "time", "nice", "ionice", "stdbuf"}
+# Short options of the INPLACE editors that consume a value: the rest of a
+# cluster after them is a script/program, not a flag (so '-e' does not hide a
+# later 'i' in a script argument, and '-e' alone is not an in-place edit).
+INPLACE_VALUE_OPTS = {"e", "f"}
 
 
 def tokenize(chunk):
@@ -416,7 +836,29 @@ def is_dev_target(target):
     )
 
 
+HOME = os.environ.get("HOME") or os.path.expanduser("~")
+# Variables whose value the hook knows; an unset one stays a '$' word.
+KNOWN_VARS = {"HOME": HOME, "CLAUDE_PROJECT_DIR": os.environ.get("CLAUDE_PROJECT_DIR")}
+
+
+def expand_home(target):
+    # '~', '~/x', '~user/x', '$HOME/x' and '${HOME}/x' name a real place
+    # outside the repo (#1151 F6-06: they used to be skipped as literal text
+    # or as a '$' variable); $CLAUDE_PROJECT_DIR is expanded from the hook
+    # environment the same way. Any other '$VAR' stays unresolved (known gap).
+    if target.startswith("~"):
+        return os.path.expanduser(target)
+    for name, value in KNOWN_VARS.items():
+        if not value:
+            continue
+        for prefix in ("$" + name, "${" + name + "}"):
+            if target == prefix or target.startswith(prefix + "/"):
+                return value + target[len(prefix):]
+    return target
+
+
 def is_skippable(target):
+    target = expand_home(target)
     return (
         not target
         or target == "-"
@@ -426,76 +868,437 @@ def is_skippable(target):
     )
 
 
+# Options whose value is a write destination (#1151 F6-06). A short option
+# may also carry its value glued ('-o/x') or end a cluster ('-sSLo /x').
+OUTPUT_OPTS = {
+    "curl": ({"-o", "--output", "--output-dir"}, "o"),
+    "wget": ({"-O", "--output-document", "-o", "--output-file", "-a",
+              "--append-output", "-P", "--directory-prefix"}, "OoaP"),
+    "unzip": ({"-d"}, "d"),
+}
+
+
+def option_values(args, long_short, cluster_chars):
+    values = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a.startswith("--"):
+            name, eq, val = a.partition("=")
+            if name in long_short:
+                if eq:
+                    values.append(val)
+                elif i < len(args):
+                    values.append(args[i])
+                    i += 1
+            continue
+        if a.startswith("-") and a != "-":
+            for k, ch in enumerate(a[1:], start=1):
+                if ch in cluster_chars and "-" + ch in long_short:
+                    if k + 1 < len(a):
+                        values.append(a[k + 1:])
+                    elif i < len(args):
+                        values.append(args[i])
+                        i += 1
+                    break
+    return values
+
+
+# Old-style tar letters that take the next words as values, in order.
+TAR_OLD_VALUE_LETTERS = "fCbTXLNgKVHI"
+
+
+def tar_targets(args):
+    # Extraction writes into -C/--directory; creation writes the -f archive.
+    # An old-style first word ('cf', 'xzfC') is a cluster whose value letters
+    # consume the following words in order ('tar cf /etc/x.tar .').
+    old = {}
+    rest = args
+    flags = ""
+    if args and not args[0].startswith("-"):
+        flags = args[0]
+        rest = args[1:]
+        for ch in flags:
+            if ch in TAR_OLD_VALUE_LETTERS and rest:
+                old.setdefault(ch, rest[0])
+                rest = rest[1:]
+    flags +="".join(a.lstrip("-") for a in rest if a.startswith("-") and not a.startswith("--"))
+    longs = {a.split("=", 1)[0] for a in rest if a.startswith("--")}
+    extract = "x" in flags or longs & {"--extract", "--get"}
+    create = any(c in flags for c in "cruA") or longs & {"--create", "--append", "--update", "--concatenate"}
+    targets = []
+    if extract:
+        targets += ([old["C"]] if "C" in old else []) + option_values(rest, {"-C", "--directory"}, "C")
+    if create:
+        targets += ([old["f"]] if "f" in old else []) + option_values(rest, {"-f", "--file"}, "f")
+    return targets
+
+
+GIT_GLOBAL_OPTS_WITH_VALUE = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                              "--config-env", "--exec-path", "--super-prefix"}
+CLONE_OPTS_WITH_VALUE = {"-b", "--branch", "-o", "--origin", "-u", "--upload-pack",
+                         "--depth", "--reference", "--reference-if-able",
+                         "--separate-git-dir", "--template", "-c", "--config",
+                         "-j", "--jobs", "--filter", "--shallow-since",
+                         "--shallow-exclude", "--server-option", "--bundle-uri"}
+
+
+def git_clone_targets(args):
+    # 'git [-C DIR] clone [opts] <repo> [<dir>]' writes <dir> (default: the
+    # repo's basename) under DIR or the cwd.
+    base = ""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        if args[i] == "-C" and i + 1 < len(args):
+            base = os.path.join(base, args[i + 1])
+        i += 2 if args[i] in GIT_GLOBAL_OPTS_WITH_VALUE else 1
+    if i >= len(args) or args[i] != "clone":
+        return []
+    positionals = []
+    rest = args[i + 1:]
+    j = 0
+    while j < len(rest):
+        a = rest[j]
+        j += 1
+        if a == "--":
+            positionals += rest[j:]
+            break
+        if a in CLONE_OPTS_WITH_VALUE:
+            j += 1
+            continue
+        if a.startswith("-"):
+            continue
+        positionals.append(a)
+    if not positionals:
+        return []
+    if len(positionals) >= 2:
+        dest = positionals[1]
+    else:
+        dest = os.path.basename(positionals[0].rstrip("/"))
+        if dest.endswith(".git"):
+            dest = dest[:-4]
+    return [os.path.join(base, expand_home(dest)) if base else dest]
+
+
+def split_flags(args):
+    """Return (positionals, target_dir) with flags and -t values removed.
+
+    Trailing flags must not be mistaken for the destination: `cp a /etc/b -v`
+    used to append '-v' (inside the repo) as the "destination" and allow the
+    command (issue #944 SR-B-19).
+    """
+    positionals = []
+    target_dir = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--":
+            i += 1
+            continue
+        if a in ("-t", "--target-directory"):
+            if i + 1 < len(args):
+                target_dir = args[i + 1]
+                i += 2
+            else:
+                i += 1
+            continue
+        if a.startswith("--target-directory="):
+            target_dir = a.split("=", 1)[1]
+            i += 1
+            continue
+        if a.startswith("-t") and len(a) > 2:
+            target_dir = a[2:]
+            i += 1
+            continue
+        if is_flag(a):
+            i += 1
+            continue
+        if not is_skippable(a):
+            positionals.append(a)
+        i += 1
+    return positionals, target_dir
+
+
+def inplace_requested(args):
+    for a in args:
+        if a == "--in-place" or a.startswith("--in-place="):
+            return True
+        if a == "-i" or a.startswith("-i."):
+            return True
+        if a.startswith("-") and not a.startswith("--") and a != "-":
+            for c in a[1:]:
+                if c == "i":
+                    return True
+                if c in INPLACE_VALUE_OPTS:
+                    break
+    return False
+
+
+def inplace_operands(args):
+    """Operands that the editor writes: script values are not targets."""
+    operands = []
+    used_e = False
+    skip_next = False
+    for a in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if a in ("-e", "--expression"):
+            used_e = True
+            skip_next = True
+            continue
+        if a.startswith("-e") and len(a) > 2 and not a.startswith("--"):
+            used_e = True
+            continue
+        if a in ("-f", "--file"):
+            skip_next = True
+            continue
+        if a.startswith("-f") and len(a) > 2 and not a.startswith("--"):
+            continue
+        if is_flag(a):
+            continue
+        if not is_skippable(a):
+            operands.append(a)
+    if not used_e and operands:
+        # sed/perl/ruby: the first non-option operand is the script itself.
+        operands = operands[1:]
+    return operands
+
+
+UNRESOLVED_CWD = "\x01"  # marks a relative target under an unknown directory
+
+
+def cd_destination(args, cwds):
+    # Directories a cd/pushd/popd may land in; None = cannot be resolved.
+    positionals = [a for a in args if not (a.startswith("-") and a != "-")]
+    if not positionals:
+        return {expand_home("~")}
+    dest = expand_home(positionals[0])
+    for prefix in ("$PWD", "${PWD}"):
+        # $PWD is whichever directory the command is in: relative to each cwd.
+        if dest == prefix or dest.startswith(prefix + "/"):
+            dest = "." + dest[len(prefix):]
+    if dest == "-" or any(ch in dest for ch in "$`*?[{"):
+        return {None}
+    if os.path.isabs(dest):
+        return {dest}
+    return {os.path.join(c, dest) if c is not None else None for c in cwds}
+
+
+CASE_WORD = re.compile(r"(?<![\w-])(case|esac)(?![\w-])")
+
+
+def subshell_parens(statement):
+    """('(' count, closing ')' positions, masked text, unquoted text).
+
+    The masked text is the statement with every unquoted $(...) replaced by
+    '$_': its body is scanned as separate 'subst' statements, and a 'cd' in
+    'X=$(cd ...)' must not be read as the outer command. Only parens outside
+    quotes, backticks and $(...) count; the ')' of an empty '()' pair
+    (function definition) does not. Positions refer to the masked text.
+    """
+    n = len(statement)
+    opens = 0
+    closes = []
+    masked = []
+    unquoted = []
+    last = ""  # last non-blank unquoted character
+    i = 0
+    while i < n:
+        c = statement[i]
+        if c == "\\":
+            masked.append(statement[i:i + 2])
+            i += 2
+            continue
+        if c in ("'", '"', "`"):
+            j = _skip_quoted(statement, i + 1, c)
+            masked.append(statement[i:j])
+            i = j
+            continue
+        if c == "$" and statement[i + 1:i + 2] == "(":
+            depth, i = 1, i + 2
+            while i < n and depth:
+                ch = statement[i]
+                if ch in ("'", '"'):
+                    i = _skip_quoted(statement, i + 1, ch)
+                    continue
+                depth += (ch == "(") - (ch == ")")
+                i += 2 if ch == "\\" else 1
+            masked.append("$_")
+            continue
+        if c == "(" and not statement[i + 1:].lstrip().startswith(")"):
+            opens += 1
+        if c == ")" and last != "(":
+            closes.append(sum(map(len, masked)))
+        masked.append(c)
+        unquoted.append(c)
+        if not c.isspace():
+            last = c
+        i += 1
+    return opens, closes, "".join(masked), "".join(unquoted)
+
+
+def detect(tokens):
+    """Return (write targets, command word, its arguments) for one statement."""
+    found = []
+
+    # Redirection operators `>`, `>>`, `>|` (and `&>` once the `&` split above
+    # has peeled it); the following token is the write target. shlex emits the
+    # punctuation as single-character tokens, so collapse a run of '>'/'|'
+    # before taking the target ('>> file' must not target '>').
+    i = 0
+    while i < len(tokens):
+        if tokens[i] in (">", ">>", ">|"):
+            j = i + 1
+            while j < len(tokens) and tokens[j] in (">", "|", ">>", ">|"):
+                j += 1
+            if j < len(tokens) and not is_skippable(tokens[j]):
+                found.append(tokens[j])
+            i = j + 1
+            continue
+        i += 1
+
+    # Locate the command with the SHARED resolver (hook_common.sh
+    # hook_shell_resolver_py): keywords, `case … in` arms, function bodies,
+    # grouping, KEY=VALUE assignments, wrappers (with their positional
+    # arity) and a transparent `--` are all handled there, not here. See the
+    # header note for the shapes this closed in v1.5.0.
+    idx = command_start(tokens)
+    cmd = os.path.basename(tokens[idx]) if idx < len(tokens) else ""
+    args = tokens[idx + 1:]
+
+    if cmd in WRITE_ALL:
+        positionals, _target_dir = split_flags(args)
+        found.extend(positionals)
+    elif cmd in WRITE_DEST:
+        positionals, target_dir = split_flags(args)
+        if target_dir is not None:
+            if not is_skippable(target_dir):
+                found.append(target_dir)
+        elif positionals:
+            found.append(positionals[-1])
+    elif cmd == "mv":
+        positionals, _target_dir = split_flags(args)
+        found.extend(positionals)
+    elif cmd == "dd":
+        for arg in args:
+            if arg.startswith("of=") and not is_skippable(arg[3:]):
+                found.append(arg[3:])
+    elif cmd in INPLACE:
+        if inplace_requested(args):
+            found.extend(inplace_operands(args))
+    elif cmd in OUTPUT_OPTS:
+        found.extend(v for v in option_values(args, *OUTPUT_OPTS[cmd]) if not is_skippable(v))
+    elif cmd == "tar":
+        found.extend(v for v in tar_targets(args) if not is_skippable(v))
+    elif cmd == "git":
+        found.extend(v for v in git_clone_targets(args) if not is_skippable(v))
+    return found, cmd, args
+
+
+def judge(found, cwds):
+    for target in found:
+        target = expand_home(target)
+        if os.path.isabs(target):
+            targets.append(target)
+            continue
+        for cwd in cwds:
+            targets.append(UNRESOLVED_CWD + target if cwd is None
+                           else os.path.join(cwd, target))
+
+
+workdir = sys.argv[1] if len(sys.argv) > 1 else ""
+# Every directory the command may be in at this point (#1151 F6-07). A cd
+# joined by '&&' moves the command (it ran only when cd succeeded); after
+# any other separator, a failed cd leaves the old directory in place, so the
+# set is widened instead of replaced. A relative target is judged against
+# every member; an unresolvable member blocks it.
+# A cd inside $(...) or a '( ... )' subshell does not move the outer command:
+# the set is restored once the substitution / subshell ends. Inside, it is
+# tracked as usual (a substitution starts from the directories before AND
+# after its parent statement, and its inner separators count as ';').
+cwds = {workdir}
+before_parent = cwds
+dirstack = []
+subshells = []    # cwds saved at each open '(' subshell
+in_subst = None   # (cwds, len(subshells)) to restore after a substitution run
+case_depth = 0
 targets = []
 
-# Best-effort statement split on shell control operators AND newlines (same
-# approach as orchestrator-guard-impl.sh) so a write target is not attributed
-# across unrelated commands.
-for line in command.split("\n"):
-    for chunk in re.split(r"&&|\|\||;|\||&", line):
-        tokens = tokenize(chunk)
-        if not tokens:
-            continue
+for statement, _heredocs, op in split_shell_statements_with_ops(command):
+    if op == "subst":
+        if in_subst is None:
+            in_subst = (cwds, len(subshells))
+            cwds = cwds | before_parent
+    else:
+        if in_subst is not None:
+            cwds, depth = in_subst
+            del subshells[depth:]
+            in_subst = None
+        before_parent = cwds
+    tokens = tokenize(statement)
+    if not tokens:
+        continue
 
-        # Redirection operators `>`, `>>`, `>|` (and `&>` once the `&` split
-        # above has peeled it); the following token is the write target.
-        i = 0
-        while i < len(tokens):
-            if tokens[i] in (">", ">>", ">|"):
-                if i + 1 < len(tokens) and not is_skippable(tokens[i + 1]):
-                    targets.append(tokens[i + 1])
-                i += 2
-                continue
-            i += 1
+    opens, closes, statement, unquoted = subshell_parens(statement)
+    words = CASE_WORD.findall(unquoted)
+    if case_depth or words:
+        # shortcut: a case arm's ')' looks like a subshell close; inside a
+        # case no subshell is scoped, so a cd there stays in play (over-block).
+        opens, closes = 0, []
+    case_depth = max(0, case_depth + words.count("case") - words.count("esac"))
+    subshells.extend([cwds] * opens)
 
-        # Locate the command, skipping wrapper prefixes and KEY=VALUE tokens.
-        idx = 0
-        while idx < len(tokens):
-            head = os.path.basename(tokens[idx])
-            if head in WRAPPERS or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[idx]):
-                idx += 1
-                continue
-            break
-        if idx >= len(tokens):
-            continue
-        cmd = os.path.basename(tokens[idx])
-        args = tokens[idx + 1:]
+    # Text after the last closing ')' (e.g. '> log' in '(cd x && make) > log')
+    # runs in the directory restored by that close.
+    head, tail = statement, ""
+    if closes:
+        head, tail = statement[:closes[-1]], statement[closes[-1] + 1:]
+    found, cmd, args = detect(tokenize(head))
+    judge(found, cwds)
 
-        if cmd in WRITE_ALL:
-            for arg in args:
-                if not is_skippable(arg):
-                    targets.append(arg)
-        elif cmd in WRITE_DEST:
-            positionals = [a for a in args if not is_skippable(a)]
-            if positionals:
-                targets.append(positionals[-1])
-        elif cmd == "mv":
-            for arg in args:
-                if not is_skippable(arg):
-                    targets.append(arg)
-        elif cmd == "dd":
-            for arg in args:
-                if arg.startswith("of=") and not is_skippable(arg[3:]):
-                    targets.append(arg[3:])
-        elif cmd in INPLACE:
-            inplace = "--in-place" in args or any(
-                a == "-i" or a.startswith("-i.")
-                for a in args
-            )
-            if inplace:
-                positionals = [a for a in args if not is_skippable(a)]
-                for arg in positionals[1:]:
-                    targets.append(arg)
+    if cmd in ("cd", "pushd", "popd"):
+        if cmd == "popd":
+            dest = dirstack.pop() if dirstack else {None}
+        elif cmd == "pushd" and not [a for a in args if not a.startswith("-")]:
+            dest = {None}  # bare pushd swaps the top two stack entries
+        else:
+            dest = cd_destination(args, cwds)
+        if cmd == "pushd":
+            dirstack.append(set(cwds))
+        cwds = dest if op == "&&" else (cwds | dest)
+
+    for _ in closes:
+        if subshells:
+            cwds = subshells.pop()
+    if tail.strip():
+        judge(detect(tokenize(tail))[0], cwds)
 
 for target in targets:
     print(target)
-' 2>/dev/null || true)
+PYEOF
+)
+  _DETECTOR_RC=0
+  WRITE_TARGETS=$(printf '%s' "$BASH_CMD" | "$_PY" -c "$_DETECTOR_SRC" "$WORKDIR" 2>/dev/null) || _DETECTOR_RC=$?
+  if [ "$_DETECTOR_RC" != "0" ]; then
+    echo "REPO_CONTAINMENT: the Bash write-target detector exited rc=$_DETECTOR_RC." >&2
+    echo "Failing closed (#944) — a command the detector cannot evaluate must not be allowed." >&2
+    exit 2
+  fi
 
   BLOCKED_TARGET=""
   BLOCKED_REASON="outside"
   if [ -n "$WRITE_TARGETS" ]; then
     while IFS= read -r candidate; do
       [ -n "$candidate" ] || continue
+      # Relative target after a cd/pushd the detector cannot resolve
+      # ('cd "$DIR"', 'cd -', popd): its real location is unknown (#1151 F6-07).
+      if [ "${candidate:0:1}" = $'\x01' ]; then
+        BLOCKED_TARGET="${candidate:1}"
+        BLOCKED_REASON="cwd-unknown"
+        break
+      fi
       case "$(containment_verdict "$candidate")" in
         ALLOW) ;;
         BLOCK_SINK)

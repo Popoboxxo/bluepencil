@@ -9,12 +9,12 @@ niemand implementiert Security-Logik selbst neu.
 
 | Block | Abdeckt | Eigentümer-Agent |
 |-------|---------|------------------|
-| `auth-flow` | Authentifizierung (Login, Session, Token) | `security-auditor` |
+| `auth-flow` | Authentifizierung (Login, Session, Token) | *(keine aktive Eigentümer-Rolle)* |
 | `dependency-check` | SBOM + CVE-Scan der Abhängigkeiten | `dependency-auditor` |
-| `input-validation` | Eingabevalidierung (Schema, Sanitizing) | `security-auditor` |
+| `input-validation` | Eingabevalidierung (Schema, Sanitizing) | *(keine aktive Eigentümer-Rolle)* |
 | `rate-limiting` | Rate-Limiting / Throttling | `devops-engineer` |
-| `cors-config` | CORS-Konfiguration | `security-auditor` |
-| `secret-scanning` | Secret-Scan (Leaks in Diffs, Commits, Logs) | `security-auditor` |
+| `cors-config` | CORS-Konfiguration | *(keine aktive Eigentümer-Rolle)* |
+| `secret-scanning` | Secret-Scan (Leaks in Diffs, Commits, Logs) | *(keine aktive Eigentümer-Rolle)* |
 
 ## Enforcement
 
@@ -23,5 +23,5 @@ niemand implementiert Security-Logik selbst neu.
 - **Für neue Features:** den `auth-flow`-Block nutzen statt Auth selbst zu bauen.
 
 DIY-Security ist eine Anti-Pattern: jede Variante erzeugt unbekannte Lücken.
-Abweichungen vom Block-Katalog werden als Review-Befund von `security-auditor`
+Abweichungen vom Block-Katalog werden als Review-Befund
 gemeldet, nicht als Eigenbau gerechtfertigt.

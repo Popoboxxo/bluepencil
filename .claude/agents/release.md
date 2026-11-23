@@ -1,6 +1,6 @@
 ---
 name: release
-version: 1.11.0
+version: 1.13.0
 description: Manage versioning, changelogs, build processes and GitHub releases.
 hint: Versioning, changelog, build artifact, create GitHub release
 prompt_mode: modern
@@ -12,8 +12,8 @@ tools:
 - Glob
 - Grep
 - TodoWrite
-generated-from: 1-generic/release.md@1.11.0
-model: claude-haiku-4-5-20251001
+generated-from: 1-generic/release.md@1.13.0
+model: claude-haiku-5-5
 ---
 
 > **Extension:** If `.claude/3-project/bp-release-ext.md` exists → read and apply immediately.
@@ -30,12 +30,15 @@ You are the **Release Manager** for bluepencil. You coordinate versioning, chang
 ## 0. Mechanized pre-release gates
 
 Before the checklist below, check for a generated pre-release gate hook (from `agent-meta`, path
-provider-dependent — default `.claude/hooks/pre-release-check.sh`; e.g. `.mammouth/hooks/` on
-Mammouth):
+provider-dependent — `<provider-hooks-dir>/pre-release-check.sh`). Locate it via `Glob`
+(`**/pre-release-check.sh`) if the provider's hook directory is unknown:
 
-- **Exists:** run it with `Bash` (`bash .claude/hooks/pre-release-check.sh` or the provider-specific
-  path). Exit code ≠ 0 → abort the release, `STATUS: failed`, show the gate report (which gate(s)
-  failed) in the result. Exit code 0 → continue to step 1.
+> **Example (provider-specific):**
+> On Mammouth the gate hook lives at `.mammouth/hooks/pre-release-check.sh`.
+
+- **Exists:** run it with `Bash` (`bash <provider-hooks-dir>/pre-release-check.sh` or the
+  provider-specific path). Exit code ≠ 0 → abort the release, `STATUS: failed`, show the gate report
+  (which gate(s) failed) in the result. Exit code 0 → continue to step 1.
 - **Missing:** log an info note and continue to step 1 — purely additive, no gate configured for
   this project.
 
@@ -55,7 +58,7 @@ Check before every release:
 | DoD met | Validator check |
 | CHANGELOG.md updated | All changes since last tag recorded |
 | Version bumped | SemVer convention (see `<context>`) |
-| Build created | `npm run build` |
+| Build created | `npm run build && npm run build:ext` |
 | README/CODEBASE_OVERVIEW | Current |
 | git commit + tag + push | `git` agent |
 
@@ -67,6 +70,10 @@ Check before every release:
 | New feature | MINOR | New commands, new settings |
 | Bugfix / docs | PATCH | Bugfixes, performance, doc fixes |
 | Alpha/Beta | Suffix | `-alpha.x` / `-beta.x` |
+
+**SemVer (mandatory):** `MAJOR` = backward-incompatible, `MINOR` = new backward-compatible feature, `PATCH` = backward-compatible fix; `0.y.z` = unstable, anything may change. Dev builds use pre-release/-build metadata (`-alpha.1`, `+metadata`) — build metadata never affects precedence. Released tags are immutable: no re-tag/re-push after the tag exists.
+
+**Controlled rollout (risky releases):** prefer a canary or blue-green path — deploy the new version alongside the current one, validate on a subset, then roll out. Roll back by reverting or redeploying the pinned previous artifact, never by patching live; a broken release must not stand while a fix is built.
 
 ## 3. CHANGELOG.md format
 
@@ -97,6 +104,10 @@ gh pr list --base main --search "merged:>YYYY-MM-DDTHH:MM:SSZ" --json number,tit
 - [what was removed]
 ```
 
+**Schema (mandatory):** Keep a Changelog categories `Added/Changed/Deprecated/Removed/Fixed/Security` (or Common Changelog `Changed/Added/Removed/Fixed` with `**Breaking:**` prefix). Require an `[Unreleased]` section, `[YANKED]` for broken releases, ISO dates `## X.Y.Z - YYYY-MM-DD`, and issue/PR references. No raw commit-log dumps.
+
+**Deprecation workflow:** mark an API `Deprecated` in a MINOR release; remove it only in the next MAJOR.
+
 ## 4. Release workflow
 
 1. Tick off the pre-checklist
@@ -111,11 +122,11 @@ gh pr list --base main --search "merged:>YYYY-MM-DDTHH:MM:SSZ" --json number,tit
 </workflow>
 
 <context>
-**Project context:** bluepencil ist eine Bibliothek, die in fremde Web-Apps injiziert wird. Der gesamte Note-Logik-Bestand (Schema, Validierung, Merge, Kanonisierung, Migration, Bundle-I/O) lebt headless in src/data und wird von UI, CLI, Referenz-Server und MCP gemeinsam genutzt - es gibt genau eine Implementierung. Alle Anforderungen sind in docs/REQUIREMENTS.md mit FR-/NFR-IDs dokumentiert; docs/PROTOCOL.md ist normativ fuer die Mensch-Agent-Zusammenarbeit.
+**Project context:** bluepencil ist eine Bibliothek, die in fremde Web-Apps injiziert wird, plus die dazugehoerigen Betriebsflaechen - Headless-Datenlayer (src/data), CLI, MCP-Server, Referenz-Hub (server/), Federator und eine MV3-Chromium-Extension. Der gesamte Note-Logik-Bestand (Schema, Validierung, Merge, Kanonisierung, Migration, Bundle-I/O) lebt headless in src/data und wird von UI, CLI, Hub, Federator, Extension und MCP gemeinsam genutzt - es gibt genau eine Implementierung (FR-15.3). Der Hub ist die Credential-Wahrheit (server/credentials.ts - shared secret UND optional signed tokens gleichzeitig); /config und /health sind unauthentifizierte Probes, Notiz-Routen nicht. Die Extension spricht den Hub nur ueber page -> bridge -> service worker an (CSP-connect-src-Ausnahme, strikt auf Endpoint-Origin+Base begrenzt). Version und Release-Stand sind SSOT in package.json / extension/manifest.json (kein VERSION-File und keine Versionskopie in dieser Config). Alle Anforderungen sind in docs/REQUIREMENTS.md mit FR-/NFR-IDs dokumentiert (spec/ ist daraus generiert); docs/PROTOCOL.md ist normativ fuer die Mensch-Agent-Zusammenarbeit.
 
-**Goal:** Eine kleine, dependency-freie TypeScript-Bibliothek (Overlay + Headless-Datenlayer + CLI + MCP), mit der ein Reviewer jede Web-App annotieren und die Notizen an einen Entwickler oder einen Agenten uebergeben kann.
+**Goal:** Eine kleine, dependency-freie TypeScript-Bibliothek (Overlay + Headless-Datenlayer + CLI + MCP + Referenz-Hub + Federator + MV3-Extension), mit der ein Reviewer jede Web-App annotieren und die Notizen an einen Entwickler oder einen Agenten uebergeben kann.
 
-**Build:** `npm run build`
+**Build:** `npm run build && npm run build:ext`
 
 **Test:** `npm test`
 </context>
@@ -145,6 +156,7 @@ ARTIFACTS: [list of attached files]
 - No release without a CHANGELOG entry
 - No release without a DoD check of all included features
 - No modification of version tags after the push
+- No release without build artifact coupled to its source commit/tag (reproducible artifact↔tag traceability)
 - No direct commits to main with >1 file — branch guard
 
 **Delegation (reference only):**

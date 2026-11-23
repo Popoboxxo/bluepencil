@@ -9,7 +9,7 @@ description: "Use when delegating to subagents with A2A envelopes — covers dep
 
 1. **No Self-Handoff / No Re-Delegation:** Ein `payload`, der mit "Du bist..." beginnt, ist ein Re-Delegations-/Spec-Dump-Versuch → HARD REJECT.
 2. **Orchestrator-Singleton:** NUR `main_chat` darf den `orchestrator` spawnen. Worker → `orchestrator` → HARD REJECT (siehe `singleton-orchestrator-architecture.md`).
-3. **Execution-Trace-Isolation:** Worker-Output muss strukturiert sein (STATUS, RESULT, ARTIFACTS). Keine rohen Logs propagieren.
+3. **Execution-Trace-Isolation:** Worker-Output muss strukturiert sein (STATUS, RESULT, ARTIFACTS). Keine rohen Logs propagieren. Ein Worker-Lauf, der ohne diesen Abschluss-Report endet, gilt als `failed`.
 
 ## Degradierte Checks (Doku-Pflicht, kein Gate — Issue #346)
 
@@ -19,9 +19,30 @@ den praktischen Fehlerfall ab:
 
 | Check | Status | Begründung |
 |---|---|---|
-| `delegation_depth ≤ 10` | dokumentiert | Die Plattform (z.B. Claude Code) erzwingt Tiefenlimits ohnehin; eigene Prüfung ist redundant. Referenz: `docs/concepts/a2a-handoff-protocol.md` |
-| `payload.t ≤ 300 Zeichen` | dokumentiert | Empfehlung für prägnante Task-Zeilen; der Re-Delegation-Check (Punkt 1) deckt den eigentlichen Fehlerfall (Spec-Dump) ab |
-| `max_depth` via project.yaml (`orchestrator.delegation.max_depth`) | dokumentiert | Toter Konfigurationsraum bei einem 2-Ebenen-Repo; der enforced-Pfad wurde aus `validate_envelope()` entfernt, der Doku-Verweis bleibt |
+| `delegation_depth ≤ 10` | dokumentiert | Die Plattform (z.B. Claude Code) erzwingt Tiefenlimits ohnehin; eigene Prüfung ist redundant. |
+| Plattform-Tiefenlimit | Hinweis | Laut Plattform-Doku (Claude Code, in diesem Repo nicht verifiziert): Subagenten schachteln bis 3 Ebenen unter dem Main Chat; änderbar über die Env-Var `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH`. |
+| `max_depth` via project.yaml (`orchestrator.delegation.max_depth`) | live (Soft Gate) | sync liest den Key (Default 10, geklemmt 1–50) in `A2A_MAX_DEPTH`; der Orchestrator rendert ihn als Soft Gate `depth>10`. Kein Hard-Reject: der enforced-Pfad wurde aus `validate_envelope()` entfernt |
+
+## Schema-erzwungen: `payload.t ≤ 300 Zeichen` (Issue #812)
+
+Das Task-Zeilen-Limit ist **kein** reiner Doku-Check mehr, sondern maschinell hinterlegt:
+
+- **JSON Schema:** `schemas/a2a-handoff.schema.json` deklariert `maxLength: 300`
+  für `payload.t` (Einzel-Envelope) und für jeden Batch-Eintrag `payload[].t`; das
+  universelle Payload-Schema `schemas/handoffs/task-spec.schema.json` trägt dasselbe Limit
+  für `t`. Jede Schema-Validierung (z.B. via `jsonschema`) weist überlange Task-Zeilen ab.
+- **Validator:** `validate_envelope()` in `scripts/lib/delegation_syntax.py` prüft die Länge
+  zusätzlich stdlib-only (ohne `jsonschema`) und meldet getrennt `payload.t` bzw.
+  `payload[<index>].t` mit einem klaren Fehler.
+- **Eine Quelle:** Das Limit stammt aus `orchestrator.handoff.t-size-limit` (Default 300),
+  aufgelöst über `resolve_a2a_t_size_limit()` in `scripts/lib/config.py` — dieselbe Quelle
+  wie der Platzhalter `300`. Ein Konsistenztest bindet Schema-`maxLength`
+  und Framework-Default aneinander.
+
+> Laufzeit-Hinweis: `validate_envelope()` bleibt eine manuell aufrufbare Utility ohne
+> automatischen Dispatch-Interception-Punkt (siehe „Bekannte Grenzen"). Das Schema-Limit
+> greift überall dort, wo ein Envelope tatsächlich schema-validiert wird; der
+> Prompt-Appell bleibt für den normalen Dispatch bestehen.
 
 ## Per-Task-Tier: `payload.tier_override` (optional — Issue #346)
 
@@ -31,8 +52,17 @@ Rolle→Tier-Auflösung (`role-defaults.yaml` → `model`) nur für genau diesen
 **Guardrails (Referenz-Implementierung: `resolve_tier_override()` in `scripts/lib/delegation_syntax.py`):**
 
 1. **Preset-Bounds:** Der Tier-Name muss im aktiven tier-preset existieren (`config/tier-presets.yaml` — globales `tiers:` plus `providers.<provider>.tiers` wenn Provider-Kontext vorliegt). Unbekannter Tier oder Tier außerhalb des Presets → Override wird verworfen, Fallback auf Rollen-Default.
-2. **Kein Downgrade sicherheitskritischer Rollen:** Rollen aus `tier-override-policy.security-critical-roles` (`config/role-defaults.yaml`; Default: `security-auditor`, `code-reviewer`) können per Override nur gleich- oder höhergestuft werden.
+2. **Kein Downgrade sicherheitskritischer Rollen:** Rollen aus `tier-override-policy.security-critical-roles` (`config/role-defaults.yaml`; Default: `code-reviewer`) können per Override nur gleich- oder höhergestuft werden.
 3. **Audit-Log-Pflicht:** Jeder Override-Versuch — angenommen ODER abgelehnt — wird im Delegations-Tracker/Checkpoint protokolliert: `tier_override=<tier> (applied|rejected: <reason>)`.
+
+## Runtime-Enforcement-Tier: `hook`
+
+Ob der `# CRITICAL GATE` („MAIN CHAT darf nicht selbst editieren") auf diesem
+Provider per Runtime-Gate (`hook`/`plugin`), nur partiell über den
+Permission-Layer (`permission`, ohne Delegations-Provenienz) oder rein
+prompt-basiert (`advisory`) durchgesetzt wird, nennt das Tier
+`hook`. Die konkreten Grenzen dieses Schutzes stehen unter
+„Bekannte Grenzen".
 
 ## Bekannte Grenzen
 

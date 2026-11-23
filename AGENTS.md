@@ -89,7 +89,7 @@ automatisch via esbuild watch
 
 ## Anforderungs-Kategorien
 
-Kategorien für `docs/REQUIREMENTS.md`:
+Kategorien für Anforderungen (`docs/REQUIREMENTS.md`):
 
 - Capture & Anchoring (FR-1.x, FR-2.x)
 - Note-Modell & Protokoll (FR-3.x, FR-5.x, PROTOCOL.md)
@@ -103,7 +103,7 @@ Kategorien für `docs/REQUIREMENTS.md`:
 <!-- agent-meta:managed-begin -->
 > **AI ROUTING:** Claude -> CLAUDE.md | Opencode -> AGENTS.md
 > **ENTRY:** `orchestrator`-Agent (für alle Dev-Tasks).
-`agent-meta v2.0.0-beta.6` | DoD: `standard` | REQ-Trace: `false`
+`agent-meta v2.0.0-beta.9` | DoD: `standard` | REQ-Trace: `false`
 
 
 
@@ -115,35 +115,25 @@ Verwende Feature-Branches (`feat/`, `fix/`, `chore/`). Keine Code-Änderungen di
 
 ## Guard-Terminologie: Convention Boundary vs. Security Boundary
 
-Guards im System (Orchestrator-Guard, DoD-Push-Check, etc.) werden inkonsistent als
-"Konventions-Tool" und als "security boundary" bezeichnet — beide Aussagen sind korrekt,
-aber gegen unterschiedliche Bedrohungsmodelle:
-
-- **Convention boundary**: fail-closed gegen AKZIDENTIELLEN Missbrauch (Tippfehler,
-  vergessene Bestätigungen, naive Automatisierung). Nicht darauf ausgelegt, einen
-  gezielten Bypass-Versuch zu widerstehen (siehe Lücken unten, z.B. #592).
+- **Convention boundary**: fail-closed gegen AKZIDENTIELLEN Missbrauch (Tippfehler, vergessene Bestätigungen, naive Automatisierung); kein Schutz gegen gezielten Bypass.
 - **Security boundary**: fail-closed gegen einen DELIBERATEN Umgehungsversuch.
 
-Diese Definition ist die zentrale Referenz — Hook-Header und andere Doku sollen sie
-verlinken (`.claude/rules/branch-guard.md#guard-terminologie-convention-boundary-vs-security-boundary`)
-statt sie ad hoc zu wiederholen.
+## Submodule-Pushes (`--recurse-submodules=on-demand|only`)
 
-`orchestrator-guard.sh` ist primär eine **convention boundary** (siehe Lücken unten),
-mit einzelnen **security-boundary**-Eigenschaften für spezifische Fälle (z.B. das
-Destructive-Gate aus #516/#809, das auch bei gültigem `git`-Sentinel blockt). `dod-push-check.sh`
-ist als **security boundary** gegen fehlendes/kaputtes `python3` fail-closed (#595).
+Bei `=on-demand`/`=only` prüft der DoD-Push-Check jedes Submodul gegen sein
+eigenes Push-Ziel (#1051). Ein geschütztes **oder** unbestimmbares Ziel
+blockiert (fail closed); die Meldung nennt Submodul, Ziel und Ausweg (ohne
+`--recurse-submodules` pushen, dann auf einen Feature-Branch). Ohne
+`.gitmodules` unverändert.
 
 ## Bekannte Grenzen
 
-Die technische Durchsetzung (`orchestrator-guard.sh`) erkennt Git-Mutationen über eine tokenisierte Analyse des Bash-Befehls (gemeinsamer Tokenizer für Destructive- und Mutation-Gate, Issue #551), kein vollständiger Shell-Parser. Das Destructive-Gate deckt zusätzlich die kanonischen Shell-Katastrophen ab (Issue #809): rekursives `rm` auf einem gefährlichen Root (`/`, `~`/`$HOME`, Top-Level-Systemverzeichnisse wie `/etc`) sowie eine rekursive Fork-Bomb (`` :(){ :|:& };: ``). Benigne In-Repo-Löschungen (`rm -rf .tmp/...`) bleiben erlaubt. Bekannte Lücken:
-
-1. `eval "git commit ..."` wird nicht erkannt.
-2. Direkte Schreibzugriffe auf `.git/` werden nicht geprüft.
-3. Andere Git-Tools (`hub`, `gh repo ...`) sind nicht erfasst.
-4. Command-Substitution und Indirektion (`$(...)`, Backticks, `xargs`, `eval`) können eine Git-Mutation am Tokenizer vorbeischleusen, weil der Hook den Befehl weder ausführt noch die Shell vollständig parst (Issue #592). Ein echter Shell-Interpreter wäre unverhältnismäßig für ein Konventions-Tool. Für das FS-Destructive-Gate (#809) gilt dasselbe: nur direkte `rm`-Aufrufe (ggf. hinter `sudo`/`env`/KEY=VALUE) werden erkannt; indirekte Löschungen (`find ... -delete`, `xargs rm`, Variablen-/`$(...)`-Expansion eines Pfads, gequoteter ANSI-C-Pfad, `rm` über einen Wrapper-Alias), Pfad-Traversal (`rm -rf /var/tmp/../etc`) sowie eine als String-Literal gequotete `:(){ :|:& };:`-Definition bzw. indirekte Fork-Bombs (`eval`, base64) bleiben möglich — ein Tippfehler-/Akzident-Netz, kein Ersatz für Backups.
-5. Der Fork-Bomb-Scan des Destructive-Gates beendet den Funktionskörper am ersten ungequoteten `}` (keine Verschachtelung): Bomben mit `${…}` oder `{ …; }` vor dem Selbstaufruf (z. B. `f(){ : ${x}; f|f& };f`) werden nicht erkannt. Ein Funktionskörper ohne ungequotetes `}` in den ersten 512 Zeichen wird dagegen geblockt (fail-closed, mögliche Fehlalarme). Fix: Folge-Issue.
-
-Bewusster Trade-off, kein Bug (siehe Kommentar-Header in `.claude/hooks/orchestrator-guard.sh`) — nur relevant für Nutzer, die sich vollständig auf den Schutz statt auf die Konvention verlassen.
+Erkennung per Tokenizer, kein Shell-Parser — Indirektion (`eval`, `$(...)`, `xargs`) bleibt unerkannt.
+Nicht erkannt (#551/#592/#809): `eval "git commit ..."`, direkte Schreibzugriffe auf `.git/`, andere Git-Tools (`hub`, `gh repo ...`), `$(...)`/Backticks als Indirektion.
+Das Destructive-Gate (#809) sieht nur direkte `rm`-Aufrufe (kein `find -delete`, `xargs rm`, Variablen-Pfade, Pfad-Traversal).
+Der DoD-Push-Check (Worktree-Branch-Erkennung) nimmt den Branch aus dem effektiven Verzeichnis des Pushs (`-C`-Kette bzw. führendes `cd`, sonst Hook-cwd; Worktrees zählen). Nur ein FÜHRENDES `cd` wird aufgelöst; nicht auflösbare Ziele, `pushd`/`popd`, `--git-dir`/`--work-tree` und `GIT_DIR` bleiben fail-closed.
+Gequoteter Text von Nicht-Git-Textkonsumenten (`gh ... --body "...git push..."`, `echo`, `printf`) gilt nicht als Push; Indirektion über `bash -c`/`eval`/`xargs` und `gh alias --shell` bleibt fail-closed bzw. bekannte Grenze.
+Einstufung: Convention boundary (Akzident-Netz, kein Ersatz für Backups); Security-Eigenschaften nur für das Destructive-Gate und den DoD-Push-Check (fail-closed ohne `python3`, #595).
 
 
 
@@ -196,7 +186,8 @@ Alle Agenten müssen direkt im Projektverzeichnis arbeiten (Isolation deaktivier
 # Repo-Containment („Gefängnis-Modus")
 
 Repo-Containment ist AKTIV: Schreibzugriffe sind auf die Projekt-Wurzel beschränkt; einziger sanktionierter Ausnahmebereich ist `.tmp/`.
-Durchsetzung: PreToolUse-Hook = **Convention boundary** (keine Security Boundary, nur gegen akzidentellen Missbrauch; Definition: `.claude/rules/branch-guard.md#guard-terminologie-convention-boundary-vs-security-boundary`). Grenzen/Details: `docs/concepts/repo-containment-prison-mode.md`.
+Durchsetzung: PreToolUse-Hook = **Convention boundary** (keine Security Boundary, nur gegen akzidentellen Missbrauch; Convention boundary = fail-closed nur gegen akzidentellen Missbrauch, Security boundary = auch gegen deliberate Umgehung).
+Kerngrenzen: Indirektion (`eval`, `bash -c`, `xargs`, Interpreter, Variablen-Ziele) und exotische Redirections/`cd`-Ketten umgehen den Tokenizer; Symlink-/TOCTOU-Escape ist nur per `realpath` gemildert; MCP-/Nicht-Tool-Schreibpfade und Selbst-Deaktivierung des Guards durch den Agenten sind nicht abgedeckt; hook-lose Provider erhalten nur die Prompt-Konvention.
 
 
 
@@ -266,19 +257,28 @@ CISO Lovable):
 | session-conclusion | Feature-Abschluss |
 | provider-agnostic | agents/1-generic editieren |
 | mcp-viz-logger | viz-logger Event-Logging |
+| se-cascade-adr-standard | ADRs in aktiver SE-Kaskade |
+| se-cascade-artifact-taxonomy | SE-Artefakte, Ablageorte, Namensregeln |
+| se-cascade-review-lifecycle | Reviews in aktiver SE-Kaskade |
 
 Harte MCP-Tool-Verbote: siehe `mcp-guardrails.md` (always-on).
 
 
 
 # CRITICAL GATE (runtime-partially enforced)
-MAIN CHAT darf nicht selbst editieren. ALLES -> `orchestrator`.
+Der `orchestrator` ist in diesem Projekt der Session-Einstieg (`strict` verlangt das).
+Eine Session im Main Chat erfüllt dieses Gate nur, wenn sie jede Entwicklungsaufgabe an
+den `orchestrator` delegiert — vorausgesetzt, der Provider lässt diesen Start aus dem
+Main Chat zu — oder wenn der Nutzer `orchestrator.mode: main-chat` setzt (dann ist der
+Main Chat Router + Worker).
 Provider-native Permissions block Main-Chat-Writes; Delegations-Provenienz ist
 NICHT erzwungen (Prompt + Permission-Layer).
 
-**Spec/Plan-Gate (Convention boundary):** Auch Nicht-Pipeline-Anfragen (Ad-hoc-Dispatch, `quick-fix`, `bugfix`) erst über die Classify-Route (`S`/`M`/`L`/`XL`) führen — kein Direkteinstieg in die Implementierung ohne freigegebene Spec/Plan (`Status: APPROVED`). Details: Master-Rule `spec-plan-workflow`.
+**Spec/Plan-Gate (Convention boundary):** Auch Nicht-Pipeline-Anfragen erst über die Classify-Route (`S`/`M`/`L`/`XL`) führen. Ad-hoc-Dispatches, `quick-fix` und `bugfix` haben keine Classify-/Approve-Stage — der Orchestrator klassifiziert sie regelbasiert vor dem Dispatch: S-Klasse ohne Artefakt direkt, M/L/XL erst nach freigegebener Spec/Plan (`Status: APPROVED`). Details: Master-Rule `spec-plan-workflow`.
 ## Git Delegation
-Git Mutationen (commit, push, add etc) -> `git` Agent. Read-only (status, log) im Main Chat ok.
+Git Mutationen (commit, push, add etc) -> `git` Agent. Strict-Mode: der Main Chat führt kein Bash aus, auch kein read-only Git (status, log) — Git-Lesezugriffe über einen Subagenten.
+**Merge-Muster (#1172):** Main Chat dispatcht Merges direkt an `git` (Fallback; #783).
+Worker-Subagenten ohne `git`-Sentinel können auch `git init`, schreibendes `git config` und `git stash` nicht ausführen (Orchestrator-Guard-Mutationsliste).
 
 Native Extensions (Skills/Hooks) erlaubt, ignorieren nicht Branch-Guard/DoD.
 Skill-getriebene Sub-Agent-Loops (z.B. generische Harness-Skills wie `subagent-driven-development`) sind KEINE dritte Ausnahme von der Orchestrator-Pflicht: ein Skill darf einen bereits vom `orchestrator` gestarteten Loop ausführen, aber niemals selbst zum Einstiegspunkt für einen neuen Dev-Task werden. Einzige Ausnahmen bleiben User-Override.
@@ -318,7 +318,7 @@ Bei Bedarf mit `Read` laden; verfügbare Regeln via `ls` im jeweiligen Verzeichn
 | `documenter` | CODEBASE_OVERVIEW, ARCHITECTURE, README |
 | `e2e-tester` | E2E-Tests, visuelle Regression, Accessibility-Audits via Playwright |
 | `effort-estimator` | Schätzt Aufwände für Entwicklungsaufgaben basierend auf Task-Typ, LLM-Kali |
-| `explorer` | Read-only Codebase-Recherche, Dependency, Impact-Mapping |
+| `explorer` | Codebase-Recherche, Dependency, Impact-Mapping |
 | `feedback` | Projekt-Feedback standardisieren: Bugs, Features, Verbesserungen als GitHub I |
 | `frontend-component-engineer` | Screen-Spec + Token-Contract → produktionsreife UI-Komponenten |
 | `git` | Commits, Branches, Tags |

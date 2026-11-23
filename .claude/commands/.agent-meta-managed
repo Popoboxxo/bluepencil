@@ -13,8 +13,10 @@ feedback.md
 merge.md
 open-docs.md
 pipelines.md
+release-check.md
 report-bug.md
 set-preset.md
+set-release-checklist.md
 test-orchestration.md
 update-extensions.md
 update-meta.md

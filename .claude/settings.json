@@ -14,7 +14,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/dod-push-check.sh"
+            "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/dod-push-check.sh"
           }
         ],
         "matcher": "Bash"
@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/orchestrator-guard.sh"
+            "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/orchestrator-guard.sh"
           }
         ]
       },
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/repo-containment.sh"
+            "command": "bash ${CLAUDE_PROJECT_DIR}/.claude/hooks/repo-containment.sh"
           }
         ]
       }

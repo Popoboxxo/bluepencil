@@ -7,10 +7,20 @@
       "type": "local",
       "enabled": true,
       "command": [
-        "python",
+        "python3",
         "scripts/viz-logger.py",
         "--mcp"
       ]
     }
-  }
+  },
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "edit": {
+      "**": "deny"
+    },
+    "bash": {
+      "**": "deny"
+    }
+  },
+  "default_agent": "orchestrator"
 }
