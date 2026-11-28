@@ -706,8 +706,13 @@ export type LauncherFormat = "html" | "json";
 const LAUNCHER_FORM_TYPE = "application/x-www-form-urlencoded";
 
 /** The CSP of every launcher HTML answer (spec §6): no script, no external resource, no framing. */
-const LAUNCHER_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+function launcherCsp(context: HandlerContext): string {
+  const viewerOrigin = context.viewer?.origin;
+  // The form action itself stays same-origin. A successful POST answers 303 to the configured
+  // viewer origin, and Chromium applies form-action to that redirect too (#163).
+  const formAction = viewerOrigin === undefined ? "'self'" : `'self' ${viewerOrigin}`;
+  return `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; frame-ancestors 'none'; base-uri 'none'`;
+}
 
 /** The JSON message of a refused secret — unchanged since 0.14.0 (AC-L03/L11 keep this body). */
 const LAUNCHER_INVALID_MESSAGE =
@@ -827,8 +832,11 @@ function launcherPageAnswer(
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
       "x-frame-options": "DENY",
-      "content-security-policy": LAUNCHER_CSP,
-      "referrer-policy": "no-referrer",
+      "content-security-policy": launcherCsp(context),
+      // Fetch serializes a native form POST as `Origin: null` under `no-referrer`, which the
+      // launcher's CSRF gate must refuse. `origin` keeps that header truthful while still stripping
+      // path and query from the Referer. Redirect/ticket/viewer answers keep `no-referrer`.
+      "referrer-policy": "origin",
       ...extra,
     },
     body: renderLauncherHtml(launcherStrings(request), {

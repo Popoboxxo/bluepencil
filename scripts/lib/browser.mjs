@@ -109,6 +109,8 @@ export class Browser {
   #session = null;
   #child;
   #stderr = [];
+  #networkRequests = [];
+  #networkResponses = [];
 
   constructor(child) {
     this.#child = child;
@@ -210,6 +212,14 @@ export class Browser {
       index = this.#buffer.indexOf(0);
       if (text.trim() === "") continue;
       const message = JSON.parse(text);
+      if (message.method === "Network.requestWillBeSent" && message.sessionId === this.#session) {
+        this.#networkRequests.push(message.params.request);
+        if (this.#networkRequests.length > 200) this.#networkRequests.shift();
+      }
+      if (message.method === "Network.responseReceived" && message.sessionId === this.#session) {
+        this.#networkResponses.push(message.params.response);
+        if (this.#networkResponses.length > 200) this.#networkResponses.shift();
+      }
       const waiter = message.id === undefined ? undefined : this.#pending.get(message.id);
       if (!waiter) continue;
       this.#pending.delete(message.id);
@@ -233,6 +243,21 @@ export class Browser {
 
   async navigate(url) {
     await this.send("Page.navigate", { url }, this.#session);
+  }
+
+  /** Enables request/response observation for native-browser contract tests. */
+  async enableNetwork() {
+    await this.send("Network.enable", {}, this.#session);
+  }
+
+  /** Requests seen on the attached page since launch (bounded to the latest 200). */
+  networkRequests() {
+    return this.#networkRequests.map((request) => ({ ...request, headers: { ...request.headers } }));
+  }
+
+  /** Responses seen on the attached page since launch (bounded to the latest 200). */
+  networkResponses() {
+    return this.#networkResponses.map((response) => ({ ...response, headers: { ...response.headers } }));
   }
 
   /**

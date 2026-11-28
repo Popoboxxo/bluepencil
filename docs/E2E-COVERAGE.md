@@ -1,7 +1,7 @@
 # End-to-end coverage
 
 This file is the binding coverage matrix for every bluepencil end-to-end surface. The runner manifest
-has **15 components**; this table documents **20 coverage IDs** (surfaces), because one component can
+has **16 components**; this table documents **21 coverage IDs** (surfaces), because one component can
 cover more than one public surface — `federation` covers `federator` and `aggregating-hub`, `auth`
 covers `hub-auth` and `hub-mcp-door`, and `pack` and `install` both cover `pack-install`.
 It is machine-read by `scripts/components-e2e.mjs`: the runner extracts the coverage IDs between the
@@ -22,6 +22,7 @@ feature is new: several of these suites are new in 0.10.0 while the behaviour th
 | `library-iife` | IIFE build (`dist/bluepencil.iife.js`, `window.bluepencil`) | `init`, `enable`, `disable`, `export`, `notes()` | `npm run smoke:e2e` → `tests/e2e/vanilla.e2e.mjs` | Fixture mounts the bar and an empty store; `c`, `d`, `l`, `f` arm the documented modes; a seeded bundle imports once and a second import adds nothing; a text capture survives a reload and a design capture is exported with its captured context; the markdown export is byte-stable across two exports while the JSON export is parsed and shape-checked; three enable/disable cycles leave no residue and keep the notes. | build, browser | covered |
 | `element` | `<bluepencil-notes>` custom element | `endpoint` and `environment` attributes, `blueprint.store`, `destroy` | `npm run smoke:embed` → `scripts/embed-smoke.mjs` | A jsdom element with `endpoint` creates and lists a note through the live hub; the note reaches the canonical store file on disk; the element emits no `bp-error`. | build | covered |
 | `attach-js` | One-tag loader (`dist/attach.js`, `dist/attach.esm.js`) | `attach()`, `attachFromDocument`, script-tag attributes | `npm run smoke:embed` → `scripts/embed-smoke.mjs` | Manifest fetch checks the sha256 and refuses a wrong digest; mount honours the `mount` selector and stamps `attach-version`; a real version swap remounts exactly one element and emits one `bp-attach-updated`; an unchanged manifest does not swap; the real script tag moves 0.9.0 to 0.9.1 with no leftover layer; the browser fixture host writes through the same HTTP path. | build, browser | covered |
+| `viewer-launcher` | Viewer launcher on the hub origin | Native HTML form POST, `Referrer-Policy`, CSP `form-action`, `Origin` gate | `npm run smoke:viewer-launcher` → `tests/e2e/viewer-launcher.e2e.mjs` | The hub's own form sends the real hub Origin and reaches `401` for an empty secret; a foreign-origin form still sends its foreign Origin and is refused with `403`; a generated valid secret returns `303`, follows the CSP-allowed viewer redirect and opens the viewer session. | build, browser | covered |
 | `bookmarklet` | Bookmarklet arrival path (post-load inline IIFE) | Injected `<script>` plus `bluepencil.init({…})` | `npm run smoke:bookmarklet` → `scripts/bookmarklet-smoke.mjs` | The document is complete before injection; `init()` with an `enabled` gate does not auto-mount; a real-UI capture reaches the panel, marker and markdown export; `disable()` leaves no `bp-` nodes and a second `enable()` restores the markers; a strict `script-src 'self'` blocks the injection, reports a violation and mounts nothing. | build, browser | covered |
 | `extension` | MV3 browser extension | Toolbar and keyboard mount, page bridge, options page, `chromeStorage` | `npm run smoke:ext` → `extension/smoke.mjs` | The unpacked MV3 extension loads and MAIN-world injection registers `bluepencil-notes` under a strict CSP; the page bridge round-trips into extension storage; a live hub round-trip survives reload; an already-embedded page is detected and not duplicated; the toolbar badge names the source; the options page offers none/secret/token and reads token expiry from the token. | build, build:ext, browser | covered |
 | `cli` | `bluepencil` CLI (`dist/cli.js`) | `inspect`, `validate`, `notes`, `merge`, `import`, `export`, `instances` | `npm run smoke:cli` → `scripts/cli-smoke.mjs` | `inspect` and `notes` read a valid bundle and `validate` accepts it; merge of a set into itself is a dry run and `--out` writes; unresolved conflicts exit 2 and `keep-incoming` applies; an environment mismatch exits 3 and `--allow-env-mismatch` promotes; `--include-done=false` hides done notes; `instances validate` and `instances list` run offline and never print the credential, and `instances health` exits 5 on a dead peer; a greater-than-64 KiB JSON list survives a real pipe. | build | covered |
@@ -42,10 +43,11 @@ feature is new: several of these suites are new in 0.10.0 while the behaviour th
 <!-- components:end -->
 
 `Requires` names what the assertions need. A `browser` entry means at least one scenario needs Chrome;
-whether a missing browser skips only that leg or the whole component depends on the runner entry. The
-components whose manifest `requires` includes `browser` (`e2e`, `bookmarklet`, `round-trip`, `parity`,
-`ext`) are skipped wholesale without Chrome. `embed` is the mixed case: the runner requires only
-`build`, so its jsdom legs still run and `BP_NO_BROWSER=1` suppresses only the browser leg.
+whether a missing browser skips only that leg or the whole component depends on the runner entry.
+The components whose manifest `requires` includes `browser` (`e2e`, `viewer-launcher`, `bookmarklet`,
+`round-trip`, `parity`, `ext`) are skipped wholesale without Chrome. `embed` is the mixed case: the
+runner requires only `build`, so its jsdom legs still run and `BP_NO_BROWSER=1` suppresses only the
+browser leg.
 
 ## How to run
 
@@ -63,8 +65,8 @@ npm run smoke:components -- --no-docker  # skip the Docker suite
 `--only` accepts **two namespaces**:
 
 - **Manifest component IDs** — the runner entries: `cli`, `mcp`, `federation`, `pack`, `install`,
-  `embed`, `e2e`, `bookmarklet`, `round-trip`, `parity`, `ext`, `webstore`, `auth`, `hermes`,
-  `docker`. `--only=cli,auth` selects exactly those two suites.
+  `embed`, `e2e`, `viewer-launcher`, `bookmarklet`, `round-trip`, `parity`, `ext`, `webstore`, `auth`,
+  `hermes`, `docker`. `--only=cli,auth` selects exactly those two suites.
 - **Coverage IDs** — the IDs in the table above: `element`, `hub-auth`, `hub-http`, `e2e`, ….
   `--only=hub-auth` expands to every component whose `covers` list contains that ID (here `auth`).
 

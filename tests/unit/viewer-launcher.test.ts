@@ -248,7 +248,7 @@ describe("launcherHeadRefusal — method gate (AC-L17)", () => {
     expect(answer?.status).toBe(405);
     expect(answer?.headers["content-type"]).toBe("text/html; charset=utf-8");
     expect(answer?.headers["x-frame-options"]).toBe("DENY");
-    expect(answer?.headers["referrer-policy"]).toBe("no-referrer");
+    expect(answer?.headers["referrer-policy"]).toBe("origin");
     expect(answer?.body).toContain("<form method=\"post\"");
   });
 
@@ -294,6 +294,7 @@ describe("launcherHeadRefusal — Origin / Sec-Fetch-Site gate (AC-L10/L11/L33)"
       context(),
     );
     expect(html?.status).toBe(403);
+    expect(html?.headers["referrer-policy"]).toBe("origin");
     expect(html?.headers.connection).toBe("close");
     expect(html?.body).toContain("This form was submitted from another site.");
     expect(html?.body).not.toContain("evil.example");
@@ -566,9 +567,9 @@ describe("handleViewerStart — the form page (AC-L01/L02)", () => {
     expect(answer?.headers["content-type"]).toBe("text/html; charset=utf-8");
     expect(answer?.headers["cache-control"]).toBe("no-store");
     expect(answer?.headers["x-frame-options"]).toBe("DENY");
-    expect(answer?.headers["referrer-policy"]).toBe("no-referrer");
+    expect(answer?.headers["referrer-policy"]).toBe("origin");
     expect(answer?.headers["content-security-policy"]).toBe(
-      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${VIEWER_ORIGIN}; frame-ancestors 'none'; base-uri 'none'`,
     );
     expect(answer?.headers.connection).toBeUndefined();
     expect(answer?.body).toContain('<input type="password" name="secret"');
@@ -717,6 +718,7 @@ describe("handleViewerStart — a wrong form body (AC-L08)", () => {
     const html = handleViewerStart(formPost("secret=wrong-value"), htmlContext);
     expect(html?.status).toBe(401);
     expect(html?.headers["content-type"]).toBe("text/html; charset=utf-8");
+    expect(html?.headers["referrer-policy"]).toBe("origin");
     expect(html?.body).toContain("The operator secret is not valid.");
     expect(html?.body).not.toContain("wrong-value");
     expect(htmlThrottle.failure).toHaveBeenCalledTimes(1);

@@ -14,7 +14,7 @@ shared by UI, CLI, hub and MCP.
 
 | Section | What you find |
 |---|---|
-| [Status](#status) | What `0.16.0` contains — and what it honestly does not |
+| [Status](#status) | What `0.16.1` contains — and what it honestly does not |
 | [Why the name](#why-the-name) | Where the metaphor comes from |
 | [Quick start](#quick-start) | Build, artifact table, one `init()` call, the runtime handle |
 | [The pieces](#the-pieces) | Browser layer, five adapters, store, hub, two agent doors |
@@ -32,12 +32,15 @@ shared by UI, CLI, hub and MCP.
 
 ## Status
 
-**`0.16.0`** — the review layer, the headless data library and the CLI/MCP surfaces are on `main`.
-0.16.0 accepts RS256 OIDC bearer tokens from an external provider (Zitadel, Keycloak, …) on the
-notes routes, with read/write decided by roles — while agents, MCP and CLI keep their HMAC device
-tokens. See [docs/OIDC.md](docs/OIDC.md). 0.15.6 documents the REST/MCP payload rules, reports the
-expected `layerVersion` in `/config`, and shows per-device presence with a notes drill-down in the
-admin page; 0.15.5 added `anchor.origin` (the site,
+**`0.16.1`** — the review layer, the headless data library and the CLI/MCP surfaces are on `main`.
+0.16.1 fixes the viewer launcher's native browser form (#163): launcher HTML now carries
+`Referrer-Policy: origin`, so the POST sends the real hub origin instead of `Origin: null`; the CSP
+allows only that hub plus the exact configured viewer origin for the `303` redirect. Foreign origins
+remain blocked. 0.16.0 accepts RS256 OIDC bearer tokens from an external provider (Zitadel,
+Keycloak, …) on the notes routes, with read/write decided by roles — while agents, MCP and CLI keep
+their HMAC device tokens. See [docs/OIDC.md](docs/OIDC.md). 0.15.6 documents the REST/MCP payload
+rules, reports the expected `layerVersion` in `/config`, and shows per-device presence with a notes
+drill-down in the admin page; 0.15.5 added `anchor.origin` (the site,
 automatic and never a full URL), a client-configured session strategy
 (`given | origin | route | glob:<pattern> | none`) and a derived session overview in `GET /sessions`
 and the admin page's Sessions tab. Existing notes, bundles and hosts keep their behaviour — the

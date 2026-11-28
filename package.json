@@ -1,6 +1,6 @@
 {
   "name": "bluepencil",
-  "version": "0.16.0",
+  "version": "0.16.1",
   "description": "Annotate any web app — text and design notes, anchored to the element, readable by humans and agents.",
   "license": "MIT",
   "repository": {
@@ -138,6 +138,7 @@
     "spec:stats": "reqmd stats spec/",
     "verify": "npm run typecheck && npm run typecheck:ext && npm run test && npm run build && npm run build:ext && npm run verify:sync && npm run size && npm run smoke:components -- --no-docker && npm run smoke:oidc",
     "smoke:e2e": "node tests/e2e/vanilla.e2e.mjs",
+    "smoke:viewer-launcher": "node tests/e2e/viewer-launcher.e2e.mjs",
     "smoke:round-trip": "node tests/e2e/round-trip.e2e.mjs",
     "smoke:parity": "node tests/e2e/parity.e2e.mjs"
   },

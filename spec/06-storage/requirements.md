@@ -433,9 +433,9 @@ version: 1
 requires-trace-from: []
 ```
 
-The launcher page cannot be framed and its POST cannot be driven cross-site: every HTML answer of {base}/viewer/start carries X-Frame-Options: DENY, Content-Security-Policy: frame-ancestors 'none', Referrer-Policy: no-referrer and Cache-Control: no-store; a POST whose Origin header is present and does not match the hub origin, or that carries Sec-Fetch-Site: cross-site, is refused with 403 before the operator secret is verified and before the throttle budget is touched
+The launcher page cannot be framed and its POST cannot be driven cross-site: every HTML answer of {base}/viewer/start carries X-Frame-Options: DENY, Content-Security-Policy: frame-ancestors 'none' with form-action 'self' {viewer.origin}, Referrer-Policy: origin and Cache-Control: no-store; a POST whose Origin header is present and does not match the hub origin, or that carries Sec-Fetch-Site: cross-site, is refused with 403 before the operator secret is verified and before the throttle budget is touched
 
-*Acceptance criteria:* The form response carries the four headers; a cross-origin POST answers 403 and mints no ticket; a request with `Sec-Fetch-Site: cross-site` answers 403 even with a correct secret; a same-origin POST and a request without `Origin` (curl) still work
+*Acceptance criteria:* The form response carries the four headers and pins the form to the hub while allowing only the configured viewer redirect; a cross-origin POST answers 403 and mints no ticket; a request with `Sec-Fetch-Site: cross-site` answers 403 even with a correct secret; a native same-origin browser form POST keeps the real hub Origin, reaches secret validation and follows a valid `303` to the viewer; a request without `Origin` (curl) still works
 
 ## FR-6.29 The admin surface opens the viewer without putting the secret in a URL: the authenticate…
 

@@ -138,6 +138,14 @@ const MANIFEST = [
     covers: ["library-iife"],
   },
   {
+    id: "viewer-launcher",
+    label: "Viewer launcher (native browser form)",
+    entry: "tests/e2e/viewer-launcher.e2e.mjs",
+    requires: ["build", "browser"],
+    timeoutMs: 180000,
+    covers: ["viewer-launcher"],
+  },
+  {
     id: "bookmarklet",
     label: "Bookmarklet IIFE",
     entry: "scripts/bookmarklet-smoke.mjs",
