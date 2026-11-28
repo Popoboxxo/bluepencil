@@ -160,10 +160,12 @@ they differ only in how the secret travels:
 A wrong secret re-renders the form with `401` and one generic message: the entered value is never
 echoed, and "empty" and "wrong" are not distinguished in the text.
 
-**No secret in the URL on this path.** It is not in the address bar, not in history, not in a
-`Referer` (every launcher answer carries `Referrer-Policy: no-referrer`), and not in a proxy access
-log. What the path does **not** fix is the transport: the page carries a password field, so it is only
-as private as the connection (see [Cookie and TLS](#cookie-and-tls)).
+**No secret in the URL on this path.** It is not in the address bar, not in history, and not in a
+proxy access log. Launcher HTML answers carry `Referrer-Policy: origin`: a native form POST therefore
+sends the real hub `Origin` (required by the CSRF gate), while the `Referer` contains only the bare
+origin — never the launcher path or query. Redirects, ticket redemption and viewer answers keep
+`Referrer-Policy: no-referrer`. What the path does **not** fix is the transport: the page carries a
+password field, so it is only as private as the connection (see [Cookie and TLS](#cookie-and-tls)).
 
 `POST` with `Accept: application/json` (the admin page's shape: header credential, no body) answers
 `200 {"url":"<viewer-origin><base>/viewer?ticket=…"}` instead of a redirect, so a caller navigates
@@ -201,10 +203,13 @@ Details that matter in operation:
   `/admin/*` and the launcher **share** that budget in both directions.
 - **The `Origin` gate (POST only, fail-closed).** An `Origin` that does not match the hub's own
   origin, `Origin: null`, several `Origin` values and `Sec-Fetch-Site: cross-site` are all `403` with
-  a generic message (the rejected value is never repeated). A **missing** `Origin` passes — curl and
-  scripts send none. The comparison basis is the forwarded chain (`X-Forwarded-Host` +
-  `X-Forwarded-Proto`), falling back to `Host`; this is why the reverse proxy must forward both (see
-  [Reverse proxy](#reverse-proxy-nginx)). The gate runs before the secret, the budget and any read.
+  a generic message (the rejected value is never repeated). Launcher HTML uses
+  `Referrer-Policy: origin`, so Chromium's native form POST sends the real hub origin; the earlier
+  `no-referrer` policy produced `Origin: null` and blocked the hub's own form (#163). A **missing**
+  `Origin` passes — curl and scripts send none. The comparison basis is the forwarded chain
+  (`X-Forwarded-Host` + `X-Forwarded-Proto`), falling back to `Host`; this is why the reverse proxy
+  must forward both (see [Reverse proxy](#reverse-proxy-nginx)). The gate runs before the secret,
+  the budget and any read.
 - **Body limits.** The form body must declare `application/x-www-form-urlencoded` (`415` otherwise)
   and is capped at **8 KiB** (`VIEWER_LAUNCHER_MAX_BODY_BYTES`): a declared `content-length` above
   that is `413` with `connection: close`, and a body that only grows past the limit while streaming
@@ -358,9 +363,11 @@ only; the viewer name answers `404` for it.
 - **Surface-scoped sessions.** A `bp_viewer` cookie authorizes nothing on the hub port; a viewer
   session does not open hub routes, and the hub ignores the bookmarklet header.
 - **The operator secret stays on the hub origin.** It is compared only there; the form that carries it
-  is served by the hub origin, its `action` is the hub path and the page's CSP pins it
-  (`form-action 'self'`), and the viewer context does not carry the secret structurally. A proxied
-  page cannot read it from a form on its own origin.
+  is served by the hub origin and its `action` is the hub path. The page's CSP pins that action with
+  `form-action 'self'` and additionally allows the **exact configured viewer origin**, because a
+  successful POST redirects there with `303` and Chromium applies `form-action` to the redirect too.
+  The viewer context does not carry the secret structurally. A proxied page cannot read it from a
+  form on its own origin.
 - **XSS in a target runs on the viewer origin**, not on the hub origin.
 - **Shared revocation.** A revoked device token is refused on the viewer surface too
   (`token_revoked`); both contexts read the same live revocation set.

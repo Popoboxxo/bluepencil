@@ -390,7 +390,7 @@ AC-L30 (handler level), AC-L31, AC-L32.
       a duplicate field uses the first value; `secret=a+b` vs. `a b` → `303`; `secret=%zz` → `401`,
       never `500`.
 - [x] Step 4 (red): answer headers — HTML responses carry `x-frame-options: DENY`, the exact CSP of
-      spec §6, `referrer-policy: no-referrer`, `cache-control: no-store`; `405` carries `allow:
+      spec §6, `referrer-policy: origin`, `cache-control: no-store`; `405` carries `allow:
       "GET, POST"`; `429` carries `retry-after` from the verdict (assert `"300"`) and the HTML body
       carries `300` with no `{seconds}` residue; `401`/`429`/`200`/`303` carry **no**
       `connection: close`.

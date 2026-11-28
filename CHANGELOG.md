@@ -1,3 +1,27 @@
+## [0.16.1] - 2026-11-28
+
+### Fixed
+
+- **#163 — the viewer launcher no longer blocks its own browser form.** Launcher HTML answers now
+  carry `Referrer-Policy: origin`, so Chromium sends the real hub `Origin` instead of `Origin: null`.
+  The CSP keeps `form-action 'self'` and adds only the exact configured viewer origin, because
+  Chromium applies `form-action` to the successful `303` redirect as well. Foreign origins, opaque
+  origins and `Sec-Fetch-Site: cross-site` remain blocked; redirects, ticket redemption and viewer
+  answers keep `Referrer-Policy: no-referrer`.
+
+### Verified
+
+- `npm run smoke:viewer-launcher` in real Chromium: **3/3 cases passed** — the hub's own empty form
+  reaches `401`, a foreign-origin form remains `403`, and a generated valid test secret returns
+  `303` and opens the viewer session.
+- `npm run typecheck`, `npm run typecheck:ext`, `npm run build`, `npm run build:ext` and
+  `npm run verify:sync` green.
+
+### Known gaps
+
+- OIDC is still token-only on the notes routes; `/admin` keeps `--admin-secret`, and `/mcp` keeps
+  HMAC device tokens. A local IdP deployment is infrastructure work, not part of this patch.
+
 ## [0.16.0] - 2026-11-21
 
 ### Added

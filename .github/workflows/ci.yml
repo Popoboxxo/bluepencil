@@ -213,6 +213,13 @@ jobs:
           BP_REQUIRE_BROWSER: "1"
         run: npm run smoke:e2e
 
+      - name: Viewer launcher smoke (native form Origin, real browser)
+        env:
+          # #163: a native form POST must keep the hub Origin under Referrer-Policy: origin,
+          # while a foreign-origin form stays blocked. A missing browser must fail this leg.
+          BP_REQUIRE_BROWSER: "1"
+        run: npm run smoke:viewer-launcher
+
       - name: Bookmarklet smoke (post-load IIFE arrival, real browser)
         env:
           # The IIFE is injected into a page that is already loaded — the bookmarklet's defining

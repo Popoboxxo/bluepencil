@@ -1,9 +1,9 @@
 # Viewer-Launcher als Einstieg (Formular + Admin-Button) — Spec
 
-> Status: **APPROVED (2026-11-08, rev 4)**
-> Approval: **freigegeben.** `concept-reviewer` hat in Re-Review 2 die vier Kernentscheidungen ausdrücklich bestätigt (RVW-1 Option (b) — Forwarded-Kette + `Host` als `Origin`-Basis; RVW-2 — geteiltes `admin`-Budget; RVW-3 — `readBody()` statt zweitem Reader; RVW-4 — AC-L31/L32). Die Restfindings **RVW2-1…RVW2-9** sind in rev 3 geschlossen (§14). Freigabe durch den Auftraggeber: **Issue #144, Varianten C + B**. rev 4: VAL-1 (Option b, kein 15. Key) und CR-1 (`launcherDeclaresBody`) eingearbeitet.
+> Status: **APPROVED (2026-11-08, rev 4; rev 5 am 2026-11-28)**
+> Approval: **freigegeben.** `concept-reviewer` hat in Re-Review 2 die vier Kernentscheidungen ausdrücklich bestätigt (RVW-1 Option (b) — Forwarded-Kette + `Host` als `Origin`-Basis; RVW-2 — geteiltes `admin`-Budget; RVW-3 — `readBody()` statt zweitem Reader; RVW-4 — AC-L31/L32). Die Restfindings **RVW2-1…RVW2-9** sind in rev 3 geschlossen (§14). Freigabe durch den Auftraggeber: **Issue #144, Varianten C + B**. rev 4: VAL-1 (Option b, kein 15. Key) und CR-1 (`launcherDeclaresBody`) eingearbeitet. rev 5: **Issue #163** — Launcher-HTML nutzt `Referrer-Policy: origin`, damit der native Formular-POST die echte Hub-Origin sendet; `form-action` erlaubt zusätzlich die exakt konfigurierte Viewer-Origin für den `303`-Redirect. Redirects bleiben `no-referrer`.
 > spec-id: SPEC-viewer-launcher-entry
-> Datum: 2026-11-08 (rev 1), 2026-11-08 (rev 2 — Review `CHANGES_REQUESTED`, siehe §14), 2026-11-08 (rev 3 — Re-Review-Restfindings geschlossen, `APPROVED`), 2026-11-08 (rev 4 — VAL-1/CR-1, Status bleibt `APPROVED`)
+> Datum: 2026-11-08 (rev 1), 2026-11-08 (rev 2 — Review `CHANGES_REQUESTED`, siehe §14), 2026-11-08 (rev 3 — Re-Review-Restfindings geschlossen, `APPROVED`), 2026-11-08 (rev 4 — VAL-1/CR-1, Status bleibt `APPROVED`), 2026-11-28 (rev 5 — #163, Referrer-Policy/CSP-Korrektur)
 > Issue: #144 — „Varianten C + B": eine öffentliche Launcher-Seite auf der Hub-Origin (C) und ein Einstieg aus der Admin-Seite (B).
 > Requirements (bindende Eingabe): **FR-6.17** (drei gleichwertige Einstiege), **FR-6.21** (Secret-Transportkanäle — ab 2026-11-08 zweigeteilt zu lesen, siehe §2.5), **FR-6.26** (Launcher-Seite HTML), **FR-6.27** (Launcher-POST), **FR-6.28** (Header-/CSRF-Härtung), **FR-6.29** (Admin-Einstieg + `/admin/status.viewer`), **FR-6.30** (i18n).
 > Revidiert: Entscheidung **E3** aus `docs/reviews/2026-11-06-viewer-origin-spec-review.md` (§4) und **offene Frage 3** aus `docs/specs/2026-11-06-viewer-origin-design.md` (§13) — „no POST form" — siehe §2. Die beiden Dokumente werden **nicht** umgeschrieben, sondern erhalten je einen datierten Nachtrag (§2.4, §10).
@@ -83,7 +83,7 @@ Die Fläche wächst um genau eine Sache: einen Body-Read durch den **bestehenden
 
 4. **Secret im Prozessspeicher des Browsers:** Das Formularfeld existiert als DOM-Wert, solange die Seite offen ist. Es trägt **kein** `value`-Attribut und die Seite wird mit `cache-control: no-store` ausgeliefert; `autocomplete="off"` ist gesetzt (FR-6.26, §4) — ein Browser darf das ignorieren, deshalb ist es ein Hinweis und keine Zusage. Ein Reload leert das Feld (kein State).
 
-5. **`Referer` beim Absenden:** Die Launcher-Seite wird mit `referrer-policy: no-referrer` ausgeliefert (§3 Zeile 1, §6). Der Browser sendet beim POST deshalb **keinen** `Referer`. Selbst wenn ein Client die Policy ignoriert, wäre der Wert die Launcher-URL auf demselben Origin — und die trägt kein Secret.
+5. **`Referer` beim Absenden:** Die Launcher-Seite wird mit `referrer-policy: origin` ausgeliefert (§3 Zeile 1, §6). Der Browser sendet beim nativen Formular-POST dadurch die **echte Hub-Origin**; `no-referrer` würde nach Fetch denselben POST als `Origin: null` serialisieren und vom eigenen CSRF-Gate blockieren (#163). Als `Referer` wird nur der bloße Origin-Teil gesendet — kein Pfad, keine Query. Redirect-/Ticket-/Viewer-Antworten bleiben `no-referrer`.
 
 6. **`?k=`-Restrisiko (bleibt, benannte Ausnahme, §2.5):** Auf dem Kompatibilitätspfad steht das Secret in der **Request-Zeile**. Damit landet es in der Adresszeile, in der Browser-History, in jedem Access-Log und in jedem Proxy-Log, das die Query mitschreibt. Die `referrer-policy: no-referrer` der Antwort schützt nur den *nächsten* Hop, nicht die Request-Zeile selbst. Wer diesen Weg benutzt, akzeptiert genau das.
 
@@ -128,7 +128,7 @@ Die Dokumente vom 2026-11-06 werden **nicht** textlich überschrieben. Ihr Flie�
 
 | # | Methode | Pfad | Surface | Accept | Secret-Lage | Status | Header | Budget |
 |---|---|---|---|---|---|---|---|---|
-| 1 | `GET` | `{base}/viewer/start` | hub | html | keines | **200** HTML-Formular | `content-type: text/html; charset=utf-8`, `cache-control: no-store`, `x-frame-options: DENY`, `content-security-policy` (§6), `referrer-policy: no-referrer` | **kein** Verbrauch |
+| 1 | `GET` | `{base}/viewer/start` | hub | html | keines | **200** HTML-Formular | `content-type: text/html; charset=utf-8`, `cache-control: no-store`, `x-frame-options: DENY`, `content-security-policy` (§6), `referrer-policy: origin` | **kein** Verbrauch |
 | 2 | `GET` | `{base}/viewer/start?k=…` | hub | html | `?k=` gültig | **302** `Location: {viewer.origin}{base}/viewer?ticket=…` | `referrer-policy: no-referrer`, `cache-control: no-store`, kein `set-cookie` | 1 success (reset) |
 | 3 | `GET` | `{base}/viewer/start?k=…` | hub | html | `?k=` falsch | **401** HTML-Formular + `launcherInvalidSecret` | wie 1, kein `location` | 1 failure |
 | 4 | `GET` | `{base}/viewer/start` | hub | html | `x-bluepencil-admin` falsch | **401** HTML-Formular + `launcherInvalidSecret` | wie 1 | 1 failure |
@@ -525,9 +525,9 @@ Der Körper ist der heutige Block `server/admin-html.ts:31-38` (unverändert). `
 
 | Antworttyp | `content-type` | `cache-control` | `x-frame-options` | `content-security-policy` | `referrer-policy` | `location` | `set-cookie` | sonstiges |
 |---|---|---|---|---|---|---|---|---|
-| HTML 200 (Formular) | `text/html; charset=utf-8` | `no-store` | `DENY` | `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'` | `no-referrer` | — | — | — |
-| HTML 401 / 403 / 413 / 415 / 429 (Formular **mit** Meldung) | wie 200 | `no-store` | `DENY` | wie 200 | `no-referrer` | — | — | `429`: `retry-after`; `403`/`413`/`415`: `connection: close` |
-| HTML **405** (Formular **ohne** Meldung — kein `.bp-error`-Block, §3 Status-Tabelle) | wie 200 | `no-store` | `DENY` | wie 200 | `no-referrer` | — | — | `allow: GET, POST`, `connection: close` |
+| HTML 200 (Formular) | `text/html; charset=utf-8` | `no-store` | `DENY` | `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' {viewer.origin}; frame-ancestors 'none'; base-uri 'none'` | `origin` | — | — | — |
+| HTML 401 / 403 / 413 / 415 / 429 (Formular **mit** Meldung) | wie 200 | `no-store` | `DENY` | wie 200 | `origin` | — | — | `429`: `retry-after`; `403`/`413`/`415`: `connection: close` |
+| HTML **405** (Formular **ohne** Meldung — kein `.bp-error`-Block, §3 Status-Tabelle) | wie 200 | `no-store` | `DENY` | wie 200 | `origin` | — | — | `allow: GET, POST`, `connection: close` |
 | Redirect 302 / 303 | — (leerer Body) | `no-store` | — | — | `no-referrer` | `{viewer.origin}{base}/viewer?ticket=…` | **nie** | kein `connection: close` |
 | JSON 200 (`{"url":…}`) | `application/json; charset=utf-8` | `no-store` | — | — | — | — | **nie** | — |
 | JSON 401 / 429 | `application/json; charset=utf-8` | `no-store` | — | — | — | — | — | `429`: `retry-after: <verdict>` |
@@ -537,7 +537,7 @@ Der Körper ist der heutige Block `server/admin-html.ts:31-38` (unverändert). `
 | 404 (kein `--viewer`, Viewer-Fläche) | Router-/`viewerSurfaceRefusal`-Antwort, **unverändert** | | | | | | | |
 | Antwort auf Zeile 17 (gestreamter Overshoot) | — keine Antwort, Socket-Abbruch — | | | | | | | |
 
-Begründung der CSP-Abweichung von `/admin`: die Admin-Seite hat bewusst **kein** `default-src`, weil ihr Inline-`<script>` laufen muss. Die Launcher-Seite hat **kein** Skript und keine externe Ressource; `default-src 'none'` kostet dort nichts. `form-action 'self'` ist die einzige Direktive mit echter Schutzwirkung (sie verhindert, dass ein manipuliertes Dokument das getippte Secret an eine fremde `action` schickt) und ist additiv. `frame-ancestors 'none'` wird zusätzlich als `x-frame-options: DENY` gespiegelt (Alt-Agenten).
+Begründung der CSP-Abweichung von `/admin`: die Admin-Seite hat bewusst **kein** `default-src`, weil ihr Inline-`<script>` laufen muss. Die Launcher-Seite hat **kein** Skript und keine externe Ressource; `default-src 'none'` kostet dort nichts. `form-action 'self' {viewer.origin}` ist die einzige Direktive mit echter Schutzwirkung: Das Formular bleibt an die Hub-Origin gebunden, während der nach erfolgreichem POST erforderliche `303` zur exakt konfigurierten Viewer-Origin erlaubt wird. Chromium wendet `form-action` auch auf diesen Redirect an; ohne den Viewer-Origin-Eintrag blockiert es den Login nach der Secret-Prüfung (#163). `frame-ancestors 'none'` wird zusätzlich als `x-frame-options: DENY` gesendet.
 
 ## 7. Datenfluss
 
@@ -547,7 +547,7 @@ Begründung der CSP-Abweichung von `/admin`: die Admin-Seite hat bewusst **kein*
 2. `hostRefusal()` → `surface === "hub" && isViewerStartRequest()` → `handleViewerStart()`.
 3. `launcherHeadRefusal()`: Methode ok, `origin` aufgelöst, kein CSRF-Gate (GET), keine Größenregel (kein Body).
 4. `launcherFormat(accept)` = `html`; kein Secret präsentiert.
-5. Antwort `200` HTML (kein `verifyOperatorSecret()`, kein Budget), `referrer-policy: no-referrer`.
+5. Antwort `200` HTML (kein `verifyOperatorSecret()`, kein Budget), `referrer-policy: origin`.
 6. Operator tippt das Secret, Submit → `POST` mit `secret=<wert>` im Body.
 
 **C — Formular-POST**
@@ -579,7 +579,7 @@ Format: Given / When / Then, jeweils mit beobachtbarem Ergebnis. „Nicht-Browse
 
 | ID | Given | When | Then |
 |---|---|---|---|
-| **AC-L01** | Hub mit `--viewer`, `viewer.origin` aufgelöst | `GET {base}/viewer/start` mit `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8` | **200**, `content-type: text/html; charset=utf-8`, `cache-control: no-store`, `x-frame-options: DENY`, CSP aus §6, `referrer-policy: no-referrer`; Body enthält genau **ein** `<input type="password" name="secret" autocomplete="off" required autofocus>`, ein `<form method="post"`, `action="{base}/viewer/start"`, `enctype="application/x-www-form-urlencoded"`, ein `<label for="secret">`, einen Submit-Button; **kein** `<script`, **kein** `on<event>=`, **keine** absolute URL im Body (das `action` ist ein base-präfixierter Pfad); `<html lang="en">`; kein Budget verbraucht (`throttle.allow` nicht aufgerufen) |
+| **AC-L01** | Hub mit `--viewer`, `viewer.origin` aufgelöst | `GET {base}/viewer/start` mit `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8` | **200**, `content-type: text/html; charset=utf-8`, `cache-control: no-store`, `x-frame-options: DENY`, CSP aus §6 (`form-action 'self' {viewer.origin}`), `referrer-policy: origin`; Body enthält genau **ein** `<input type="password" name="secret" autocomplete="off" required autofocus>`, ein `<form method="post"`, `action="{base}/viewer/start"`, `enctype="application/x-www-form-urlencoded"`, ein `<label for="secret">`, einen Submit-Button; **kein** `<script`, **kein** `on<event>=`, **keine** absolute URL im Body (das `action` ist ein base-präfixierter Pfad); `<html lang="en">`; kein Budget verbraucht (`throttle.allow` nicht aufgerufen) |
 | **AC-L02** | dito | derselbe Request mit `Accept-Language: de` | `<html lang="de">`, Überschrift/Button/Label deutsch; kein englischer Satz und kein roher Key im Body |
 | **AC-L03** | dito | `GET {base}/viewer/start` mit `Accept: */*` oder ohne `Accept` | **401** JSON `unauthorized` (unverändert), `content-type: application/json`; kein Budget |
 | **AC-L04** | dito | `GET {base}/viewer/start?k=<richtig>` mit HTML-`Accept`; danach mit `x-bluepencil-admin` | jeweils **302**, `location` = `{viewer.origin}{base}/viewer?ticket=<48 hex>`, `referrer-policy: no-referrer`, `cache-control: no-store`, kein `set-cookie` |
@@ -646,9 +646,9 @@ Neu: `tests/unit/viewer-launcher.test.ts` (Unit, `handleViewerStart`/`launcherHe
 | **Glue-Roundtrip über echten `node:http`-Server:** der dortige Helper `request(port, path, init)` (`viewer-dispatch.test.ts:92-119`) bekommt `body?: string` **und** einen `urlencoded(fields)`-Helfer (setzt `content-type` und `content-length`); Fälle: Formular-Body → 303; deklarierte 9000 Bytes → 413 mit vollständig gelesener Antwort und `connection: close`; **chunked 9000 Bytes → keine Antwort, Client sieht ein vorzeitiges Ende** | `viewer-dispatch.test.ts` | AC-L06, L14, L29 |
 | GET ohne `--viewer` → 404; Viewer-Fläche → 404 | `viewer-start.test.ts` (bestehend) / `viewer-surface.integration.test.ts` | AC-L19, L20 |
 | `statusPayload()` mit/ohne `context.viewer` → `{enabled,origin}` / `{enabled:false,origin:null}`; `/config` ohne `viewer`-Key | `server-admin.test.ts`, `server-config.test.ts` | AC-L21, L22 |
-| Secret nie in einer **Antwort:** Assertion über jede 302/303-`location` (`/^https:\/\/view\.example\.com\/bluepencil\/api\/viewer\?ticket=[0-9a-f]{48}$/`, Fixture-Base `/bluepencil/api`), über den gesamten Antwortbody und über jedes `set-cookie` — **auch für die Antworten auf `?k=`-GETs**. Ausgenommen ist ausschließlich die **Request-URL** des `?k=`-GET (§2.5); kein `referer`-Wert wird geprüft, weil `referrer-policy: no-referrer` gesetzt ist und ein Antwort-Header kein `referer` erzeugt (RVW2-8) | `viewer-launcher.test.ts` | AC-L28 |
+| Secret nie in einer **Antwort:** Assertion über jede 302/303-`location` (`/^https:\/\/view\.example\.com\/bluepencil\/api\/viewer\?ticket=[0-9a-f]{48}$/`, Fixture-Base `/bluepencil/api`), über den gesamten Antwortbody und über jedes `set-cookie` — **auch für die Antworten auf `?k=`-GETs**. Ausgenommen ist ausschließlich die **Request-URL** des `?k=`-GET (§2.5); der `Referer` der Launcher-HTML-Seite enthält unter `referrer-policy: origin` nur den bloßen Origin-Teil, niemals Pfad oder Query. Ein Antwort-Header erzeugt selbst keinen `referer` (RVW2-8) | `viewer-launcher.test.ts` | AC-L28 |
 
-Nicht durch Unit-Tests abgedeckt (bewusst, kein Browser-Harness im Repo): das tatsächliche Absenden durch einen Browser, `location.assign()`, `disabled`-Optik, das Fokusverhalten von `autofocus`. Belegt durch Markup-/String-Assertions und die E2E-freie Testpolitik des Repos.
+Unit-Tests decken Markup, Header und Handler-Verträge ab. Das tatsächliche native Absenden durch einen Browser ist seit rev 5 durch `tests/e2e/viewer-launcher.e2e.mjs` abgedeckt: Die Hub-Origin muss im Formular-POST ankommen und ein leeres Secret erreicht `401`; ein fremd-origin-Formular bleibt `403`. `location.assign()`, `disabled`-Optik und das Fokusverhalten von `autofocus` bleiben Markup-/String-Assertions.
 
 ## 10. Auswirkungen auf bestehende Artefakte
 
